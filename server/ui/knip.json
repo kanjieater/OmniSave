@@ -1,0 +1,16 @@
+{
+  "$schema": "https://unpkg.com/knip@latest/schema.json",
+  "project": ["src/**/*.{ts,tsx}"],
+  "ignore": [
+    "src/generated/**",
+    "src/components/ui/**"
+  ],
+  "ignoreDependencies": ["tailwindcss-animate"],
+  "ignoreExportsUsedInFile": true,
+  "rules": {
+    "files": "error",
+    "dependencies": "error",
+    "exports": "off",
+    "types": "off"
+  }
+}

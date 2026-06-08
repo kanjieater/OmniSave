@@ -1,0 +1,257 @@
+/* ============================================================
+   DENSITY KNOBS — two numbers control the entire UI scale.
+   Change these, save, dev-server hot-reloads instantly.
+
+   Presets:
+     compact:     --ui-scale: 1.00;  --touch-scale: 1.00
+     default:     --ui-scale: 1.25;  --touch-scale: 1.50  ← active
+     comfortable: --ui-scale: 1.35;  --touch-scale: 1.75
+
+   --ui-scale    → typography, icon sizes, border radii
+   --touch-scale → interactive element heights/widths only
+                   (buttons, inputs, nav items, close buttons)
+   ============================================================ */
+:root {
+  --ui-scale:    1.25;
+  --touch-scale: 1.00;   /* Mobile: normal touch targets; desktop overrides below */
+
+  /* Touch target heights */
+  --touch-sm:      calc(28px * var(--touch-scale));   /* 42px  sm button        */
+  --touch-md:      calc(32px * var(--touch-scale));   /* 48px  md button, input */
+  --touch-lg:      calc(40px * var(--touch-scale));   /* 60px  lg button        */
+  --touch-icon-sm: calc(28px * var(--touch-scale));   /* 42px  icon-sm button   */
+  --touch-icon-md: calc(32px * var(--touch-scale));   /* 48px  icon button      */
+  --touch-nav:     calc(36px * var(--touch-scale));   /* 54px  nav, close btn   */
+
+  /* Horizontal padding inside buttons */
+  --comp-px-sm: calc(8px  * var(--touch-scale));      /* 12px */
+  --comp-px-md: calc(12px * var(--touch-scale));      /* 18px */
+  --comp-px-lg: calc(20px * var(--touch-scale));      /* 30px */
+
+  /* Layout anchors — not touch-scaled; AppShellV2 must stay in sync */
+  --layout-topbar:  70px;
+  --layout-sidenav: 70px;
+
+  /* Mobile bottom nav — phone-appropriate, fixed */
+  --touch-bottom-nav: 48px;
+}
+
+@media (min-width: 1000px) {
+  :root {
+    --touch-scale: 1.50;   /* Desktop: scaled-up touch targets */
+  }
+}
+
+@theme {
+  /* === BACKGROUNDS === */
+  --color-bg-base:        #0C0D10;
+  --color-bg-subtle:      #111318;
+  --color-bg-elevated:    #191C23;
+  --color-bg-overlay:     #1F2330;
+  --color-bg-hover:       #242838;
+  --color-bg-selected:    #1E2540;
+  --color-bg-input:       #0F1115;
+
+  /* === BORDERS === */
+  --color-border-subtle:  #1E2028;
+  --color-border-base:    #2A2D38;
+  --color-border-strong:  #3D4255;
+  --color-border-focus:   #3B82F6;
+  --color-border-error:   #991B1B;
+
+  /* === TEXT === */
+  --color-text-primary:   #E8EAF0;
+  --color-text-secondary: #9198AC;
+  --color-text-muted:     #8B93A8;
+  --color-text-disabled:  #3A3F52;
+  --color-text-inverse:   #0C0D10;
+  --color-text-link:      #60A5FA;
+  --color-text-code:      #A5B4FC;
+
+  /* === ACCENT === */
+  --color-accent:         #3B82F6;
+  --color-accent-hover:   #2563EB;
+  --color-accent-subtle:  #1E3A5F;
+  --color-accent-muted:   color-mix(in srgb, #3B82F6 15%, transparent);
+
+  /* === SUCCESS === */
+  --color-success:        #22C55E;
+  --color-success-subtle: #0F2A1A;
+  --color-success-border: #166534;
+  --color-success-text:   #4ADE80;
+
+  /* === WARNING === */
+  --color-warning:        #EAB308;
+  --color-warning-subtle: #2A1F06;
+  --color-warning-border: #854D0E;
+  --color-warning-text:   #FCD34D;
+
+  /* === ERROR === */
+  --color-error:          #EF4444;
+  --color-error-subtle:   #2A0A0A;
+  --color-error-border:   #991B1B;
+  --color-error-text:     #FCA5A5;
+
+  /* === INFO === */
+  --color-info:           #60A5FA;
+  --color-info-subtle:    #0F1F35;
+  --color-info-border:    #1D4ED8;
+  --color-info-text:      #93C5FD;
+
+  /* === NEUTRAL === */
+  --color-neutral:        #6B7280;
+  --color-neutral-subtle: #1A1C22;
+  --color-neutral-border: #374151;
+  --color-neutral-text:   #9CA3AF;
+
+  /* === FONTS === */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+
+  /* === FONT SIZES (scaled by --ui-scale) ===
+   * Override Tailwind v4's --text-* variables so that text-sm, text-xl, etc.
+   * use our scaled values. --font-size-* kept as CSS-var aliases for direct var() use. */
+  --text-xs:   calc(0.75rem * var(--ui-scale));     /* 12px → 15px  */
+  --text-sm:   calc(0.8125rem * var(--ui-scale));  /* 13px → 16px  */
+  --text-base: calc(0.9375rem * var(--ui-scale));  /* 15px → 19px  */
+  --text-md:   calc(1.0625rem * var(--ui-scale));  /* 17px → 21px  — adds text-md utility */
+  --text-lg:   calc(1.25rem   * var(--ui-scale));  /* 20px → 25px  */
+  --text-xl:   calc(1.5rem    * var(--ui-scale));  /* 24px → 30px  */
+  --text-2xl:  calc(2rem      * var(--ui-scale));  /* 32px → 40px  */
+
+  /* CSS-var aliases kept for any remaining var(--font-size-*) references */
+  --font-size-xs:   calc(0.75rem * var(--ui-scale));
+  --font-size-sm:   calc(0.8125rem * var(--ui-scale));
+  --font-size-base: calc(0.9375rem * var(--ui-scale));
+  --font-size-md:   calc(1.0625rem * var(--ui-scale));
+  --font-size-lg:   calc(1.25rem   * var(--ui-scale));
+  --font-size-xl:   calc(1.5rem    * var(--ui-scale));
+  --font-size-2xl:  calc(2rem      * var(--ui-scale));
+
+  /* === FONT WEIGHTS === */
+  --font-weight-normal:   400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
+
+  /* === LINE HEIGHTS === */
+  --line-height-tight:   1;
+  --line-height-snug:    1.25;
+  --line-height-normal:  1.4;
+  --line-height-relaxed: 1.6;
+
+  /* === LETTER SPACING === */
+  --tracking-tight:   -0.01em;
+  --tracking-normal:   0em;
+  --tracking-wide:     0.04em;
+  --tracking-widest:   0.08em;
+
+  /* === SPACING — scaled by --ui-scale (generates p-*, m-*, gap-*, h-*, w-* utilities) === */
+  --spacing-1:  calc(4px  * var(--ui-scale));   /* 5px  */
+  --spacing-2:  calc(8px  * var(--ui-scale));   /* 10px */
+  --spacing-3:  calc(12px * var(--ui-scale));   /* 15px */
+  --spacing-4:  calc(16px * var(--ui-scale));   /* 20px */
+  --spacing-5:  calc(20px * var(--ui-scale));   /* 25px */
+  --spacing-6:  calc(24px * var(--ui-scale));   /* 30px */
+  --spacing-8:  calc(32px * var(--ui-scale));   /* 40px */
+  --spacing-10: calc(40px * var(--ui-scale));   /* 50px */
+  --spacing-12: calc(48px * var(--ui-scale));   /* 60px */
+  --spacing-16: calc(64px * var(--ui-scale));   /* 80px */
+  --spacing-20: calc(80px * var(--ui-scale));   /* 100px */
+  --spacing-24: calc(96px * var(--ui-scale));   /* 120px */
+
+  /* === SPACING — spec naming aliases (--space-*) === */
+  --space-0:  0px;
+  --space-1:  calc(4px  * var(--ui-scale));
+  --space-2:  calc(8px  * var(--ui-scale));
+  --space-3:  calc(12px * var(--ui-scale));
+  --space-4:  calc(16px * var(--ui-scale));
+  --space-5:  calc(20px * var(--ui-scale));
+  --space-6:  calc(24px * var(--ui-scale));
+  --space-8:  calc(32px * var(--ui-scale));
+  --space-10: calc(40px * var(--ui-scale));
+  --space-12: calc(48px * var(--ui-scale));
+  --space-16: calc(64px * var(--ui-scale));
+  --space-20: calc(80px * var(--ui-scale));
+  --space-24: calc(96px * var(--ui-scale));
+
+  /* === RADIUS (scaled by --ui-scale) === */
+  --radius-none: 0px;
+  --radius-sm:   calc(3px  * var(--ui-scale));   /* 3.75px */
+  --radius-md:   calc(6px  * var(--ui-scale));   /* 7.5px  */
+  --radius-lg:   calc(10px * var(--ui-scale));   /* 12.5px */
+  --radius-xl:   calc(16px * var(--ui-scale));   /* 20px   */
+  --radius-full: 9999px;
+
+  /* === SHADOWS === */
+  --shadow-none: none;
+  --shadow-xs:   0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm:   0 1px 4px rgba(0, 0, 0, 0.4);
+  --shadow-md:   0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg:   0 8px 32px rgba(0, 0, 0, 0.6);
+  --shadow-inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-focus: 0 0 0 2px var(--color-accent-muted);
+
+  /* === BORDER SHORTHANDS === */
+  --border-subtle: 1px solid var(--color-border-subtle);
+  --border-base:   1px solid var(--color-border-base);
+  --border-strong: 1px solid var(--color-border-strong);
+  --border-focus:  1px solid var(--color-border-focus);
+  --border-error:  1px solid var(--color-border-error);
+  --border-none:   none;
+
+  /* === ICON SIZES (scaled by --ui-scale) === */
+  --icon-xs:  calc(12px * var(--ui-scale));   /* 15px */
+  --icon-sm:  calc(14px * var(--ui-scale));   /* 17.5px */
+  --icon-md:  calc(16px * var(--ui-scale));   /* 20px */
+  --icon-lg:  calc(20px * var(--ui-scale));   /* 25px */
+  --icon-xl:  calc(24px * var(--ui-scale));   /* 30px */
+  --icon-2xl: calc(32px * var(--ui-scale));   /* 40px */
+
+  /* === MOTION === */
+  --motion-duration-instant: 0ms;
+  --motion-duration-fast:    80ms;
+  --motion-duration-normal:  150ms;
+  --motion-duration-slow:    200ms;
+  --motion-duration-slower:  300ms;
+  --motion-ease-linear:  linear;
+  --motion-ease-out:     cubic-bezier(0, 0, 0.2, 1);
+  --motion-ease-in:      cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-in-out:  cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-ease-spring:  cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* === Z-INDEX === */
+  --z-base:         0;
+  --z-raised:       10;
+  --z-dropdown:     100;
+  --z-fixed:        150;
+  --z-sticky:       200;
+  --z-overlay:      300;
+  --z-modal:        400;
+  --z-notification: 500;
+  --z-tooltip:      600;
+
+  /* === BREAKPOINTS ===
+   * --breakpoint-md overrides Tailwind's md: prefix (was 768px).
+   * md: is the sole mobile/desktop split — sidebar, bottom-nav, grid columns.
+   * sm: stays at 640px for dialog/flex-row adjustments on larger phones.
+   */
+  --breakpoint-md: 1000px;
+
+  /* CSS-var aliases (informational; not used by Tailwind directly) */
+  --bp-sm:  640px;
+  --bp-md:  1000px;
+  --bp-lg:  1024px;
+  --bp-xl:  1280px;
+  --bp-2xl: 1536px;
+}
+
+/* Reduced motion: collapse all animation durations */
+@media (prefers-reduced-motion: reduce) {
+  @theme {
+    --motion-duration-fast:    0ms;
+    --motion-duration-normal:  0ms;
+    --motion-duration-slow:    0ms;
+    --motion-duration-slower:  0ms;
+  }
+}

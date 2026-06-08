@@ -1,0 +1,18 @@
+# Run from repo root:
+#   docker compose -f server/docker-compose.yml --env-file .env up --build
+
+services:
+  omnisave:
+    container_name: ${OMNISAVE_CONTAINER_NAME:-omnisave}
+    image: ${OMNISAVE_IMAGE:-omnisave:latest}
+    build: .
+    restart: unless-stopped
+    logging:
+      driver: json-file
+    env_file:
+      - ../.env
+    ports:
+      - "${OMNISAVE_PORT_PUBLISH:-8991}:${OMNISAVE_PORT_INTERNAL:-8991}"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./data:/app/data

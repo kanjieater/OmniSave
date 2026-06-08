@@ -1,0 +1,6 @@
+import type { ToSourceFilePath, WorkspaceManifestHandler } from '../util/to-source-path.ts';
+import type { ResolveModule } from './ast-nodes.ts';
+export declare function clearModuleResolutionCaches(): void;
+export declare function createCustomModuleResolver(compilerOptions: {
+    paths?: Record<string, string[]>;
+}, customCompilerExtensions: string[], toSourceFilePath: ToSourceFilePath, findWorkspaceManifestImports?: WorkspaceManifestHandler): ResolveModule;

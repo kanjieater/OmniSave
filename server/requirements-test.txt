@@ -1,0 +1,9 @@
+pytest>=7.4
+pytest-cov>=4.1
+pytest-xdist>=3.5
+schemathesis>=3.38
+hypothesis>=6.88
+httpx>=0.23.0,<0.24.0
+anyio[trio]>=3.7
+requests>=2.31
+ruff>=0.4

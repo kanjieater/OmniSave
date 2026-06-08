@@ -1,0 +1,17 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/W = pycodestyle, F = pyflakes, I = isort, B = bugbear, UP = pyupgrade
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = [
+    "E501",  # line too long — formatter handles this
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["database", "ingest", "reconcile", "romm", "romm_meta", "titledb", "ui_api"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

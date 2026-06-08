@@ -1,0 +1,8 @@
+[run]
+source = src
+
+[report]
+omit =
+    src/romm_meta.py
+    src/titledb.py
+    src/main.py

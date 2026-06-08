@@ -1,0 +1,139 @@
+/* =============================================================================
+   animations.css — Single source of truth for all OmniSave custom animations
+   =============================================================================
+
+   AGENT HINT: Define ALL new animations here. Never add @keyframes or
+   .animate-* classes to globals.css, tokens.css, or component files.
+
+   Rules:
+   - One @keyframes block per animation, named to match its .animate-* class.
+   - Always reference motion tokens from tokens.css — never hardcode ms/easing.
+   - Pair every @keyframes with a .animate-* utility class immediately below it.
+   - Always add a @media (prefers-reduced-motion: reduce) override.
+   - No stagger delays defined here — if needed, apply inline animationDelay
+     on the element, not via CSS classes.
+
+   Motion token reference (see tokens.css for values):
+     --motion-duration-instant   0ms
+     --motion-duration-fast      80ms
+     --motion-duration-normal    150ms
+     --motion-duration-slow      200ms
+     --motion-duration-slower    300ms
+     --motion-ease-linear        linear
+     --motion-ease-out           cubic-bezier(0, 0, 0.2, 1)
+     --motion-ease-in            cubic-bezier(0.4, 0, 1, 1)
+     --motion-ease-in-out        cubic-bezier(0.4, 0, 0.2, 1)
+     --motion-ease-spring        cubic-bezier(0.34, 1.56, 0.64, 1)
+
+   Current inventory:
+     .animate-page-in      Page / route mounts — fade + 5px upward slide, 180ms
+     .animate-fade-in      List items, cards — opacity only, no position shift
+     .animate-device-pulse Online status dot — 1s radial pulse every 4s
+   ============================================================================= */
+
+/* ── Page / route transition ─────────────────────────────────────────────────
+   Used on: App.tsx route wrapper
+   Spec: fade + 5px upward slide, 180ms — hardcoded to survive reduce-motion
+         token zeroing; @media override still disables for a11y */
+
+@keyframes page-in {
+  from { transform: translateY(60px); }
+  to   { transform: translateY(0); }
+}
+
+.animate-page-in {
+  animation: page-in 175ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-page-in { animation: none; }
+}
+
+/* ── List / card fade-in ─────────────────────────────────────────────────────
+   Used on: activity rows, game grid, client grid, dashboard cards
+   No translateY — prevents any perceived layout shift on content arrival.
+   All items at the same level fade in together (no stagger). */
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fade-in var(--motion-duration-normal) var(--motion-ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in { animation: none; }
+}
+
+/* ── Device status indicator pulse ──────────────────────────────────────────
+   Used on: DeviceStatusIndicator (online dot)
+   Spec: single radial pulse of 1s duration, then invisible hold for 3s
+         (0–25% active = 1s; 25–100% invisible = 3s; total cycle = 4s) */
+
+@keyframes device-pulse {
+  0%          { transform: scale(1);   opacity: 0.75; }
+  25%         { transform: scale(2.5); opacity: 0;    }
+  25.1%, 100% { transform: scale(1);   opacity: 0;    }
+}
+
+.animate-device-pulse {
+  animation: device-pulse 4s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-device-pulse { animation: none; }
+}
+
+/* ── Auth page background tile scroll ───────────────────────────────────────
+   Used on: AuthPage — tiled SVG logo scrolling top-left → bottom-right.
+   Tile size must match the background-size set inline on the element. */
+
+@keyframes auth-bg-scroll {
+  0%   { background-position: 0px 0px; }
+  100% { background-position: 120px 120px; }
+}
+
+.animate-auth-bg {
+  animation: auth-bg-scroll 18s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-auth-bg { animation: none; }
+}
+
+/* ── New save row highlight ──────────────────────────────────────────────────
+   Used on: SnapshotArchiveTable rows that appear after a poll refetch
+   Spec: accent background flash fading to transparent over 1.5s.
+   Background-only so it fires correctly whether applied before or after paint. */
+
+@keyframes row-new {
+  from { background-color: var(--color-accent-subtle, rgba(99,102,241,0.12)); }
+  to   { background-color: transparent; }
+}
+
+.animate-row-new {
+  animation: row-new 1.5s var(--motion-ease-out) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-row-new { animation: none; }
+}
+
+/* ── Hash-target section flash ───────────────────────────────────────────────
+   Used on: Settings page sections navigated to via hash (e.g. #my-devices)
+   Spec: instant accent highlight, slow fade to transparent over 1.4s */
+
+@keyframes section-flash {
+  0%   { background-color: var(--color-accent-subtle, rgba(99,102,241,0.12)); border-radius: var(--radius-lg); }
+  100% { background-color: transparent; border-radius: var(--radius-lg); }
+}
+
+.animate-section-flash {
+  animation: section-flash 1.4s var(--motion-ease-out) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-section-flash { animation: none; }
+}

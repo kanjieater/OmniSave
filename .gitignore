@@ -1,0 +1,25 @@
+# Build artifacts
+coverage.xml
+
+# Docker/Python
+server/.coverage
+__pycache__/
+*.pyc
+.env
+.env.local
+.venv
+server/data/
+server/config/
+
+# UI build artifacts
+server/ui/node_modules/
+server/ui/dist/
+server/static/
+
+# Claude Code local settings
+.claude/settings.local.json
+.claude/context
+
+# OS
+.DS_Store
+Thumbs.db

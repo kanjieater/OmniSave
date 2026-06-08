@@ -1,0 +1,4 @@
+# SQLite stray files (created if open_db receives a non-Path argument)
+<database.*>
+__pycache__/
+*.pyc

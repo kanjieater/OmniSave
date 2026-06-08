@@ -1,0 +1,6 @@
+# Optional override when you do not use an external Docker network.
+#   docker compose -f docker-compose.yml -f docker-compose.no-network.yml up -d
+
+services:
+  omnisave-core:
+    network_mode: bridge
