@@ -250,16 +250,16 @@ flowchart LR
 Every save moves through this state machine. Inbound transactions (uploads from devices) are processed and then forked into one outbound transaction per target device.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> UPLOADING : device starts upload
-    UPLOADING --> PROCESSING : all chunks received
-    PROCESSING --> READY_FOR_RESTORE : assembled and verified
-    PROCESSING --> DEDUPED : identical to existing snapshot
-    PROCESSING --> FAILED : assembly error
-    READY_FOR_RESTORE --> COMPLETED : device acks delivery
-    READY_FOR_RESTORE --> FAILED : device reports failure
-    READY_FOR_RESTORE --> SUPERSEDED : newer snapshot committed
-    COMPLETED --> SUPERSEDED : newer snapshot committed
+flowchart TD
+    S([start]) --> UPLOADING
+    UPLOADING -->|all chunks received| PROCESSING
+    PROCESSING -->|assembled and verified| READY_FOR_RESTORE
+    PROCESSING -->|identical save exists| DEDUPED([DEDUPED])
+    PROCESSING -->|error| FAILED([FAILED])
+    READY_FOR_RESTORE -->|device acks| COMPLETED([COMPLETED])
+    READY_FOR_RESTORE -->|device fails| FAILED
+    READY_FOR_RESTORE -->|newer version committed| SUPERSEDED([SUPERSEDED])
+    COMPLETED -->|newer version committed| SUPERSEDED
 ```
 
 ### Where data lives
