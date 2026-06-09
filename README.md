@@ -23,6 +23,10 @@ If you play games across multiple devices, you know the problem: your handheld h
 
 OmniSave solves this. When a save changes on one device, OmniSave automatically archives the previous version, makes the new save the active version, and distributes it to your other devices. Every previous version is kept. Nothing is ever silently overwritten.
 
+<p align="center">
+  <img src="./assets/omnisave-frontend.png" alt="OmniSave dashboard" width="700">
+</p>
+
 ```mermaid
 flowchart LR
     A[Device A] -->|Upload| B(OmniSave Server)
@@ -56,10 +60,7 @@ flowchart LR
 # docker-compose.yml
 services:
   omnisave:
-    image: omnisave:latest
-    build:
-      context: ./server
-      dockerfile: Dockerfile
+    image: ghcr.io/kanjieater/omnisaveserver:latest
     restart: unless-stopped
     ports:
       - "8991:8991"
@@ -225,8 +226,8 @@ OmniSave uses an open REST API. Any client that implements the sync protocol can
 - **[OmniSaveSwitch](https://github.com/kanjieater/OmniSaveSwitch)** — a background sysmodule for custom firmware that watches for save changes and handles upload and download automatically.
 - **REST API** — the server exposes its full API schema at `/docs`.
 
-**In progress:**
-- PC client with Playnite integration _(repo not yet public)_
+**Future:**
+- PC client with Playnite integration
 - Emulator support via the PC client
 - Experimental cross-device save conversion
 - Per-game and global data retention policies
@@ -309,6 +310,24 @@ OmniSaveServer/
 **Core invariants:**
 - The server never modifies save content. It stores and retrieves opaque files.
 - A committed snapshot is never automatically deleted or overwritten. Only explicit user action through the UI can remove one.
+
+---
+
+## Known Limitations
+
+**Concurrent play on two devices — last close wins**
+
+If the same game is open on two devices at the same time, the last device to close the game becomes the new active version on the server. When device A uploads a save, device B receives it. If device B later closes the game, it uploads its own version (which may reflect older or diverged progress), and that becomes the new active version — overwriting device A's upload.
+
+*Workaround:* From the game's snapshot history in the dashboard, push the version you want back to the appropriate device.
+
+**Saves are stored as-is — no conversion between devices**
+
+The server stores and delivers save files as opaque archives. It does not inspect, modify, or convert save content. If two devices use incompatible save formats for the same game (e.g., different regions or hardware configurations), the server will deliver the file without warning.
+
+**Identical saves don't create a new version**
+
+If a device uploads a save that is byte-for-byte identical to what's already on the server, no new snapshot is created. This is intentional — it avoids duplicate entries for sessions where no actual progress was made — but it means closing a game without playing won't increment the version counter.
 
 ---
 
