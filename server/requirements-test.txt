@@ -4,6 +4,6 @@ pytest-xdist>=3.5
 schemathesis>=3.38
 hypothesis>=6.88
 httpx>=0.23.0,<0.24.0
-anyio[trio]>=3.7
+anyio[trio]>=4.13.0
 requests>=2.31
 ruff>=0.4
