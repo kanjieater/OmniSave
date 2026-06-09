@@ -27,6 +27,10 @@ OmniSave solves this. When a save changes on one device, OmniSave automatically 
   <img src="./assets/omnisave-frontend.png" alt="OmniSave dashboard" width="700">
 </p>
 
+<p align="center">
+  <video src="./assets/demo.mp4" autoplay loop muted playsinline width="700"></video>
+</p>
+
 ```mermaid
 flowchart LR
     A[Device A] -->|Upload| B(OmniSave)
