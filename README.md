@@ -2,7 +2,7 @@
   <img src="./assets/omnisave.png" alt="OmniSave Logo" width="160">
 </p>
 
-<h1 align="center">OmniSave Server</h1>
+<h1 align="center">OmniSave</h1>
 
 <p align="center">
   Self-hosted save synchronization and version control for games across multiple devices.
@@ -29,7 +29,7 @@ OmniSave solves this. When a save changes on one device, OmniSave automatically 
 
 ```mermaid
 flowchart LR
-    A[Device A] -->|Upload| B(OmniSave Server)
+    A[Device A] -->|Upload| B(OmniSave)
     B -->|Distribute| C[Device B]
     B -->|Distribute| D[Device C]
     B <-->|Optional sync| E[(RomM)]
@@ -60,7 +60,7 @@ flowchart LR
 # docker-compose.yml
 services:
   omnisave:
-    image: ghcr.io/kanjieater/omnisaveserver:latest
+    image: ghcr.io/kanjieater/omnisave:latest
     restart: unless-stopped
     ports:
       - "8991:8991"
@@ -290,7 +290,7 @@ OMNISAVE_DATA=/tmp/omnisave python src/main.py
 ### Project structure
 
 ```
-OmniSaveServer/
+OmniSave/
 ├── assets/                  # Logo and screenshot assets
 ├── context/                 # Design docs and planning artifacts
 ├── deploy/                  # Production docker-compose configs

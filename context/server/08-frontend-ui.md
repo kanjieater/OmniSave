@@ -27,7 +27,7 @@ The UI relies on short-polling to remain eventually consistent with the device s
 
 * **Trigger:** 3 consecutive failed polling requests.
 * **State Transition (`GLOBAL_OFFLINE`):**
-1. The Global Exception Banner is completely overridden by a critical red banner: *"OmniSave Server Unreachable."*
+1. The Global Exception Banner is completely overridden by a critical red banner: *"OmniSave Unreachable."*
 2. All mutation actions globally are immediately disabled.
 3. Standard polling halts. Enters an exponential backoff ping (max 60s).
 

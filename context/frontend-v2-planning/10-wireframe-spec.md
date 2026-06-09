@@ -402,7 +402,7 @@ The chosen card gains an accent border and checkmark badge. The "Restore Save #1
 │       │  ─────────────────────────────────────────────────────────    │
 │       │                                                                │
 │       │  About                                                         │
-│       │  OmniSave Server · v2.0.0                                      │
+│       │  OmniSave · v2.0.0                                             │
 │       │  [Logout]                                                      │
 └───────┴────────────────────────────────────────────────────────────────┘
 ```

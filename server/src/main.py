@@ -1,4 +1,4 @@
-"""OmniSave Server — entry point."""
+"""OmniSave — entry point."""
 
 import logging
 import os

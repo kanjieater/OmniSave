@@ -418,15 +418,15 @@ function AboutSection() {
   return (
     <section className="flex flex-col items-center gap-[var(--spacing-1)] py-[var(--spacing-2)] text-center">
       <p className="text-xs text-[var(--color-text-muted)]">
-        OmniSave Server {data?.version ? `v${data.version}` : ''}
+        OmniSave {data?.version ? `v${data.version}` : ''}
       </p>
       <a
-        href="https://github.com/kanjieater/OmniSaveServer"
+        href="https://github.com/kanjieater/OmniSave"
         target="_blank"
         rel="noopener noreferrer"
         className="text-xs text-[var(--color-accent)] hover:underline"
       >
-        github.com/kanjieater/OmniSaveServer
+        github.com/kanjieater/OmniSave
       </a>
     </section>
   )
