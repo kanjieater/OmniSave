@@ -28,7 +28,7 @@ OmniSave solves this. When a save changes on one device, OmniSave automatically 
 </p>
 
 <p align="center">
-  <video src="./assets/demo.mp4" autoplay loop muted playsinline width="700"></video>
+  <video src="https://github.com/kanjieater/OmniSaveSwitch/releases/download/v1.1.0/demo.mp4" autoplay loop muted playsinline width="700"></video>
 </p>
 
 ```mermaid
