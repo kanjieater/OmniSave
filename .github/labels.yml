@@ -1,0 +1,51 @@
+- name: "bug"
+  color: "d73a4a"
+  description: "Something isn't working"
+
+- name: "feature"
+  color: "0075ca"
+  description: "New functionality or enhancement"
+
+- name: "security"
+  color: "e4e669"
+  description: "Security concern or vulnerability"
+
+- name: "documentation"
+  color: "0052cc"
+  description: "Documentation only changes"
+
+- name: "good first issue"
+  color: "7057ff"
+  description: "Good for newcomers"
+
+- name: "help wanted"
+  color: "008672"
+  description: "Extra attention or community help welcome"
+
+- name: "p0"
+  color: "b60205"
+  description: "Critical / blocking — drop everything"
+
+- name: "p1"
+  color: "e99695"
+  description: "High priority"
+
+- name: "p2"
+  color: "f9d0c4"
+  description: "Normal priority"
+
+- name: "frontend"
+  color: "bfd4f2"
+  description: "UI / TypeScript / React"
+
+- name: "backend"
+  color: "d4c5f9"
+  description: "Python server"
+
+- name: "sysmodule"
+  color: "c5def5"
+  description: "Switch sysmodule / client"
+
+- name: "server"
+  color: "d4c5f9"
+  description: "Server / infrastructure"

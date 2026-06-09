@@ -1,0 +1,62 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out as much as you can.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How do we reproduce this?
+      placeholder: |
+        1. Start server with ...
+        2. Open game X on Switch
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OmniSave server version
+      placeholder: "e.g. 0.1.0 (check Settings page or cat VERSION)"
+    validations:
+      required: true
+
+  - type: input
+    id: switch-fw
+    attributes:
+      label: Switch firmware / Atmosphere version
+      placeholder: "e.g. FW 18.1.0 / Atmosphere 1.7.1"
+
+  - type: input
+    id: deploy
+    attributes:
+      label: Deployment method
+      placeholder: "e.g. Docker Compose, bare metal"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any relevant server logs here (`./scripts/server.sh logs`).
+      render: text
+
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Is this a security concern?
+      options:
+        - label: Yes — please add the `security` label to this issue

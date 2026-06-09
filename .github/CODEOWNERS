@@ -1,0 +1,5 @@
+# Default: repo owner reviews everything
+*  @kanjieater
+
+# CI/CD config changes get extra scrutiny
+.github/  @kanjieater

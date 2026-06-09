@@ -4,9 +4,6 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
-    paths:
-      - "server/**"
-      - ".github/workflows/server-publish.yml"
 
 jobs:
   publish:
