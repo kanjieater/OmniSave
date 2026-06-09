@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.2.0](https://github.com/kanjieater/OmniSave/compare/v1.1.0...v1.2.0) (2026-06-09)
+
+
+### Features
+
+* add demo video to README beneath frontend screenshot ([4b6d61c](https://github.com/kanjieater/OmniSave/commit/4b6d61c71a1526f68a5df7f9b8bbfa8817a99f8a))
+
+
+### Bug Fixes
+
+* clear RomM last_played after save upload; fix server.sh dangling symlink ([aa64947](https://github.com/kanjieater/OmniSave/commit/aa64947c010f4b35ff10c8cbda4bbf90aef4ccaf))
+* convert stateDiagram-v2 to flowchart TD for reliable GitHub rendering ([9ef5ea7](https://github.com/kanjieater/OmniSave/commit/9ef5ea7bf4d8c27434f994d6f2d0337fa92a4013))
+* full-length demo GIF covering complete 24s video ([e3ae9c0](https://github.com/kanjieater/OmniSave/commit/e3ae9c0bcb4b8db8b0b368fab83ff241ac837c89))
+* remove direction LR and special chars from stateDiagram-v2 blocks ([fd230bd](https://github.com/kanjieater/OmniSave/commit/fd230bd94b9a60fe79ee81552dc8b6ba2a9865f3))
+* replace mermaid blocks with mermaid.ink pre-rendered images ([841199a](https://github.com/kanjieater/OmniSave/commit/841199acd3f33b788c0eea053df65143c7fcdd9d))
+* replace video tag with animated GIF for GitHub README inline playback ([a98e1a0](https://github.com/kanjieater/OmniSave/commit/a98e1a072bc1b9f33a2b7c37a5766ae8bdeb1036))
+* use release CDN URL for demo video to enable GitHub README playback ([a5512f5](https://github.com/kanjieater/OmniSave/commit/a5512f5eff30f6d068b777dc5bab852c396ccd3e))
+
+
+### Reverts
+
+* remove clear_last_played RomM play-history modification ([cd44547](https://github.com/kanjieater/OmniSave/commit/cd445478db6f2c5dfb84e2766306478c9df0d84d))
+
 ## [1.1.0](https://github.com/kanjieater/OmniSave/compare/v1.0.0...v1.1.0) (2026-06-09)
 
 
