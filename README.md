@@ -237,30 +237,13 @@ The server runs as a single Docker container serving both the REST API and the R
 
 ### Data flow
 
-```mermaid
-flowchart LR
-    A[Device A] -->|upload| B(OmniSave Server)
-    B -->|queue delivery| C[Device B]
-    B -->|queue delivery| D[Device C]
-    B -->|optional sync| E[(RomM)]
-```
+![Data flow](https://mermaid.ink/img/Zmxvd2NoYXJ0IExSCiAgICBBW0RldmljZSBBXSAtLT58dXBsb2FkfCBCKE9tbmlTYXZlIFNlcnZlcikKICAgIEIgLS0-fHF1ZXVlIGRlbGl2ZXJ5fCBDW0RldmljZSBCXQogICAgQiAtLT58cXVldWUgZGVsaXZlcnl8IERbRGV2aWNlIENdCiAgICBCIC0tPnxvcHRpb25hbCBzeW5jfCBFWyhSb21NKV0=)
 
 ### Transaction state machine
 
 Every save moves through this state machine. Inbound transactions (uploads from devices) are processed and then forked into one outbound transaction per target device.
 
-```mermaid
-flowchart TD
-    S([start]) --> UPLOADING
-    UPLOADING -->|all chunks received| PROCESSING
-    PROCESSING -->|assembled and verified| READY_FOR_RESTORE
-    PROCESSING -->|identical save exists| DEDUPED([DEDUPED])
-    PROCESSING -->|error| FAILED([FAILED])
-    READY_FOR_RESTORE -->|device acks| COMPLETED([COMPLETED])
-    READY_FOR_RESTORE -->|device fails| FAILED
-    READY_FOR_RESTORE -->|newer version committed| SUPERSEDED([SUPERSEDED])
-    COMPLETED -->|newer version committed| SUPERSEDED
-```
+![Transaction state machine](https://mermaid.ink/img/Zmxvd2NoYXJ0IFRECiAgICBTKFtzdGFydF0pIC0tPiBVUExPQURJTkcKICAgIFVQTE9BRElORyAtLT58YWxsIGNodW5rcyByZWNlaXZlZHwgUFJPQ0VTU0lORwogICAgUFJPQ0VTU0lORyAtLT58YXNzZW1ibGVkIGFuZCB2ZXJpZmllZHwgUkVBRFlfRk9SX1JFU1RPUkUKICAgIFBST0NFU1NJTkcgLS0-fGlkZW50aWNhbCBzYXZlIGV4aXN0c3wgREVEVVBFRChbREVEVVBFRF0pCiAgICBQUk9DRVNTSU5HIC0tPnxlcnJvcnwgRkFJTEVEKFtGQUlMRURdKQogICAgUkVBRFlfRk9SX1JFU1RPUkUgLS0-fGRldmljZSBhY2tzfCBDT01QTEVURUQoW0NPTVBMRVRFRF0pCiAgICBSRUFEWV9GT1JfUkVTVE9SRSAtLT58ZGV2aWNlIGZhaWxzfCBGQUlMRUQKICAgIFJFQURZX0ZPUl9SRVNUT1JFIC0tPnxuZXdlciB2ZXJzaW9uIGNvbW1pdHRlZHwgU1VQRVJTRURFRChbU1VQRVJTRURFRF0pCiAgICBDT01QTEVURUQgLS0-fG5ld2VyIHZlcnNpb24gY29tbWl0dGVkfCBTVVBFUlNFREVE)
 
 ### Where data lives
 
