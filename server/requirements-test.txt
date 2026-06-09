@@ -6,4 +6,4 @@ hypothesis>=6.88
 httpx>=0.23.0,<0.24.0
 anyio[trio]>=3.7
 requests>=2.31
-ruff>=0.4
+ruff>=0.15.16
