@@ -31,14 +31,6 @@ OmniSave solves this. When a save changes on one device, OmniSave automatically 
   <img src="./assets/demo.gif" alt="OmniSave demo" width="700">
 </p>
 
-```mermaid
-flowchart LR
-    A[Device A] -->|Upload| B(OmniSave)
-    B -->|Distribute| C[Device B]
-    B -->|Distribute| D[Device C]
-    B -->|Optional sync| E[(RomM)]
-```
-
 ---
 
 ## What You Get
@@ -241,7 +233,35 @@ OmniSave uses an open REST API. Any client that implements the sync protocol can
 
 ## Architecture
 
-The server runs as a single Docker container. It serves both the REST API and the React dashboard from the same process. All state lives in a SQLite database and a flat archive directory — there are no external dependencies required.
+The server runs as a single Docker container serving both the REST API and the React dashboard. All state lives in a SQLite database and a flat archive directory — no external dependencies required.
+
+### Data flow
+
+```mermaid
+flowchart LR
+    A[Device A] -->|upload| B(OmniSave Server)
+    B -->|queue delivery| C[Device B]
+    B -->|queue delivery| D[Device C]
+    B -->|optional sync| E[(RomM)]
+```
+
+### Transaction state machine
+
+Every save moves through this state machine. Inbound transactions (uploads from devices) are processed and then forked into one outbound transaction per target device.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> UPLOADING : device starts upload
+    UPLOADING --> PROCESSING : all chunks received
+    PROCESSING --> READY_FOR_RESTORE : assembled + SHA-256 verified
+    PROCESSING --> DEDUPED : identical to existing snapshot
+    PROCESSING --> FAILED : assembly error
+    READY_FOR_RESTORE --> COMPLETED : device ACKs delivery
+    READY_FOR_RESTORE --> FAILED : device reports failure
+    READY_FOR_RESTORE --> SUPERSEDED : newer snapshot committed
+    COMPLETED --> SUPERSEDED : newer snapshot committed
+```
 
 ### Where data lives
 
