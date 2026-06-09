@@ -408,6 +408,30 @@ function UsersSection() {
   )
 }
 
+function AboutSection() {
+  const { data } = useQuery({
+    queryKey: ['health'],
+    queryFn: () => api.health(),
+    staleTime: Infinity,
+  })
+
+  return (
+    <section className="flex flex-col items-center gap-[var(--spacing-1)] py-[var(--spacing-2)] text-center">
+      <p className="text-xs text-[var(--color-text-muted)]">
+        OmniSave Server {data?.version ? `v${data.version}` : ''}
+      </p>
+      <a
+        href="https://github.com/kanjieater/OmniSaveServer"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-xs text-[var(--color-accent)] hover:underline"
+      >
+        github.com/kanjieater/OmniSaveServer
+      </a>
+    </section>
+  )
+}
+
 export default function SettingsPage() {
   const { isAdmin } = useAuth()
 
@@ -438,6 +462,10 @@ export default function SettingsPage() {
       <Separator />
 
       <AcceptShareCode />
+
+      <Separator />
+
+      <AboutSection />
     </div>
   )
 }
