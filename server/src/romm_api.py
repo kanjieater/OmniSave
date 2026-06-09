@@ -134,13 +134,15 @@ def list_mappings(request: Request):
     result = []
     for m in mappings:
         cached = cache.get(m["rom_id"], {})
-        result.append({
-            "title_id": m["title_id"],
-            "rom_id": m["rom_id"],
-            "name": cached.get("name"),
-            "icon_url": cached.get("icon_url"),
-            "mapped_at": m["mapped_at"],
-        })
+        result.append(
+            {
+                "title_id": m["title_id"],
+                "rom_id": m["rom_id"],
+                "name": cached.get("name"),
+                "icon_url": cached.get("icon_url"),
+                "mapped_at": m["mapped_at"],
+            }
+        )
     return {"mappings": result}
 
 
@@ -261,6 +263,7 @@ def trigger_scan(request: Request):
     if err:
         return err
     import romm_index
+
     romm_index.request_index_refresh()
     log.info("romm_api: manual scan requested by %s", ui_api._current_username(request))
     return JSONResponse({"ok": True}, status_code=202)

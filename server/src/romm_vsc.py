@@ -200,7 +200,12 @@ def _pull_for_user(staging_dir, archive_dir, username: str) -> None:
                     if content is None:
                         continue
                     txn_id = processing.ingest_direct(
-                        title_id, source_device_id, content, staging_dir, archive_dir, conn,
+                        title_id,
+                        source_device_id,
+                        content,
+                        staging_dir,
+                        archive_dir,
+                        conn,
                         owner_user_id=username,
                     )
                     if txn_id:

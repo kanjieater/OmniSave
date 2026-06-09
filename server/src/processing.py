@@ -47,7 +47,11 @@ def ingest_direct(
 ) -> str | None:
     """Inject save bytes directly into the processing pipeline (bypasses upload protocol)."""
     txn_id, session_id = db.create_processing_transaction(
-        conn, source_device_id, title_id, len(save_bytes), parent_sequence_num=None,
+        conn,
+        source_device_id,
+        title_id,
+        len(save_bytes),
+        parent_sequence_num=None,
         owner_user_id=owner_user_id,
     )
     conn.commit()
@@ -288,10 +292,9 @@ def _process(
                     "skipping catalog fanout peer=%s title=%s (sync disabled)", peer, title_id[:8]
                 )
                 continue
-            target_profile = (
-                db.get_last_inbound_user_key(conn, peer, title_id, txn.get("owner_user_id"))
-                or db.get_device_default_profile(conn, peer)
-            )
+            target_profile = db.get_last_inbound_user_key(
+                conn, peer, title_id, txn.get("owner_user_id")
+            ) or db.get_device_default_profile(conn, peer)
             db.supersede_active_outbound(conn, peer, title_id, txn.get("owner_user_id") or "")
             outbound_id = db.create_outbound_transaction(
                 conn, transaction_id, peer, target_profile_uid=target_profile

@@ -35,9 +35,18 @@ _URL_US = "https://raw.githubusercontent.com/blawar/titledb/master/US.en.json"
 # English regions are listed first so their names win when the same title
 # appears in multiple regions (first-write-wins merge).
 _FALLBACK_REGIONS: list[tuple[str, str]] = [
-    ("GB", "en"), ("AU", "en"), ("JP", "ja"), ("DE", "de"), ("FR", "fr"),
-    ("ES", "es"), ("IT", "it"), ("NL", "nl"), ("RU", "ru"), ("KR", "ko"),
-    ("ZH", "zh"), ("HK", "zh"),
+    ("GB", "en"),
+    ("AU", "en"),
+    ("JP", "ja"),
+    ("DE", "de"),
+    ("FR", "fr"),
+    ("ES", "es"),
+    ("IT", "it"),
+    ("NL", "nl"),
+    ("RU", "ru"),
+    ("KR", "ko"),
+    ("ZH", "zh"),
+    ("HK", "zh"),
 ]
 
 _db_us: dict | None = None
@@ -210,6 +219,7 @@ def prefetch() -> None:
                 for k, v in parsed.items():
                     if k not in _db_extra:
                         _db_extra[k] = v
+
         return _merge
 
     if not _TITLEDB_PATH:

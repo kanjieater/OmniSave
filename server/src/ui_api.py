@@ -14,7 +14,6 @@ import re as _re
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
 
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -263,14 +262,16 @@ def _romm_head_was_synced(conn, username: str, title_id: str, head_seq: int | No
     Handles source_id renames: the old device completed delivery, the new device has no transactions."""
     if head_seq is None:
         return False
-    return bool(conn.execute(
-        "SELECT 1 FROM sync_transactions"
-        " WHERE title_id=? AND direction='outbound' AND state='COMPLETED'"
-        " AND snapshot_sequence=?"
-        " AND target_device_id IN"
-        "  (SELECT device_id FROM devices WHERE owner_user_id=? AND client_type='romm')",
-        (title_id, head_seq, username),
-    ).fetchone())
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM sync_transactions"
+            " WHERE title_id=? AND direction='outbound' AND state='COMPLETED'"
+            " AND snapshot_sequence=?"
+            " AND target_device_id IN"
+            "  (SELECT device_id FROM devices WHERE owner_user_id=? AND client_type='romm')",
+            (title_id, head_seq, username),
+        ).fetchone()
+    )
 
 
 def _effective_sync_state(
@@ -304,11 +305,15 @@ def _effective_sync_state(
         return {"sync_state": "SYNCED", "local_sequence": head_seq, "cloud_head_sequence": head_seq}
     if state["sync_state"] == "DOWNLOADING":
         return state
-    mapped = romm_mapped if romm_mapped is not None else bool(
-        conn.execute(
-            "SELECT 1 FROM romm_title_map WHERE username=? AND title_id=?",
-            (username, title_id),
-        ).fetchone()
+    mapped = (
+        romm_mapped
+        if romm_mapped is not None
+        else bool(
+            conn.execute(
+                "SELECT 1 FROM romm_title_map WHERE username=? AND title_id=?",
+                (username, title_id),
+            ).fetchone()
+        )
     )
     if mapped and head_seq is not None:
         return {**state, "sync_state": "OUT_OF_SYNC"}
@@ -490,7 +495,9 @@ def list_users(request: Request):
     admin_created = db.get_config(_conn, "admin_created_at") or ""
     users = [{"username": admin_username, "is_admin": True, "created_at": admin_created}]
     for row in db.list_auth_users(_conn):
-        users.append({"username": row["username"], "is_admin": False, "created_at": row["created_at"]})
+        users.append(
+            {"username": row["username"], "is_admin": False, "created_at": row["created_at"]}
+        )
     return {"users": users}
 
 
@@ -563,7 +570,10 @@ def pair_by_code(body: PairByCodeBody, request: Request):
     db.set_device_config_pending(_conn, device_id)
     device = db.get_device(_conn, device_id)
     log.info("pair-by-code: device=%s owner=%s", device_id, username)
-    return {"device_id": device_id, "display_name": device["display_name"] or None if device else None}
+    return {
+        "device_id": device_id,
+        "display_name": device["display_name"] or None if device else None,
+    }
 
 
 @router.post("/devices/accept-share")
@@ -586,7 +596,10 @@ def accept_share(body: AcceptShareBody, request: Request):
     db.grant_device_access(_conn, device_id, username, granted_by)
     device = db.get_device(_conn, device_id)
     log.info("accept-share: device=%s user=%s granted_by=%s", device_id, username, granted_by)
-    return {"device_id": device_id, "display_name": device["display_name"] or None if device else None}
+    return {
+        "device_id": device_id,
+        "display_name": device["display_name"] or None if device else None,
+    }
 
 
 @router.post("/devices/{device_id}/share")
@@ -652,8 +665,9 @@ def _valid_user_id(user_id: str) -> bool:
 
 @router.post("/devices/{device_id}/token")
 def pair_device(
-    device_id: str, request: Request,
-    body: Annotated[PairDeviceBody | None, Body()] = None,
+    device_id: str,
+    request: Request,
+    body: PairDeviceBody | None = Body(default=None),  # noqa: B008
 ):
     err = _auth_err(request)
     if err:
@@ -745,19 +759,23 @@ def list_device_profiles(device_id: str, request: Request):
         # Non-admin: mask other users' user_id (just show "claimed")
         if user_id and user_id != current_user and not _is_admin(request):
             user_id = "__claimed__"
-        result.append({
-            "profile_id": p["profile_id"],
-            "profile_name": p["profile_name"],
-            "display_hint": p["display_hint"],
-            "user_id": user_id,
-        })
+        result.append(
+            {
+                "profile_id": p["profile_id"],
+                "profile_name": p["profile_name"],
+                "display_hint": p["display_hint"],
+                "user_id": user_id,
+            }
+        )
     return {"profiles": result}
 
 
 @router.put("/devices/{device_id}/profiles/{profile_id}")
 def claim_profile(
-    device_id: str, profile_id: str, request: Request,
-    body: Annotated[ClaimProfileBody | None, Body()] = None,
+    device_id: str,
+    profile_id: str,
+    request: Request,
+    body: ClaimProfileBody | None = Body(default=None),  # noqa: B008
 ):
     err = _auth_err(request)
     if err:
@@ -938,7 +956,9 @@ def dashboard(request: Request):
                     "event_type": r["event_type"],
                     "summary": r["message"],
                     "title_id": r["title_id"],
-                    "icon_url": _game_icon_url(_conn, r["title_id"], username) if r["title_id"] else None,
+                    "icon_url": _game_icon_url(_conn, r["title_id"], username)
+                    if r["title_id"]
+                    else None,
                     "device_id": r["device_id"],
                     "created_at": r["occurred_at"],
                 }
@@ -1074,10 +1094,12 @@ def game_detail(title_id: str, request: Request):
     ).fetchall():
         device_ids.add(row["device_id"])
 
-    romm_mapped = bool(_conn.execute(
-        "SELECT 1 FROM romm_title_map WHERE username=? AND title_id=?",
-        (username, title_id),
-    ).fetchone())
+    romm_mapped = bool(
+        _conn.execute(
+            "SELECT 1 FROM romm_title_map WHERE username=? AND title_id=?",
+            (username, title_id),
+        ).fetchone()
+    )
 
     dev_last_seen = {
         r["device_id"]: r["last_seen"]
@@ -1091,7 +1113,7 @@ def game_detail(title_id: str, request: Request):
     ).fetchall()
     all_dev_prefs: dict[str, dict] = {}
     for _prow in prefs_rows:
-        _did = _prow["key"][len("sync_prefs:"):]
+        _did = _prow["key"][len("sync_prefs:") :]
         try:
             all_dev_prefs[_did] = json.loads(_prow["value"])
         except Exception:
@@ -1145,8 +1167,13 @@ def game_detail(title_id: str, request: Request):
     def _matrix_entry(did: str) -> dict:
         # VIEW MODEL ONLY — do not use for sync decisions
         state = _effective_sync_state(
-            _conn, username, did, dev_client_type.get(did, ""),
-            title_id, head_seq, romm_mapped=romm_mapped,
+            _conn,
+            username,
+            did,
+            dev_client_type.get(did, ""),
+            title_id,
+            head_seq,
+            romm_mapped=romm_mapped,
         )
         return {
             "device_id": did,
@@ -1217,7 +1244,9 @@ def list_events(request: Request, limit: int = 100):
                     "event_type": r["event_type"],
                     "summary": r["message"],
                     "title_id": r["title_id"],
-                    "icon_url": _game_icon_url(_conn, r["title_id"], username) if r["title_id"] else None,
+                    "icon_url": _game_icon_url(_conn, r["title_id"], username)
+                    if r["title_id"]
+                    else None,
                     "device_id": r["device_id"],
                     "created_at": r["occurred_at"],
                 }
@@ -1250,7 +1279,8 @@ def list_errors(request: Request):
     for r in rows:
         dev_id = r["source_device_id"] if r["direction"] == "inbound" else r["target_device_id"]
         dev_row = _conn.execute(
-            "SELECT display_name, hardware_type, client_type FROM devices WHERE device_id=?", (dev_id,)
+            "SELECT display_name, hardware_type, client_type FROM devices WHERE device_id=?",
+            (dev_id,),
         ).fetchone()
         result.append(
             {
@@ -1258,8 +1288,12 @@ def list_errors(request: Request):
                 "direction": r["direction"],
                 "title_id": r["title_id"],
                 "device_id": dev_id,
-                "game_name": _game_display_name(_conn, r["title_id"], username) if r["title_id"] else None,
-                "icon_url": _game_icon_url(_conn, r["title_id"], username) if r["title_id"] else None,
+                "game_name": _game_display_name(_conn, r["title_id"], username)
+                if r["title_id"]
+                else None,
+                "icon_url": _game_icon_url(_conn, r["title_id"], username)
+                if r["title_id"]
+                else None,
                 "device_name": dev_row["display_name"] or None if dev_row else None,
                 "hardware_type": dev_row["hardware_type"] or None if dev_row else None,
                 "client_type": dev_row["client_type"] or None if dev_row else None,
@@ -1403,9 +1437,7 @@ def list_devices(request: Request):
                     "is_deleted": bool(r.get("is_deleted", False)),
                     "default_profile_uid": r.get("default_profile_uid") or None,
                     "default_profile_name": (
-                        db.get_profile_display_name(
-                            _conn, r["device_id"], r["default_profile_uid"]
-                        )
+                        db.get_profile_display_name(_conn, r["device_id"], r["default_profile_uid"])
                         if r.get("default_profile_uid")
                         else None
                     ),
@@ -1458,7 +1490,9 @@ def set_default_profile(device_id: str, body: DefaultProfileBody, request: Reque
         db.set_device_default_profile(_conn, device_id, body.profile_uid or None)
     else:
         db.set_user_device_default_profile(_conn, device_id, username, body.profile_uid or None)
-    log.info("default profile set: device=%s profile=%s by=%s", device_id, body.profile_uid, username)
+    log.info(
+        "default profile set: device=%s profile=%s by=%s", device_id, body.profile_uid, username
+    )
     return {"ok": True}
 
 
@@ -1491,8 +1525,13 @@ def device_games(device_id: str, request: Request):
         # romm_mapped=True: all games listed here come from device_installed_games,
         # which is populated from romm_title_map, so the game is always in the catalog.
         sync_info = _effective_sync_state(
-            _conn, username, device_id, device_client_type,
-            title_id, head_seq, romm_mapped=True,
+            _conn,
+            username,
+            device_id,
+            device_client_type,
+            title_id,
+            head_seq,
+            romm_mapped=True,
         )
         last_row = _conn.execute(
             "SELECT MAX(created_at) AS ts FROM sync_transactions"
@@ -1609,9 +1648,13 @@ def push_snapshot(transaction_id: str, body: PushBody, request: Request):
             or db.get_user_device_default_profile(_conn, device_id, username)
         )
         db.upsert_device(_conn, device_id)
-        db.supersede_active_outbound(_conn, device_id, txn["title_id"], txn.get("owner_user_id") or "")
+        db.supersede_active_outbound(
+            _conn, device_id, txn["title_id"], txn.get("owner_user_id") or ""
+        )
         oid = db.create_outbound_transaction(
-            _conn, transaction_id, device_id,
+            _conn,
+            transaction_id,
+            device_id,
             target_profile_uid=target_profile,
         )
         db.log_event(
@@ -1647,15 +1690,19 @@ def device_restore_all(device_id: str, request: Request):
     # Only restore titles the device actually has installed — prevents inject failures
     # for games that exist on another device but not this one.
     # Skip the catalog filter if the device has never reported a catalog (backwards compat).
-    has_catalog = _conn.execute(
-        "SELECT 1 FROM device_installed_games WHERE device_id=? LIMIT 1", (device_id,)
-    ).fetchone() is not None
+    has_catalog = (
+        _conn.execute(
+            "SELECT 1 FROM device_installed_games WHERE device_id=? LIMIT 1", (device_id,)
+        ).fetchone()
+        is not None
+    )
     catalog_clause = (
         "   AND EXISTS ("
         "     SELECT 1 FROM device_installed_games dig"
         "     WHERE dig.device_id = ? AND dig.title_id = st.title_id"
         "   )"
-        if has_catalog else ""
+        if has_catalog
+        else ""
     )
 
     # Find the HEAD for every title that has any synced snapshot — no exclusions
@@ -1685,16 +1732,24 @@ def device_restore_all(device_id: str, request: Request):
     queued = 0
     for row in rows:
         try:
-            db.supersede_active_outbound(_conn, device_id, row["title_id"], row["owner_user_id"] or "")
+            db.supersede_active_outbound(
+                _conn, device_id, row["title_id"], row["owner_user_id"] or ""
+            )
             oid = db.create_outbound_transaction(
-                _conn, row["transaction_id"], device_id,
+                _conn,
+                row["transaction_id"],
+                device_id,
                 target_profile_uid=target_profile,
             )
             if oid:
                 db.log_event(
-                    _conn, "OUTBOUND_CREATED", f"restore-all → {device_id}",
-                    title_id=row["title_id"], device_id=device_id,
-                    transaction_id=oid, owner_user_id=row["owner_user_id"],
+                    _conn,
+                    "OUTBOUND_CREATED",
+                    f"restore-all → {device_id}",
+                    title_id=row["title_id"],
+                    device_id=device_id,
+                    transaction_id=oid,
+                    owner_user_id=row["owner_user_id"],
                 )
                 queued += 1
         except Exception as exc:
@@ -1734,8 +1789,12 @@ def retry_failed_outbounds(device_id: str, request: Request):
     retried = db.retry_all_failed_outbounds(_conn, device_id)
     for r in retried:
         db.log_event(
-            _conn, "OUTBOUND_RETRY", "ui retry-all",
-            title_id=r["title_id"], device_id=device_id, transaction_id=r["txn_id"],
+            _conn,
+            "OUTBOUND_RETRY",
+            "ui retry-all",
+            title_id=r["title_id"],
+            device_id=device_id,
+            transaction_id=r["txn_id"],
         )
     if retried:
         log.info("ui retry-all device=%s count=%d", device_id[:12], len(retried))
@@ -1764,9 +1823,12 @@ def download_snapshot(transaction_id: str, request: Request):
     ts_str = ""
     try:
         from datetime import datetime
-        ts_str = datetime.fromisoformat(
-            (txn["created_at"] or "").replace("Z", "+00:00")
-        ).astimezone(UTC).strftime("%Y-%m-%d_%H-%M-%S")
+
+        ts_str = (
+            datetime.fromisoformat((txn["created_at"] or "").replace("Z", "+00:00"))
+            .astimezone(UTC)
+            .strftime("%Y-%m-%d_%H-%M-%S")
+        )
     except Exception:
         pass
     filename = f"{safe_name} [{ts_str}].zip" if ts_str else f"{safe_name}.zip"
@@ -1813,13 +1875,15 @@ def get_romm_settings(request: Request):
     has_key = bool(db.get_user_config(_conn, username, "romm_api_key"))
     source_id = db.get_user_config(_conn, username, "romm_source_id") or f"romm:{username}"
     romm_username = db.get_user_config(_conn, username, "romm_username") or None
-    return JSONResponse({
-        "enabled": enabled_val == "1",
-        "host": host,
-        "has_api_key": has_key,
-        "source_id": source_id,
-        "romm_username": romm_username,
-    })
+    return JSONResponse(
+        {
+            "enabled": enabled_val == "1",
+            "host": host,
+            "has_api_key": has_key,
+            "source_id": source_id,
+            "romm_username": romm_username,
+        }
+    )
 
 
 @router.put("/settings/romm")
@@ -1836,22 +1900,27 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
         db.set_user_config(_conn, username, "romm_source_id", romm_device_id)
     if body.enabled is not None:
         db.set_user_config(_conn, username, "romm_enabled", "1" if body.enabled else "0")
-        db.upsert_virtual_device(_conn, romm_device_id, "RomM", "romm-vsc",
-                                 client_type="romm", owner_user_id=username)
+        db.upsert_virtual_device(
+            _conn, romm_device_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=username
+        )
         if body.enabled:
-            _conn.execute("UPDATE devices SET deleted_at=NULL"
-                          " WHERE device_id=? AND client_type='romm'", (romm_device_id,))
+            _conn.execute(
+                "UPDATE devices SET deleted_at=NULL WHERE device_id=? AND client_type='romm'",
+                (romm_device_id,),
+            )
             db.sync_romm_catalog_to_device(_conn, username, romm_device_id)
         else:
-            _conn.execute("UPDATE devices SET deleted_at=?"
-                          " WHERE device_id=? AND client_type='romm'",
-                          (db._now(), romm_device_id))
+            _conn.execute(
+                "UPDATE devices SET deleted_at=? WHERE device_id=? AND client_type='romm'",
+                (db._now(), romm_device_id),
+            )
     if body.host is not None:
         db.set_user_config(_conn, username, "romm_host", body.host.rstrip("/"))
     if body.api_key is not None:
         db.set_user_config(_conn, username, "romm_api_key", body.api_key)
-    db.upsert_virtual_device(_conn, romm_device_id, "RomM", "romm-vsc",
-                             client_type="romm", owner_user_id=username)
+    db.upsert_virtual_device(
+        _conn, romm_device_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=username
+    )
     # Un-delete the device if credentials are now configured — user is actively setting up.
     # Only suppress this if they explicitly disabled (that branch already sets deleted_at above).
     has_host = bool(db.get_user_config(_conn, username, "romm_host"))
@@ -1870,6 +1939,7 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
         )
     if body.host is not None or body.api_key is not None:
         import threading as _threading
+
         host = db.get_user_config(_conn, username, "romm_host") or ""
         key = db.get_user_config(_conn, username, "romm_api_key") or ""
         if host and key:
@@ -1970,12 +2040,14 @@ def get_settings(request: Request):
         }
 
     username = db.get_config(_conn, "admin_username") or "admin"
-    return JSONResponse({
-        "username": username,
-        "romm_users": romm_users,
-        "switch_users": switch_users,
-        "user_key_romm": user_key_romm,
-    })
+    return JSONResponse(
+        {
+            "username": username,
+            "romm_users": romm_users,
+            "switch_users": switch_users,
+            "user_key_romm": user_key_romm,
+        }
+    )
 
 
 @router.put("/settings/romm_user/{device_id}")

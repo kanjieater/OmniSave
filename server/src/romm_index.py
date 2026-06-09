@@ -78,6 +78,7 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
     """Index build for one user. Credentials are set explicitly — no shared state."""
     import romm_vsc
     import titledb as tdb
+
     romm_meta.set_request_creds(host, api_key)
     try:
         # Candidates: any title on a paired device OR in the upload history, not yet mapped.
@@ -117,7 +118,9 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                 )
                 log.info(
                     "romm_index: removed stale mapping rom_id=%d title_id=%s user=%s",
-                    stale_id, title_row["title_id"] if title_row else "?", username,
+                    stale_id,
+                    title_row["title_id"] if title_row else "?",
+                    username,
                 )
             conn.commit()
             already_mapped_rom_ids -= stale_rom_ids
@@ -130,11 +133,7 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
             detail = _fetch_rom_detail(rom_id)
             if detail is None:
                 continue
-            name = (
-                detail.get("name")
-                or detail.get("fs_name_no_tags")
-                or detail.get("fs_name")
-            )
+            name = detail.get("name") or detail.get("fs_name_no_tags") or detail.get("fs_name")
             title_id = _base_title_id(detail)
             match_method = "file"
             if not title_id and name:
@@ -144,14 +143,22 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
             if title_id:
                 raw_icon = (
                     detail.get("url_cover")
-                    or detail.get("path_cover_large") or None
-                    or detail.get("path_cover_small") or None
+                    or detail.get("path_cover_large")
+                    or None
+                    or detail.get("path_cover_small")
+                    or None
                 )
                 icon_url = romm_meta._abs_url(raw_icon)
                 db.upsert_romm_title_map(conn, username, title_id, rom_id)
                 db.upsert_romm_game_cache(conn, username, rom_id, name, icon_url)
-                log.info("romm_index: %s-matched title=%s → rom_id=%d name=%r user=%s",
-                         match_method, title_id, rom_id, name, username)
+                log.info(
+                    "romm_index: %s-matched title=%s → rom_id=%d name=%r user=%s",
+                    match_method,
+                    title_id,
+                    rom_id,
+                    name,
+                    username,
+                )
                 unmapped.discard(title_id)
                 already_mapped_rom_ids.add(rom_id)
                 mapped_count += 1
@@ -169,18 +176,32 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                 log.debug("romm_index: name search error title=%s: %s", title_id, exc)
                 continue
             if len(results) != 1:
-                log.debug("romm_index: name search ambiguous title=%s name=%r results=%d user=%s",
-                          title_id, name, len(results), username)
+                log.debug(
+                    "romm_index: name search ambiguous title=%s name=%r results=%d user=%s",
+                    title_id,
+                    name,
+                    len(results),
+                    username,
+                )
                 continue
             rom = results[0]
             if rom["id"] in already_mapped_rom_ids:
-                log.debug("romm_index: name search skipped title=%s — rom_id=%d already mapped user=%s",
-                          title_id, rom["id"], username)
+                log.debug(
+                    "romm_index: name search skipped title=%s — rom_id=%d already mapped user=%s",
+                    title_id,
+                    rom["id"],
+                    username,
+                )
                 continue
             db.upsert_romm_title_map(conn, username, title_id, rom["id"])
             db.upsert_romm_game_cache(conn, username, rom["id"], rom["name"], rom["icon_url"])
-            log.info("romm_index: name-matched title=%s → rom_id=%d name=%r user=%s",
-                     title_id, rom["id"], rom["name"], username)
+            log.info(
+                "romm_index: name-matched title=%s → rom_id=%d name=%r user=%s",
+                title_id,
+                rom["id"],
+                rom["name"],
+                username,
+            )
             unmapped.discard(title_id)
             mapped_count += 1
             romm_vsc.push_head_async(title_id)

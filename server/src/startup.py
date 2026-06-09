@@ -94,14 +94,17 @@ def _repair_duplicate_sequences(conn) -> None:
     n = 0
     for group in dupes:
         tid, old_seq = group["title_id"], group["snapshot_sequence"]
-        extras = conn.execute("""
+        extras = conn.execute(
+            """
             SELECT transaction_id, source_device_id
             FROM sync_transactions
             WHERE title_id=? AND direction='inbound' AND snapshot_sequence=?
               AND sha256 IS NOT NULL AND state='SUPERSEDED'
             ORDER BY created_at ASC
             LIMIT -1 OFFSET 1
-        """, (tid, old_seq)).fetchall()
+        """,
+            (tid, old_seq),
+        ).fetchall()
         for row in extras:
             conn.execute(
                 "INSERT INTO snapshot_counters (title_id,counter) VALUES (?,1) "
@@ -115,11 +118,14 @@ def _repair_duplicate_sequences(conn) -> None:
                 "UPDATE sync_transactions SET snapshot_sequence=? WHERE transaction_id=?",
                 (new_seq, row["transaction_id"]),
             )
-            conn.execute("""
+            conn.execute(
+                """
                 UPDATE sync_transactions SET snapshot_sequence=?
                 WHERE direction='outbound' AND title_id=? AND snapshot_sequence=?
                   AND source_device_id=?
-            """, (new_seq, tid, old_seq, row["source_device_id"]))
+            """,
+                (new_seq, tid, old_seq, row["source_device_id"]),
+            )
             n += 1
     conn.commit()
     log.info("startup: repaired %d duplicate-sequence rows", n)
@@ -237,8 +243,7 @@ def _fail_missing_archives(conn) -> None:
             # Force-fail regardless of state — archive is gone; transaction is unrecoverable.
             now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             conn.execute(
-                "UPDATE sync_transactions SET state='FAILED', updated_at=? "
-                "WHERE transaction_id=?",
+                "UPDATE sync_transactions SET state='FAILED', updated_at=? WHERE transaction_id=?",
                 (now, row["transaction_id"]),
             )
             log.warning("startup: archive missing for %s → FAILED", row["transaction_id"][:8])
@@ -345,7 +350,9 @@ def _repair_romm_push_head_device_title_head(conn) -> int:
     """)
     conn.commit()
     if cur.rowcount:
-        log.info("startup: backfilled device_title_head for %d romm push_head title(s)", cur.rowcount)
+        log.info(
+            "startup: backfilled device_title_head for %d romm push_head title(s)", cur.rowcount
+        )
     return cur.rowcount
 
 

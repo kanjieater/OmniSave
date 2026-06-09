@@ -128,9 +128,7 @@ def main():
     romm_vsc.start_pull_loop(STAGING_DIR, ARCHIVE_DIR)
     romm_worker.start_worker_loop()
 
-    t = threading.Thread(
-        target=_gc_loop, args=(DB_PATH, STAGING_DIR, ARCHIVE_DIR), daemon=True
-    )
+    t = threading.Thread(target=_gc_loop, args=(DB_PATH, STAGING_DIR, ARCHIVE_DIR), daemon=True)
     t.start()
 
     _static_root = STATIC_DIR

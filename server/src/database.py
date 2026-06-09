@@ -470,9 +470,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     if "devices" in existing:
         dev_cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)").fetchall()}
         if "client_type" not in dev_cols:
-            conn.execute(
-                "ALTER TABLE devices ADD COLUMN client_type TEXT NOT NULL DEFAULT ''"
-            )
+            conn.execute("ALTER TABLE devices ADD COLUMN client_type TEXT NOT NULL DEFAULT ''")
         # Backfill client_type for existing Switch devices that haven't reconnected yet.
         conn.execute(
             "UPDATE devices SET client_type='switch'"
@@ -603,9 +601,12 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     # Idempotent: MAX(last_seq, excluded.last_seq) ensures we only ever advance the pointer.
     # Fixes devices processed before per-device head tracking was introduced.
     # Guard: device_title_head may not exist on very old schemas (SCHEMA creates it).
-    dth_tables = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='device_title_head'"
-    ).fetchall()}
+    dth_tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='device_title_head'"
+        ).fetchall()
+    }
     if dth_tables:
         conn.execute("""
             INSERT INTO device_title_head (title_id, device_id, last_seq, updated_at)
@@ -623,22 +624,23 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
 
     # Rename legacy romm-vsc device_id to the configured source_id (default romm:main).
     # Guard: server_config may not exist on very old schemas being migrated.
-    sc_tables = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='server_config'"
-    ).fetchall()}
+    sc_tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='server_config'"
+        ).fetchall()
+    }
     if sc_tables:
         stored_romm_id = (
             conn.execute("SELECT value FROM server_config WHERE key='romm_source_id'").fetchone()
             or [None]
         )[0] or "romm:main"
         conn.execute(
-            "UPDATE sync_transactions SET source_device_id=?"
-            " WHERE source_device_id='romm-vsc'",
+            "UPDATE sync_transactions SET source_device_id=? WHERE source_device_id='romm-vsc'",
             (stored_romm_id,),
         )
         conn.execute(
-            "UPDATE sync_transactions SET target_device_id=?"
-            " WHERE target_device_id='romm-vsc'",
+            "UPDATE sync_transactions SET target_device_id=? WHERE target_device_id='romm-vsc'",
             (stored_romm_id,),
         )
         # device_installed_games and devices rows for romm-vsc will be rebuilt on startup.
@@ -1586,9 +1588,7 @@ def delete_label(conn, entity_type: str, entity_id: str) -> None:
 # ── RomM save sync tracking ────────────────────────────────────────────────────
 
 
-def has_romm_sync(
-    conn, username: str, rom_id: int, romm_save_id: int, direction: str
-) -> bool:
+def has_romm_sync(conn, username: str, rom_id: int, romm_save_id: int, direction: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM romm_save_sync"
         " WHERE username=? AND rom_id=? AND romm_save_id=? AND direction=?",
@@ -1598,7 +1598,11 @@ def has_romm_sync(
 
 
 def record_romm_sync(
-    conn, username: str, rom_id: int, romm_save_id: int, direction: str,
+    conn,
+    username: str,
+    rom_id: int,
+    romm_save_id: int,
+    direction: str,
     transaction_id: str | None,
 ) -> None:
     conn.execute(
@@ -1727,7 +1731,16 @@ def create_processing_transaction(
         "(transaction_id,title_id,source_device_id,direction,state,parent_sequence_num,"
         "total_size_bytes,owner_user_id,created_at,updated_at) "
         "VALUES (?,?,?,'inbound','PROCESSING',?,?,?,?,?)",
-        (txn_id, title_id.upper(), device_id, parent_sequence_num, total_size_bytes, owner_user_id, now, now),
+        (
+            txn_id,
+            title_id.upper(),
+            device_id,
+            parent_sequence_num,
+            total_size_bytes,
+            owner_user_id,
+            now,
+            now,
+        ),
     )
     conn.execute(
         "INSERT INTO upload_sessions "
@@ -1819,7 +1832,9 @@ def set_auth_user_password(conn, username: str, password_hash: str) -> None:
 def rename_auth_user(conn, old_username: str, new_username: str) -> None:
     """Rename a user. Raises sqlite3.IntegrityError if new_username already exists."""
     conn.execute("UPDATE auth_users SET username=? WHERE username=?", (new_username, old_username))
-    conn.execute("UPDATE auth_sessions SET username=? WHERE username=?", (new_username, old_username))
+    conn.execute(
+        "UPDATE auth_sessions SET username=? WHERE username=?", (new_username, old_username)
+    )
 
 
 # ── Device auth ───────────────────────────────────────────────────────────────
@@ -2141,8 +2156,12 @@ def get_catalog_members(conn, title_id: str, exclude_device_id: str) -> list[str
 
 
 def upsert_virtual_device(
-    conn, device_id: str, display_name: str, hardware_type: str,
-    client_type: str = "", owner_user_id: str | None = None
+    conn,
+    device_id: str,
+    display_name: str,
+    hardware_type: str,
+    client_type: str = "",
+    owner_user_id: str | None = None,
 ) -> None:
     """Insert or refresh a virtual (non-physical) device row.
 
