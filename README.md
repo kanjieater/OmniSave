@@ -251,13 +251,12 @@ Every save moves through this state machine. Inbound transactions (uploads from 
 
 ```mermaid
 stateDiagram-v2
-    direction LR
     [*] --> UPLOADING : device starts upload
     UPLOADING --> PROCESSING : all chunks received
-    PROCESSING --> READY_FOR_RESTORE : assembled + SHA-256 verified
+    PROCESSING --> READY_FOR_RESTORE : assembled and verified
     PROCESSING --> DEDUPED : identical to existing snapshot
     PROCESSING --> FAILED : assembly error
-    READY_FOR_RESTORE --> COMPLETED : device ACKs delivery
+    READY_FOR_RESTORE --> COMPLETED : device acks delivery
     READY_FOR_RESTORE --> FAILED : device reports failure
     READY_FOR_RESTORE --> SUPERSEDED : newer snapshot committed
     COMPLETED --> SUPERSEDED : newer snapshot committed
