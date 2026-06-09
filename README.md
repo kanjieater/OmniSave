@@ -79,8 +79,9 @@ Open `http://<your-host>:8991` in a browser.
 
 1. Log in with `admin` / `admin`.
 2. Change the admin password immediately (Settings → Account).
-3. Pair your first device (Devices → Add Device).
-4. Optionally create additional user accounts (Admin → Users).
+3. Install a client on your device — see [Clients](#clients) below.
+4. Pair your first device (Devices → Add Device).
+5. Optionally create additional user accounts (Admin → Users).
 
 ---
 
@@ -359,6 +360,22 @@ docker exec <container> touch /app/config/reset_admin.flag
 **Storage growing unexpectedly**
 
 Failed and incomplete transfers are cleaned up automatically after 7 days. Committed saves are kept until you delete them. To free space, delete snapshots from the game detail page in the dashboard.
+
+---
+
+## Support
+
+Community discussion on [KanjiEater's Discord](https://discord.com/invite/agbwB4p).
+
+<a href="https://youtube.com/c/kanjieater"><img src="https://github.com/gauravghongde/social-icons/blob/master/SVG/Color/Youtube.svg" height="50px" title="YouTube"></a>
+<a href="https://tr.ee/-TOCGozNUI" title="Twitter"><img src="https://github.com/gauravghongde/social-icons/blob/master/SVG/Color/Twitter.svg" height="50px"></a>
+<a href="https://discord.com/invite/agbwB4p" title="Discord"><img src="https://github.com/gauravghongde/social-icons/blob/master/SVG/Color/Discord.svg" height="50px"></a>
+
+If you find my tools useful please consider supporting:
+
+<a href="https://ko-fi.com/kanjieater" rel="nofollow"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support on Ko-fi"></a>
+
+<a href="https://www.patreon.com/kanjieater" rel="nofollow"><img src="https://i.imgur.com/VCTLqLj.png" alt="Support on Patreon"></a>
 
 ---
 
