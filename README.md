@@ -32,7 +32,7 @@ flowchart LR
     A[Device A] -->|Upload| B(OmniSave)
     B -->|Distribute| C[Device B]
     B -->|Distribute| D[Device C]
-    B <-->|Optional sync| E[(RomM)]
+    B -->|Optional sync| E[(RomM)]
 ```
 
 ---
