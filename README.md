@@ -336,6 +336,12 @@ The server stores and delivers save files as opaque archives. It does not inspec
 
 If a device uploads a save that is byte-for-byte identical to what's already on the server, no new snapshot is created. This is intentional — it avoids duplicate entries for sessions where no actual progress was made — but it means closing a game without playing won't increment the version counter.
 
+**Shared devices deliver saves across users**
+
+Save delivery is currently scoped to the device, not the user. If two users share the same server and both have a game installed on their respective devices, any upload from either user fans out to all devices in the catalog that have that game installed — including devices belonging to the other user. Similarly, if two users are granted access to the same physical device, both users' saves queue for delivery to it and the last one applied wins.
+
+This affects multi-user households on a shared server. Single-user or per-user server deployments are unaffected.
+
 ---
 
 ## Troubleshooting
