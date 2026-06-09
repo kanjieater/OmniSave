@@ -55,7 +55,7 @@ def _gc_loop(db_path: Path, staging_dir: Path, archive_dir: Path) -> None:
             log.error("periodic gc error: %s", e)
 
 
-app = FastAPI(title="OmniSave", version="2.0.0")
+app = FastAPI(title="OmniSave", version="1.0.0")
 app.include_router(sync_api.router)
 app.include_router(sync_deliver_api.router)
 app.include_router(ui_api.router)
@@ -67,7 +67,7 @@ def health():
     return {
         "service": "OmniSave",
         "status": "online",
-        "version": "2.0.0",
+        "version": "1.0.0",
         "started_at": _start_time,
     }
 
