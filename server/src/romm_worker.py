@@ -183,6 +183,7 @@ def _run_once_for_user(conn, username: str) -> None:
 
         romm_contacted = True
         romm_save_id = result["id"]
+        romm_meta.clear_last_played(rom_id)
         romm_vsc.stamp_device_head(
             conn, title_id=title_id, username=username, snapshot_sequence=txn["snapshot_sequence"]
         )

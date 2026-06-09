@@ -129,6 +129,7 @@ def push(title_id: str, transaction_id: str, archive_path: str, username: str) -
             if result is None:
                 return
             romm_save_id = result["id"]
+            romm_meta.clear_last_played(rom_id)
             seq_row = conn.execute(
                 "SELECT snapshot_sequence FROM sync_transactions WHERE transaction_id=?",
                 (transaction_id,),

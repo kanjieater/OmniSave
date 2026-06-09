@@ -413,6 +413,24 @@ def upload_save(
         return None, err
 
 
+def clear_last_played(rom_id: int) -> None:
+    """PUT /api/roms/{id}/props?remove_last_played=true — prevent OmniSave uploads from
+    polluting RomM's play-history. Never raises."""
+    if not _effective_host() or not _effective_key():
+        return
+    try:
+        req = urllib.request.Request(
+            f"{_effective_host()}/api/roms/{rom_id}/props?remove_last_played=true",
+            method="PUT",
+            headers={**_auth_headers(), "Content-Length": "0"},
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+        log.debug("romm_meta: clear_last_played ok rom_id=%d", rom_id)
+    except Exception as exc:
+        log.debug("romm_meta: clear_last_played failed rom_id=%d: %s", rom_id, exc)
+
+
 def ping(host: str = "") -> bool:
     """Health signal: GET /api/heartbeat (unauthenticated). True on HTTP 200. Never raises."""
     effective = (host or _effective_host()).rstrip("/")

@@ -34,11 +34,12 @@ EOF
 }
 
 sync_env_file() {
-    if [ -f "${REPO_ROOT}/.env" ]; then
-        ln -sfn "${REPO_ROOT}/.env" "${ENV_FILE}"
-        echo "Linked ${ENV_FILE} -> ${REPO_ROOT}/.env"
-    elif [ ! -f "${ENV_FILE}" ]; then
-        cp "${REPO_ROOT}/.env.example" "${ENV_FILE}"
+    # Remove stale symlinks so cp can write a real file
+    if [ -L "${ENV_FILE}" ]; then
+        rm "${ENV_FILE}"
+    fi
+    if [ ! -f "${ENV_FILE}" ]; then
+        cp "${REPO_ROOT}/deploy/.env.example" "${ENV_FILE}"
         sed -i "s|^OMNISAVE_REPO=.*|OMNISAVE_REPO=${REPO_ROOT}|" "${ENV_FILE}"
         echo "Wrote ${ENV_FILE} from deploy/.env.example"
     fi
