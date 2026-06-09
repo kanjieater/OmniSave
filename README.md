@@ -225,7 +225,7 @@ OmniSave uses an open REST API. Any client that implements the sync protocol can
 
 **Current clients:**
 - **[OmniSaveSwitch](https://github.com/kanjieater/OmniSaveSwitch)** — a background sysmodule for custom firmware that watches for save changes and handles upload and download automatically.
-- **REST API** — the server exposes its full API schema at `/docs`.
+- **REST API** — full schema at `/docs` on your running server, or browse the [published API reference](https://kanjieater.github.io/OmniSave/).
 
 **Future:**
 - PC client with Playnite integration

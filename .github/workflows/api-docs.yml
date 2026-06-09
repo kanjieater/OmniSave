@@ -1,0 +1,79 @@
+name: API Docs
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & deploy API docs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Vendor swagger-ui-dist so the deployed page has no CDN dependency.
+      # Files needed: swagger-ui-bundle.js, swagger-ui.css
+      # Source: https://www.npmjs.com/package/swagger-ui-dist
+      - name: Install swagger-ui-dist
+        run: |
+          npm install swagger-ui-dist
+          mkdir -p _site
+          cp node_modules/swagger-ui-dist/swagger-ui-bundle.js _site/
+          cp node_modules/swagger-ui-dist/swagger-ui.css _site/
+
+      - name: Copy OpenAPI spec
+        run: cp server/src/openapi.json _site/openapi.json
+
+      - name: Write index.html
+        run: |
+          cat > _site/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>OmniSave API Reference</title>
+            <link rel="stylesheet" href="./swagger-ui.css">
+            <style>
+              body { margin: 0; }
+              #swagger-ui .topbar { display: none; }
+            </style>
+          </head>
+          <body>
+            <div id="swagger-ui"></div>
+            <script src="./swagger-ui-bundle.js"></script>
+            <script>
+              SwaggerUIBundle({
+                url: "./openapi.json",
+                dom_id: "#swagger-ui",
+                deepLinking: true,
+                presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+                layout: "BaseLayout",
+              })
+            </script>
+          </body>
+          </html>
+          EOF
+
+      - uses: actions/configure-pages@v4
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
