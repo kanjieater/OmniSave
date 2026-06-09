@@ -13,7 +13,6 @@ from fastapi.responses import FileResponse, JSONResponse
 
 import database as db
 import romm_api
-import romm_index
 import romm_meta
 import romm_vsc
 import romm_worker

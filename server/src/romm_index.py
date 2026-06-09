@@ -76,8 +76,8 @@ def _fetch_rom_detail(rom_id: int) -> dict | None:
 
 def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
     """Index build for one user. Credentials are set explicitly — no shared state."""
-    import titledb as tdb
     import romm_vsc
+    import titledb as tdb
     romm_meta.set_request_creds(host, api_key)
     try:
         # Candidates: any title on a paired device OR in the upload history, not yet mapped.

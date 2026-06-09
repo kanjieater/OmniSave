@@ -21,7 +21,6 @@ import database as db
 import game_meta
 import romm_meta
 import romm_vsc
-import titledb
 import ui_api
 
 log = logging.getLogger(__name__)

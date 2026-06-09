@@ -10,11 +10,11 @@ import hashlib as _hashlib
 import json
 import logging
 import re
+import re as _re
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
-
-import re as _re
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -558,7 +558,7 @@ def pair_by_code(body: PairByCodeBody, request: Request):
         return JSONResponse({"error": "invalid or expired pairing code"}, status_code=400)
 
     db.set_device_owner(_conn, device_id, username)
-    token = db.create_device_token(_conn, device_id, username)
+    db.create_device_token(_conn, device_id, username)
     _conn.execute("UPDATE devices SET deleted_at=NULL WHERE device_id=?", (device_id,))
     db.set_device_config_pending(_conn, device_id)
     device = db.get_device(_conn, device_id)
@@ -653,7 +653,7 @@ def _valid_user_id(user_id: str) -> bool:
 @router.post("/devices/{device_id}/token")
 def pair_device(
     device_id: str, request: Request,
-    body: PairDeviceBody | None = Body(default=None),
+    body: Annotated[PairDeviceBody | None, Body()] = None,
 ):
     err = _auth_err(request)
     if err:
@@ -757,7 +757,7 @@ def list_device_profiles(device_id: str, request: Request):
 @router.put("/devices/{device_id}/profiles/{profile_id}")
 def claim_profile(
     device_id: str, profile_id: str, request: Request,
-    body: ClaimProfileBody | None = Body(default=None),
+    body: Annotated[ClaimProfileBody | None, Body()] = None,
 ):
     err = _auth_err(request)
     if err:
@@ -1763,10 +1763,10 @@ def download_snapshot(transaction_id: str, request: Request):
     safe_name = _DL_UNSAFE_RE.sub("", raw_name).strip()[:120] or "save"
     ts_str = ""
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
         ts_str = datetime.fromisoformat(
             (txn["created_at"] or "").replace("Z", "+00:00")
-        ).astimezone(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+        ).astimezone(UTC).strftime("%Y-%m-%d_%H-%M-%S")
     except Exception:
         pass
     filename = f"{safe_name} [{ts_str}].zip" if ts_str else f"{safe_name}.zip"

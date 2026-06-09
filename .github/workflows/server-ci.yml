@@ -70,7 +70,6 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r server/requirements.txt -r server/requirements-test.txt
-        working-directory: server
 
       - name: Run tests
         run: python -m pytest tests/
