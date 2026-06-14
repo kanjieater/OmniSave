@@ -1056,12 +1056,24 @@ def game_detail(title_id: str, request: Request):
             "SELECT device_id FROM device_profile_map WHERE user_id=?", (username,)
         ).fetchall()
     }
-    device_ids = {s["source_device_id"] for s in snaps} & claimed_devices
+    # Also include devices owned by this user directly — graceful fallback when
+    # profiles haven't been explicitly claimed in the UI yet.
+    owned_devices = {
+        r["device_id"]
+        for r in _conn.execute(
+            "SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL",
+            (username,),
+        ).fetchall()
+    }
+    visible_devices = claimed_devices | owned_devices
+    device_ids = {s["source_device_id"] for s in snaps} & visible_devices
     for row in _conn.execute(
         "SELECT DISTINCT target_device_id FROM sync_transactions"
         " WHERE title_id=? AND direction='outbound'"
-        " AND target_device_id IN (SELECT device_id FROM device_profile_map WHERE user_id=?)",
-        (title_id, username),
+        " AND target_device_id IN ("
+        "  SELECT device_id FROM device_profile_map WHERE user_id=?"
+        "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
+        (title_id, username, username),
     ).fetchall():
         device_ids.add(row["target_device_id"])
 
@@ -1088,9 +1100,10 @@ def game_detail(title_id: str, request: Request):
     # so "No save yet" games still show which device reported them.
     for row in _conn.execute(
         "SELECT device_id FROM device_installed_games"
-        " WHERE title_id=? AND device_id IN"
-        "  (SELECT device_id FROM device_profile_map WHERE user_id=?)",
-        (title_id, username),
+        " WHERE title_id=? AND device_id IN ("
+        "  SELECT device_id FROM device_profile_map WHERE user_id=?"
+        "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
+        (title_id, username, username),
     ).fetchall():
         device_ids.add(row["device_id"])
 
@@ -1502,6 +1515,14 @@ def device_games(device_id: str, request: Request):
     if err:
         return err
     username = _current_username(request) or ""
+    try:
+        return _device_games_inner(device_id, username)
+    except Exception as exc:
+        log.exception("device_games: CRASH device=%s user=%s: %s", device_id, username, exc)
+        raise
+
+
+def _device_games_inner(device_id: str, username: str):
     rows = _conn.execute(
         "SELECT DISTINCT title_id FROM sync_transactions"
         " WHERE owner_user_id=?"
@@ -1560,6 +1581,7 @@ def device_games(device_id: str, request: Request):
                 "last_synced_at": last_synced_at,
             }
         )
+    log.info("device_games: device=%s games=%d", device_id, len(games))
     return JSONResponse({"games": games})
 
 
@@ -1875,6 +1897,8 @@ def get_romm_settings(request: Request):
     has_key = bool(db.get_user_config(_conn, username, "romm_api_key"))
     source_id = db.get_user_config(_conn, username, "romm_source_id") or f"romm:{username}"
     romm_username = db.get_user_config(_conn, username, "romm_username") or None
+    romm_connect_status = db.get_user_config(_conn, username, "romm_connect_status") or ""
+    romm_connect_detail = db.get_user_config(_conn, username, "romm_connect_detail") or ""
     return JSONResponse(
         {
             "enabled": enabled_val == "1",
@@ -1882,6 +1906,8 @@ def get_romm_settings(request: Request):
             "has_api_key": has_key,
             "source_id": source_id,
             "romm_username": romm_username,
+            "romm_connect_status": romm_connect_status,
+            "romm_connect_detail": romm_connect_detail,
         }
     )
 
@@ -1921,15 +1947,6 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
     db.upsert_virtual_device(
         _conn, romm_device_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=username
     )
-    # Un-delete the device if credentials are now configured — user is actively setting up.
-    # Only suppress this if they explicitly disabled (that branch already sets deleted_at above).
-    has_host = bool(db.get_user_config(_conn, username, "romm_host"))
-    has_key = bool(db.get_user_config(_conn, username, "romm_api_key"))
-    if has_host and has_key and db.get_user_config(_conn, username, "romm_enabled") != "0":
-        _conn.execute(
-            "UPDATE devices SET deleted_at=NULL WHERE device_id=? AND client_type='romm'",
-            (romm_device_id,),
-        )
     # Retire the previous device if the source_id changed (avoids duplicates)
     if old_device_id and old_device_id != romm_device_id:
         _conn.execute(
@@ -1937,20 +1954,48 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
             " WHERE device_id=? AND owner_user_id=? AND client_type='romm'",
             (db._now(), old_device_id, username),
         )
+    has_host = bool(db.get_user_config(_conn, username, "romm_host"))
+    has_key = bool(db.get_user_config(_conn, username, "romm_api_key"))
+    fresh_username: str | None = None
+    fresh_status = ""
+    fresh_detail = ""
     if body.host is not None or body.api_key is not None:
-        import threading as _threading
-
+        # Credentials changed — verify before exposing the device.
         host = db.get_user_config(_conn, username, "romm_host") or ""
         key = db.get_user_config(_conn, username, "romm_api_key") or ""
         if host and key:
-            romm_meta.set_request_creds(host, key)
-            _threading.Thread(
-                target=romm_meta.refresh_username_cache,
-                args=(_conn, username),
-                daemon=True,
-                name="romm-username-refresh",
-            ).start()
-    return JSONResponse({"ok": True})
+            romm_meta.refresh_username_cache(_conn, username, host, key)
+        fresh_username = db.get_user_config(_conn, username, "romm_username") or None
+        fresh_status = db.get_user_config(_conn, username, "romm_connect_status") or ""
+        fresh_detail = db.get_user_config(_conn, username, "romm_connect_detail") or ""
+        if has_host and has_key and db.get_user_config(_conn, username, "romm_enabled") != "0":
+            if fresh_username:
+                _conn.execute(
+                    "UPDATE devices SET deleted_at=NULL WHERE device_id=? AND client_type='romm'",
+                    (romm_device_id,),
+                )
+            else:
+                # Auth failed — keep device hidden
+                _conn.execute(
+                    "UPDATE devices SET deleted_at=? WHERE device_id=? AND client_type='romm'",
+                    (db._now(), romm_device_id),
+                )
+    elif has_host and has_key and db.get_user_config(_conn, username, "romm_enabled") != "0":
+        # Credentials unchanged (only enabled/source_id changed) — restore if previously verified.
+        existing = db.get_user_config(_conn, username, "romm_username") or None
+        if existing:
+            _conn.execute(
+                "UPDATE devices SET deleted_at=NULL WHERE device_id=? AND client_type='romm'",
+                (romm_device_id,),
+            )
+    return JSONResponse(
+        {
+            "ok": True,
+            "romm_username": fresh_username,
+            "romm_connect_status": fresh_status,
+            "romm_connect_detail": fresh_detail,
+        }
+    )
 
 
 class RommUserBody(BaseModel):

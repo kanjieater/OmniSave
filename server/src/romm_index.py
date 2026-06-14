@@ -35,7 +35,7 @@ def _fetch_switch_rom_ids() -> list[int]:
     while True:
         qs = urllib.parse.urlencode({"limit": limit, "offset": offset})
         req = urllib.request.Request(
-            f"{romm_meta.ROMM_HOST}/api/roms?{qs}",
+            f"{romm_meta._effective_host()}/api/roms?{qs}",
             headers=romm_meta._auth_headers(),
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -51,9 +51,20 @@ def _fetch_switch_rom_ids() -> list[int]:
 
 
 def _base_title_id(detail: dict) -> str | None:
-    """Extract the base-game title ID from a ROM's files list."""
+    """Extract the base-game title ID from a ROM detail.
+
+    Checks top-level filename fields first (fs_name, file_name), then the files sub-array.
+    RomM stores the primary filename in fs_name, not in files[].
+    """
+    candidates = [
+        detail.get("fs_name", ""),
+        detail.get("fs_name_no_tags", ""),
+        detail.get("file_name", ""),
+    ]
     for f in detail.get("files", []):
-        m = _TITLE_ID_FILE_RE.search(f.get("file_name", ""))
+        candidates.append(f.get("file_name", ""))
+    for candidate in candidates:
+        m = _TITLE_ID_FILE_RE.search(candidate)
         if m:
             tid = m.group(1).upper()
             if tid.endswith("000"):
@@ -64,7 +75,7 @@ def _base_title_id(detail: dict) -> str | None:
 def _fetch_rom_detail(rom_id: int) -> dict | None:
     try:
         req = urllib.request.Request(
-            f"{romm_meta.ROMM_HOST}/api/roms/{rom_id}",
+            f"{romm_meta._effective_host()}/api/roms/{rom_id}",
             headers=romm_meta._auth_headers(),
         )
         with urllib.request.urlopen(req, timeout=15) as resp:

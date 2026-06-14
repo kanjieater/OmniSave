@@ -454,3 +454,96 @@ def test_sync_pull_returns_202(conn, monkeypatch, tmp_path):
     resp = c.post("/api/v1/romm/sync/pull", headers=_auth(token))
     assert resp.status_code == 202
     assert resp.json()["ok"] is True
+
+
+# ── romm_index._base_title_id ─────────────────────────────────────────────────
+
+
+def test_base_title_id_from_fs_name():
+    from romm_index import _base_title_id
+
+    detail = {"fs_name": "Owlboy [0100E570094E8000][v0].xci", "files": []}
+    assert _base_title_id(detail) == "0100E570094E8000"
+
+
+def test_base_title_id_from_files_list():
+    from romm_index import _base_title_id
+
+    detail = {"fs_name": "", "files": [{"file_name": "Owlboy [0100E570094E8000][v0].xci"}]}
+    assert _base_title_id(detail) == "0100E570094E8000"
+
+
+def test_base_title_id_ignores_update_ids():
+    from romm_index import _base_title_id
+
+    # Update title IDs end in 800, not 000 — should be ignored
+    detail = {"fs_name": "Owlboy [0100E570094E8800][v1].xci", "files": []}
+    assert _base_title_id(detail) is None
+
+
+def test_base_title_id_no_bracket_id():
+    from romm_index import _base_title_id
+
+    detail = {"fs_name": "Owlboy.xci", "files": []}
+    assert _base_title_id(detail) is None
+
+
+# ── fetch_current_user classification ─────────────────────────────────────────
+
+
+def _make_http_error(code: int):
+    import urllib.error
+    import urllib.request
+    return urllib.error.HTTPError(url="http://x", code=code, msg="err", hdrs=None, fp=None)  # type: ignore[arg-type]
+
+
+def test_fetch_current_user_auth_failed_403(monkeypatch):
+    monkeypatch.setattr(romm_meta, "_effective_host", lambda: "http://romm.local")
+    monkeypatch.setattr(romm_meta, "_effective_key", lambda: "badkey")
+    monkeypatch.setattr(romm_meta, "_auth_headers", lambda: {})
+
+    def _fail(*a, **kw):
+        raise _make_http_error(403)
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", _fail)
+
+    user, status, detail = romm_meta.fetch_current_user()
+    assert user is None
+    assert status == "auth_failed"
+    assert "403" in detail
+
+
+def test_fetch_current_user_network_error(monkeypatch):
+    monkeypatch.setattr(romm_meta, "_effective_host", lambda: "http://romm.local")
+    monkeypatch.setattr(romm_meta, "_effective_key", lambda: "key")
+    monkeypatch.setattr(romm_meta, "_auth_headers", lambda: {})
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: (_ for _ in ()).throw(OSError("connection refused")))
+
+    user, status, detail = romm_meta.fetch_current_user()
+    assert user is None
+    assert status == "network_error"
+
+
+def test_fetch_current_user_success(monkeypatch):
+    import io
+    import json as _json
+    monkeypatch.setattr(romm_meta, "_effective_host", lambda: "http://romm.local")
+    monkeypatch.setattr(romm_meta, "_effective_key", lambda: "key")
+    monkeypatch.setattr(romm_meta, "_auth_headers", lambda: {})
+
+    class _FakeResp:
+        status = 200
+        def read(self): return _json.dumps({"id": 1, "username": "alice"}).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _FakeResp())
+
+    user, status, detail = romm_meta.fetch_current_user()
+    assert user == {"id": 1, "username": "alice"}
+    assert status == "ok"
+    assert detail == ""

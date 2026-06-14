@@ -123,7 +123,7 @@ export default function DeviceDetailPage() {
     refetchInterval: 10_000,
   })
 
-  const { data: gamesData, isLoading: gamesLoading } = useQuery({
+  const { data: gamesData, isLoading: gamesLoading, isError: gamesError } = useQuery({
     queryKey: gamesKey,
     queryFn: () => api.deviceGames(device_id!),
     enabled: !!device_id,
@@ -286,6 +286,14 @@ export default function DeviceDetailPage() {
           </div>
         </div>
         <Skeleton className="h-48 w-full rounded-[var(--radius-lg)]" />
+      </div>
+    )
+  }
+
+  if (gamesError) {
+    return (
+      <div className="flex flex-col gap-[var(--spacing-6)] p-[var(--spacing-4)] md:p-[var(--spacing-6)] max-w-5xl mx-auto">
+        <EmptyState title="Failed to load games" description="Server error loading this client's game list. Check the server logs for details." />
       </div>
     )
   }

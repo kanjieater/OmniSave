@@ -260,10 +260,18 @@ def list_saves_for_rom(rom_id: int, device_id: str) -> list:
         return []
 
 
-def fetch_current_user() -> dict | None:
-    """Fetch the RomM username for the configured API key. Tries known endpoint variants."""
+def fetch_current_user() -> tuple[dict | None, str, str]:
+    """Fetch the RomM username for the configured API key. Tries known endpoint variants.
+
+    Returns (user_dict, status, detail) where status is one of:
+    "ok" | "auth_failed" | "network_error" | "bad_response" | "unknown"
+    and detail is a short machine-readable string (e.g. "HTTP 403").
+    """
+    import urllib.error
+
     if not _effective_host() or not _effective_key():
-        return None
+        return None, "unknown", "no credentials"
+    last_status, last_detail = "unknown", ""
     for path in ("/api/users/me", "/api/me", "/api/auth/me"):
         try:
             req = urllib.request.Request(
@@ -271,24 +279,41 @@ def fetch_current_user() -> dict | None:
                 headers=_auth_headers(),
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
-                if resp.status != 200:
-                    continue
                 data = json.loads(resp.read().decode())
             username = data.get("username") or data.get("name") or data.get("login")
             if username:
-                return {"id": data.get("id"), "username": username}
+                return {"id": data.get("id"), "username": username}, "ok", ""
+            last_status, last_detail = "bad_response", "no username field in response"
+        except urllib.error.HTTPError as exc:
+            detail = f"HTTP {exc.code}"
+            status = "auth_failed" if exc.code in (401, 403) else "bad_response"
+            log.warning("romm_meta: fetch_current_user %s failed: %s", path, detail)
+            last_status, last_detail = status, detail
+        except OSError as exc:
+            log.warning("romm_meta: fetch_current_user %s failed: %s", path, exc)
+            last_status, last_detail = "network_error", str(exc)
         except Exception as exc:
-            log.debug("romm_meta: fetch_current_user %s failed: %s", path, exc)
-    return None
+            log.warning("romm_meta: fetch_current_user %s failed: %s", path, exc)
+            last_status, last_detail = "unknown", str(exc)
+    return None, last_status, last_detail
 
 
-def refresh_username_cache(conn, username: str) -> None:
-    """Fetch the RomM username for the user's API key and store in user_config."""
-    user = fetch_current_user()
+def refresh_username_cache(conn, username: str, host: str = "", key: str = "") -> None:
+    """Fetch the RomM username for the user's API key and store in user_config.
+
+    host/key must be passed explicitly when called from a spawned thread because
+    threading.local() values are not inherited by child threads.
+    """
+    if host and key:
+        set_request_creds(host, key)
+    user, status, detail = fetch_current_user()
     database.set_user_config(conn, username, "romm_username", user["username"] if user else "")
+    database.set_user_config(conn, username, "romm_connect_status", status)
+    database.set_user_config(conn, username, "romm_connect_detail", detail)
     log.info(
-        "romm_meta: cached romm_username=%r for user=%s",
+        "romm_meta: cached romm_username=%r status=%s for user=%s",
         user["username"] if user else None,
+        status,
         username,
     )
 
@@ -413,7 +438,6 @@ def upload_save(
         return None, err
 
 
-
 def ping(host: str = "") -> bool:
     """Health signal: GET /api/heartbeat (unauthenticated). True on HTTP 200. Never raises."""
     effective = (host or _effective_host()).rstrip("/")
@@ -431,11 +455,32 @@ def ping(host: str = "") -> bool:
 
 
 def try_auto_match(title_id: str, username: str) -> None:
-    """Auto-map title_id to a RomM ROM for one user. Never raises. Opens its own DB connection."""
-    if not _effective_host() or not _effective_key() or not _db_path:
+    """Auto-map title_id to a RomM ROM for one user. Never raises. Opens its own DB connection.
+
+    Uses thread-local creds if already set (romm_worker context); otherwise looks up
+    per-user creds from DB (background threads spawned by try_auto_match_async, where
+    thread-locals are not inherited).
+    """
+    if not _db_path:
         return
     try:
         import titledb as tdb
+
+        # Resolve creds: prefer thread-local (already set by caller), fall back to DB.
+        host = _effective_host()
+        key = _effective_key()
+        if not host or not key:
+            _creds_conn = database.open_db(_db_path)
+            try:
+                host = database.get_user_config(_creds_conn, username, "romm_host") or ROMM_HOST
+                key = (
+                    database.get_user_config(_creds_conn, username, "romm_api_key") or ROMM_API_KEY
+                )
+            finally:
+                _creds_conn.close()
+        if not host or not key:
+            return
+        set_request_creds(host, key)
 
         conn = database.open_db(_db_path)
         try:

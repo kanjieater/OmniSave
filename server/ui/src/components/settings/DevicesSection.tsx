@@ -1,4 +1,4 @@
-import { Check, Share2, Trash2, UserCheck, UserMinus } from 'lucide-react'
+import { AlertCircle, Check, Share2, Trash2, UserCheck, UserMinus } from 'lucide-react'
 import * as React from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -103,6 +103,13 @@ function AccessList({ deviceId }: { deviceId: string }) {
 
 // ── RomM profile row ──────────────────────────────────────────────────────────
 
+const ROMM_STATUS_LABELS: Record<string, string> = {
+  auth_failed: 'Auth failed',
+  network_error: 'Unreachable',
+  bad_response: 'Bad response',
+  unknown: 'Error',
+}
+
 function RommProfileRow() {
   const { data, isLoading } = useQuery({
     queryKey: ['rommServerSettings'],
@@ -110,6 +117,9 @@ function RommProfileRow() {
     staleTime: 30_000,
   })
   const username = data?.romm_username
+  const connectStatus = data?.romm_connect_status ?? ''
+  const connectDetail = data?.romm_connect_detail ?? ''
+  const hasError = !!connectStatus && connectStatus !== 'ok' && !username
 
   return (
     <div className="border-t border-[var(--color-border-subtle)] px-[var(--spacing-4)] py-[var(--spacing-3)]">
@@ -120,6 +130,14 @@ function RommProfileRow() {
         <div className="flex items-center gap-[var(--spacing-2)]">
           <UserCheck size={14} className="text-[var(--color-success)] shrink-0" />
           <span className="text-sm text-[var(--color-text-primary)]">{username}</span>
+        </div>
+      ) : hasError ? (
+        <div className="flex items-center gap-[var(--spacing-2)]">
+          <AlertCircle size={14} className="text-[var(--color-error)] shrink-0" />
+          <span className="text-xs text-[var(--color-error)]">
+            {ROMM_STATUS_LABELS[connectStatus] ?? 'Connection error'}
+            {connectDetail ? ` (${connectDetail})` : ''}
+          </span>
         </div>
       ) : (
         <span className="text-xs text-[var(--color-text-muted)]">Not configured</span>

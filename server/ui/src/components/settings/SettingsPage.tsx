@@ -1,4 +1,4 @@
-import { Trash2 } from 'lucide-react'
+import { AlertCircle, Trash2 } from 'lucide-react'
 import * as React from 'react'
 import { useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -91,6 +91,8 @@ function RommServerSection() {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rommServerSettings'] })
+      qc.invalidateQueries({ queryKey: ['devices'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
       setApiKey('')
       setConnectDirty(false)
     },
@@ -98,12 +100,29 @@ function RommServerSection() {
 
   const enabled = data?.enabled ?? true
 
+  const CONNECT_STATUS_LABELS: Record<string, string> = {
+    auth_failed: 'Auth failed',
+    network_error: 'Unreachable',
+    bad_response: 'Bad response',
+    unknown: 'Error',
+  }
+
   const statusDot = (() => {
     if (isLoading) return null
-    const active = enabled && !!data?.host && !!data?.has_api_key
+    const connectStatus = data?.romm_connect_status ?? ''
+    const hasError = !!connectStatus && connectStatus !== 'ok' && !data?.romm_username
+    const active = enabled && !!data?.host && !!data?.has_api_key && !!data?.romm_username
     const partial = enabled && !!data?.host && !data?.has_api_key
-    const color = active ? 'bg-[var(--color-success)]' : partial ? 'bg-amber-400' : 'bg-[var(--color-text-muted)]'
-    const label = !enabled ? 'Offline' : !data?.host ? 'Not configured' : !data?.has_api_key ? 'No API key' : 'Online'
+    const color = hasError
+      ? 'bg-[var(--color-error)]'
+      : active ? 'bg-[var(--color-success)]'
+      : partial ? 'bg-amber-400'
+      : 'bg-[var(--color-text-muted)]'
+    const label = !enabled ? 'Offline'
+      : !data?.host ? 'Not configured'
+      : !data?.has_api_key ? 'No API key'
+      : hasError ? (CONNECT_STATUS_LABELS[connectStatus] ?? 'Error')
+      : 'Online'
     return (
       <span className="inline-flex items-center gap-1.5">
         <span className="relative flex h-2 w-2">
@@ -168,6 +187,12 @@ function RommServerSection() {
                 autoComplete="new-password"
               />
             </div>
+            {data?.romm_username && (
+              <div className="py-3 flex items-center justify-between gap-2">
+                <span className="text-xs text-[var(--color-text-muted)]">Connected as</span>
+                <span className="text-xs font-[var(--font-weight-medium)] text-[var(--color-text-primary)]">{data.romm_username}</span>
+              </div>
+            )}
             <div className="py-3 flex justify-end">
               <Button
                 size="sm"
@@ -181,7 +206,17 @@ function RommServerSection() {
         )}
       </div>
       {connectMut.isError && (
-        <p className="text-xs text-red-600">{String(connectMut.error)}</p>
+        <p className="text-xs text-[var(--color-error)]">{String(connectMut.error)}</p>
+      )}
+      {!connectMut.isError && connectMut.data?.romm_connect_status && connectMut.data.romm_connect_status !== 'ok' && (
+        <div className="flex items-center gap-2 text-xs text-[var(--color-error)]">
+          <AlertCircle size={13} className="shrink-0" />
+          <span>
+            {CONNECT_STATUS_LABELS[connectMut.data.romm_connect_status] ?? 'Connection error'}
+            {connectMut.data.romm_connect_detail ? ` — ${connectMut.data.romm_connect_detail}` : ''}
+            {connectMut.data.romm_connect_status === 'auth_failed' ? '. Check your API key.' : '. Check server URL.'}
+          </span>
+        </div>
       )}
     </section>
   )

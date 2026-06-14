@@ -25,6 +25,8 @@ def no_romm(monkeypatch):
     monkeypatch.setattr(romm_meta, "ROMM_HOST", "")
     monkeypatch.setattr(romm_meta, "ROMM_API_KEY", "")
     monkeypatch.setattr(romm_meta, "fetch_rom_metadata", lambda rom_id: None)
+    # Prevent background auto-match threads from racing with synchronous worker calls in tests.
+    monkeypatch.setattr(romm_meta, "try_auto_match_async", lambda *a, **kw: None)
 
 
 def _setup_romm(monkeypatch, tmp_path, conn=None, username=USER):

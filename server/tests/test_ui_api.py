@@ -2438,9 +2438,25 @@ def test_get_romm_settings_defaults(client):
     assert "source_id" in data
 
 
+def _mock_refresh_ok(conn, username, host="", key=""):
+    """Simulates a successful RomM credential verification."""
+    import database as _db
+    _db.set_user_config(conn, username, "romm_username", "testuser")
+    _db.set_user_config(conn, username, "romm_connect_status", "ok")
+    _db.set_user_config(conn, username, "romm_connect_detail", "")
+
+
+def _mock_refresh_fail(conn, username, host="", key=""):
+    """Simulates a failed RomM credential verification (auth_failed)."""
+    import database as _db
+    _db.set_user_config(conn, username, "romm_username", "")
+    _db.set_user_config(conn, username, "romm_connect_status", "auth_failed")
+    _db.set_user_config(conn, username, "romm_connect_detail", "HTTP 403")
+
+
 def test_put_romm_settings_host_and_key(client, monkeypatch):
     import romm_meta as _romm_meta
-    monkeypatch.setattr(_romm_meta, "refresh_username_cache", lambda conn, user: None)
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
     token = _login(client)
     r = client.put(
         "/api/v1/ui/settings/romm",
@@ -2448,13 +2464,17 @@ def test_put_romm_settings_host_and_key(client, monkeypatch):
         headers=_hdr(token),
     )
     assert r.status_code == 200
-    assert r.json()["ok"] is True
+    data = r.json()
+    assert data["ok"] is True
+    assert data["romm_username"] == "testuser"
+    assert data["romm_connect_status"] == "ok"
 
     # Verify persisted
     r2 = client.get("/api/v1/ui/settings/romm", headers=_hdr(token))
     assert r2.json()["host"] == "http://romm.local"
     assert r2.json()["has_api_key"] is True
     assert r2.json()["enabled"] is True
+    assert r2.json()["romm_connect_status"] == "ok"
 
 
 def test_put_romm_settings_disable(client):
@@ -2473,7 +2493,7 @@ def test_put_romm_settings_disable_hides_device(client, monkeypatch):
     """Enable with credentials then disable — device must appear as is_deleted in both
     /devices and /dashboard so the UI filter removes it immediately."""
     import romm_meta as _romm_meta
-    monkeypatch.setattr(_romm_meta, "refresh_username_cache", lambda conn, user: None)
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
     token = _login(client)
 
     # Enable with host + key so the virtual device is created with deleted_at=NULL.
@@ -2500,6 +2520,67 @@ def test_put_romm_settings_disable_hides_device(client, monkeypatch):
     dash = client.get("/api/v1/ui/dashboard", headers=_hdr(token)).json()
     romm_dash = next((d for d in dash["devices"] if d["device_id"].startswith("romm:")), None)
     assert romm_dash is not None and romm_dash["is_deleted"] is True
+
+
+def test_get_romm_settings_includes_connect_status(client, monkeypatch):
+    """GET /settings/romm returns romm_connect_status and romm_connect_detail."""
+    import romm_meta as _romm_meta
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
+    token = _login(client)
+    client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "key"},
+        headers=_hdr(token),
+    )
+    r = client.get("/api/v1/ui/settings/romm", headers=_hdr(token))
+    data = r.json()
+    assert "romm_connect_status" in data
+    assert "romm_connect_detail" in data
+    assert data["romm_connect_status"] == "ok"
+    assert data["romm_username"] == "testuser"
+
+
+def test_put_romm_settings_auth_failed_hides_device(client, monkeypatch):
+    """When credentials fail auth, device stays hidden and response reports the error."""
+    import romm_meta as _romm_meta
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_fail)
+    token = _login(client)
+    r = client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "badkey", "enabled": True},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["romm_username"] is None
+    assert data["romm_connect_status"] == "auth_failed"
+    assert data["romm_connect_detail"] == "HTTP 403"
+
+    # Device must NOT appear as active
+    devices = client.get("/api/v1/ui/devices", headers=_hdr(token)).json()["devices"]
+    romm = next((d for d in devices if d.get("client_type") == "romm"), None)
+    assert romm is None or romm["is_deleted"] is True
+
+
+def test_put_romm_settings_auth_success_reveals_device(client, monkeypatch):
+    """When credentials pass auth, device becomes visible and response contains username."""
+    import romm_meta as _romm_meta
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
+    token = _login(client)
+    r = client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "goodkey", "enabled": True},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["romm_username"] == "testuser"
+    assert data["romm_connect_status"] == "ok"
+
+    devices = client.get("/api/v1/ui/devices", headers=_hdr(token)).json()["devices"]
+    romm = next((d for d in devices if d.get("client_type") == "romm"), None)
+    assert romm is not None and romm["is_deleted"] is False
 
 
 # ── _admin_err forbidden path ─────────────────────────────────────────────────
