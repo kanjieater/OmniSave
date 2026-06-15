@@ -87,7 +87,6 @@ def _fetch_rom_detail(rom_id: int) -> dict | None:
 
 def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
     """Index build for one user. Credentials are set explicitly — no shared state."""
-    import romm_vsc
     import titledb as tdb
 
     romm_meta.set_request_creds(host, api_key)
@@ -173,7 +172,6 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                 unmapped.discard(title_id)
                 already_mapped_rom_ids.add(rom_id)
                 mapped_count += 1
-                romm_vsc.push_head_async(title_id)
             time.sleep(0.05)
 
         # ── Pass 2: name search fallback — for titles still unmatched ─────────
@@ -215,7 +213,6 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
             )
             unmapped.discard(title_id)
             mapped_count += 1
-            romm_vsc.push_head_async(title_id)
 
         log.info("romm_index: done — %d new mapping(s) user=%s", mapped_count, username)
     except Exception as exc:
@@ -241,8 +238,12 @@ def build_title_id_index() -> None:
         try:
             host = db.get_user_config(conn, username, "romm_host") or ""
             key = db.get_user_config(conn, username, "romm_api_key") or ""
+            romm_device_id = (
+                db.get_user_config(conn, username, "romm_source_id") or f"romm:{username}"
+            )
             if host and key:
                 _build_for_user(conn, username, host, key)
+                db.sync_romm_catalog_to_device(conn, username, romm_device_id)
         finally:
             conn.close()
 

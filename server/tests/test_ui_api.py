@@ -2566,7 +2566,10 @@ def test_put_romm_settings_auth_failed_hides_device(client, monkeypatch):
 def test_put_romm_settings_auth_success_reveals_device(client, monkeypatch):
     """When credentials pass auth, device becomes visible and response contains username."""
     import romm_meta as _romm_meta
+    import romm_index as _romm_index
     monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
+    monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: None)
+    monkeypatch.setattr(_romm_index, "maybe_run_index", lambda: None)
     token = _login(client)
     r = client.put(
         "/api/v1/ui/settings/romm",
@@ -2581,6 +2584,71 @@ def test_put_romm_settings_auth_success_reveals_device(client, monkeypatch):
     devices = client.get("/api/v1/ui/devices", headers=_hdr(token)).json()["devices"]
     romm = next((d for d in devices if d.get("client_type") == "romm"), None)
     assert romm is not None and romm["is_deleted"] is False
+
+
+def test_put_romm_settings_triggers_index_on_success(client, monkeypatch):
+    """Successful auth triggers an immediate index refresh so games appear without waiting."""
+    import romm_meta as _romm_meta
+    import romm_index as _romm_index
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
+    called = []
+    monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: called.append("refresh"))
+    monkeypatch.setattr(_romm_index, "maybe_run_index", lambda: called.append("run"))
+    token = _login(client)
+    client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "goodkey", "enabled": True},
+        headers=_hdr(token),
+    )
+    assert "refresh" in called
+    assert "run" in called
+
+
+def test_put_romm_settings_no_index_on_auth_failure(client, monkeypatch):
+    """Failed auth must NOT trigger index refresh."""
+    import romm_meta as _romm_meta
+    import romm_index as _romm_index
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_fail)
+    called = []
+    monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: called.append("refresh"))
+    monkeypatch.setattr(_romm_index, "maybe_run_index", lambda: called.append("run"))
+    token = _login(client)
+    client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "badkey", "enabled": True},
+        headers=_hdr(token),
+    )
+    assert "refresh" not in called
+    assert "run" not in called
+
+
+def test_put_romm_settings_syncs_catalog_immediately(client, conn, monkeypatch):
+    """Games already in romm_title_map must appear in device_installed_games immediately
+    on a successful connect — without waiting for the background index to complete."""
+    import romm_meta as _romm_meta
+    import romm_index as _romm_index
+    import database as _db
+
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
+    monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: None)
+    monkeypatch.setattr(_romm_index, "maybe_run_index", lambda: None)
+
+    # Seed catalog as if a prior index run already ran
+    _db.upsert_romm_title_map(conn, ADMIN_USER, TITLE_1, 42)
+    conn.commit()
+
+    token = _login(client)
+    r = client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "goodkey", "enabled": True},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200
+
+    row = conn.execute(
+        "SELECT 1 FROM device_installed_games WHERE title_id=?", (TITLE_1.upper(),)
+    ).fetchone()
+    assert row is not None, "catalog must be synced immediately on successful connect"
 
 
 # ── _admin_err forbidden path ─────────────────────────────────────────────────
@@ -2612,6 +2680,54 @@ def test_put_romm_settings_source_id(client):
     assert r.status_code == 200
     r2 = client.get("/api/v1/ui/settings/romm", headers=_hdr(token))
     assert r2.json()["source_id"] == "romm:myhost.local"
+
+
+def test_put_romm_settings_restores_device_when_credentials_unchanged(client, conn, monkeypatch):
+    """Changing non-credential settings (e.g. enabled) un-deletes the romm device when
+    credentials are already set and a verified username exists (lines 1985-1987)."""
+    import romm_meta as _romm_meta
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
+    token = _login(client)
+
+    # Step 1: configure host + key → auth succeeds → device becomes visible
+    client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "goodkey", "enabled": True},
+        headers=_hdr(token),
+    )
+
+    # Step 2: soft-delete the romm device to simulate it being hidden
+    conn.execute(
+        "UPDATE devices SET deleted_at=datetime('now') WHERE client_type='romm'"
+    )
+
+    # Step 3: PUT with only enabled=True (no host/api_key change) → elif branch fires
+    r = client.put(
+        "/api/v1/ui/settings/romm",
+        json={"enabled": True},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200
+
+    # Device should be un-deleted because host+key exist and username was previously verified
+    devices = client.get("/api/v1/ui/devices", headers=_hdr(token)).json()["devices"]
+    romm = next((d for d in devices if d.get("client_type") == "romm"), None)
+    assert romm is not None and romm["is_deleted"] is False
+
+
+def test_device_games_exception_logged_and_reraised(client, monkeypatch):
+    """Exception from _device_games_inner is logged and re-raised (lines 1520-1522)."""
+    import pytest
+    import ui_api as _ui_api
+    from helpers import pair_device, DEVICE_A, auth_header, login_admin
+
+    pair_device(client, DEVICE_A)
+    token = login_admin(client)
+
+    monkeypatch.setattr(_ui_api, "_device_games_inner", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("db crash")))
+
+    with pytest.raises(RuntimeError, match="db crash"):
+        client.get(f"/api/v1/ui/devices/{DEVICE_A}/games", headers=auth_header(token))
 
 
 # ── delivery_failed_count ghost exclusion ──────────────────────────────────────
@@ -2673,3 +2789,108 @@ def test_device_restore_all_queues_outbound(client, conn):
     ).fetchone()
     assert row is not None
     assert row["state"] == "READY_FOR_RESTORE"
+
+
+# ── user rename ownership propagation ─────────────────────────────────────────
+
+
+def test_rename_user_propagates_ownership_to_all_tables(client, conn):
+    """Renaming a user must update every table that stores username as an identity
+    key. Regression for: saves/devices disappeared after rename because
+    rename_auth_user only updated auth_users + auth_sessions."""
+    admin_token = _login(client)
+
+    # Create user alice and get her session token
+    client.post("/api/v1/ui/users", json={"username": "alice", "password": "pw"}, headers=_hdr(admin_token))
+    alice_token = client.post("/api/v1/ui/auth/login", json={"username": "alice", "password": "pw"}).json()["admin_token"]
+
+    # Seed owned data for alice directly in DB
+    _seed_device(conn, DEVICE_A, user_id="alice")
+    _seed_event(conn, owner_user_id="alice", device_id=DEVICE_A)
+    _seed_txn(conn, source_device_id=DEVICE_A, direction="inbound",
+              state="READY_FOR_RESTORE", snapshot_sequence=1,
+              sha256="a" * 64, snapshot_path="/fake/save.zip", owner_user_id="alice")
+
+    # user_config: simulates a stored RomM URL preference
+    conn.execute(
+        "INSERT INTO user_config (username, key, value) VALUES (?, ?, ?)",
+        ("alice", "romm_url", "http://romm.local"),
+    )
+
+    # RomM tables
+    conn.execute(
+        "INSERT INTO romm_title_map (username, title_id, rom_id, mapped_at) VALUES (?,?,?,?)",
+        ("alice", TITLE_1, 42, "2024-01-01T00:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO romm_save_sync"
+        " (username, rom_id, romm_save_id, direction, transaction_id, synced_at)"
+        " VALUES (?,?,?,?,?,?)",
+        ("alice", 42, 99, "inbound", None, "2024-01-01T00:00:00Z"),
+    )
+    conn.commit()
+
+    # ── rename alice → bob using her existing session token ──────────────────
+    r = client.post(
+        "/api/v1/ui/settings/credentials",
+        json={"current_password": "pw", "new_username": "bob"},
+        headers=_hdr(alice_token),
+    )
+    assert r.status_code == 200, r.text
+
+    # ── B. request consistency — same token, no re-auth ──────────────────────
+    # Session token must still resolve (auth_sessions.username updated)
+    r = client.get("/api/v1/ui/devices", headers=_hdr(alice_token))
+    assert r.status_code == 200, "session token broken after rename"
+    device_ids = [d["device_id"] for d in r.json()["devices"]]
+    assert DEVICE_A in device_ids, "device disappeared after rename"
+
+    # Game title must appear (sync_transactions.owner_user_id updated)
+    r = client.get("/api/v1/ui/games", headers=_hdr(alice_token))
+    assert r.status_code == 200
+    title_ids = [g["title_id"] for g in r.json()["games"]]
+    assert TITLE_1.upper() in title_ids, "game title disappeared after rename"
+
+    # ── C. config survival ────────────────────────────────────────────────────
+    row = conn.execute(
+        "SELECT value FROM user_config WHERE username=? AND key=?", ("bob", "romm_url")
+    ).fetchone()
+    assert row is not None, "user_config lost after rename"
+    assert row["value"] == "http://romm.local"
+
+    # ── A. persistence — old username owns nothing ────────────────────────────
+    zero_checks = [
+        ("devices", "owner_user_id"),
+        ("sync_transactions", "owner_user_id"),
+        ("events", "owner_user_id"),
+        ("device_auth", "user_id"),
+        ("device_profile_map", "user_id"),
+        ("user_config", "username"),
+        ("romm_title_map", "username"),
+        ("romm_game_cache", "username"),
+        ("romm_save_sync", "username"),
+    ]
+    for table, col in zero_checks:
+        count = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {col}=?", ("alice",)  # noqa: S608
+        ).fetchone()[0]
+        assert count == 0, f"{table}.{col} still references 'alice' after rename"
+
+
+def test_rename_user_to_existing_username_returns_409_and_rolls_back(client, conn):
+    """Rename to a duplicate username must return 409 and leave the DB untouched."""
+    admin_token = _login(client)
+    client.post("/api/v1/ui/users", json={"username": "src", "password": "pw"}, headers=_hdr(admin_token))
+    client.post("/api/v1/ui/users", json={"username": "taken", "password": "pw"}, headers=_hdr(admin_token))
+    src_token = client.post("/api/v1/ui/auth/login", json={"username": "src", "password": "pw"}).json()["admin_token"]
+
+    r = client.post(
+        "/api/v1/ui/settings/credentials",
+        json={"current_password": "pw", "new_username": "taken"},
+        headers=_hdr(src_token),
+    )
+    assert r.status_code == 409
+
+    # Rollback: src still exists, taken still exists, neither was corrupted
+    assert client.post("/api/v1/ui/auth/login", json={"username": "src", "password": "pw"}).status_code == 200
+    assert client.post("/api/v1/ui/auth/login", json={"username": "taken", "password": "pw"}).status_code == 200

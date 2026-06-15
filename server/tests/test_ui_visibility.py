@@ -240,3 +240,40 @@ def test_admin_can_reassign_profile(client, conn):
     assert r.status_code == 200
     owner = db.get_profile_owner(conn, DEVICE_A, PROFILE_A)
     assert owner == "alice"
+
+
+# ── Game detail badge visibility without claimed profile ───────────────────────
+
+
+def test_game_detail_shows_uploader_badge_without_profile_claim(client):
+    """device_sync_matrix includes the uploading device even when device_profile_map is empty."""
+    tok = pair_device(client, DEVICE_A)
+    do_upload(client, DEVICE_A, TITLE_1, SAVE_A, device_token=tok)
+
+    admin_tok = login_admin(client)
+    r = client.get(f"/api/v1/ui/games/{TITLE_1}", headers=auth_header(admin_tok))
+    assert r.status_code == 200, r.text
+    matrix_ids = [e["device_id"] for e in r.json()["device_sync_matrix"]]
+    assert DEVICE_A in matrix_ids, f"uploader not in matrix: {matrix_ids}"
+
+
+def test_game_detail_shows_recipient_badge_without_profile_claim(client, conn):
+    """device_sync_matrix includes the outbound target even when device_profile_map is empty."""
+    tok_a = pair_device(client, DEVICE_A)
+    pair_device(client, DEVICE_B)
+    do_upload(client, DEVICE_A, TITLE_1, SAVE_A, device_token=tok_a)
+
+    # Simulate a completed outbound delivery to DEVICE_B
+    conn.execute(
+        "INSERT INTO sync_transactions"
+        " (transaction_id, direction, state, source_device_id, target_device_id,"
+        "  title_id, snapshot_sequence, owner_user_id, created_at, updated_at)"
+        " VALUES ('test-out-1','outbound','COMPLETED',?,?,?,1,'admin',datetime('now'),datetime('now'))",
+        (DEVICE_A, DEVICE_B, TITLE_1),
+    )
+
+    admin_tok = login_admin(client)
+    r = client.get(f"/api/v1/ui/games/{TITLE_1}", headers=auth_header(admin_tok))
+    assert r.status_code == 200, r.text
+    matrix_ids = [e["device_id"] for e in r.json()["device_sync_matrix"]]
+    assert DEVICE_B in matrix_ids, f"recipient not in matrix: {matrix_ids}"

@@ -19,6 +19,7 @@ from helpers import (
     auth_header,
     do_upload,
     login_admin,
+    pair_device,
 )
 
 SAVE = b"profile-save" * 100
@@ -437,3 +438,43 @@ def test_pair_device_sets_config_pending_device_config_delivers_token(client):
     device_token = pair_r.json()["token"]
     cfg_r = client.post("/api/v1/sync/device-config", json={}, headers={"X-Device-ID": DEVICE_A})
     assert cfg_r.json().get("device_token") == device_token
+
+
+# ── Auto-claim: device-config populates device_profile_map ───────────────────
+
+
+def test_device_config_auto_claims_profile_when_device_has_owner(client, conn):
+    """Profiles reported via device-config are auto-claimed for the device owner."""
+    pair_device(client, DEVICE_A)
+    client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": [{"profile_id": PROF_A, "profile_name": "Alice"}]},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    owner = db.get_profile_owner(conn, DEVICE_A, PROF_A)
+    assert owner == "admin", f"expected auto-claim to 'admin', got {owner!r}"
+
+
+def test_device_config_auto_claim_skips_already_claimed_profile(client, conn):
+    """Auto-claim does not overwrite a profile already claimed by another user."""
+    _create_user(client, _login(client), "otheruser")
+    pair_device(client, DEVICE_A)
+    db.upsert_known_profile(conn, DEVICE_A, PROF_A, "Alice")
+    db.upsert_device_profile(conn, DEVICE_A, PROF_A, "otheruser", "Alice")
+
+    client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": [{"profile_id": PROF_A, "profile_name": "Alice"}]},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert db.get_profile_owner(conn, DEVICE_A, PROF_A) == "otheruser"
+
+
+def test_device_config_auto_claim_skips_unpaired_device(client, conn):
+    """No auto-claim when the device has no owner yet (not paired)."""
+    client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": [{"profile_id": PROF_A, "profile_name": "Alice"}]},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert db.get_profile_owner(conn, DEVICE_A, PROF_A) is None

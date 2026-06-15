@@ -187,6 +187,27 @@ def _pull_for_user(staging_dir, archive_dir, username: str) -> None:
                 title_id = entry["title_id"]
                 rom_id = entry["rom_id"]
                 saves = romm_meta.list_all_saves_for_rom(rom_id)
+                if not entry["pull_initialized"]:
+                    # First observation for this ROM: establish baseline.
+                    # Mark all existing saves as already-seen without ingesting.
+                    # Mirrors Switch behavior — existing saves don't retroactively sync.
+                    baselined = 0
+                    for save in saves:
+                        ext = (save.get("file_extension") or "").lower()
+                        fname = (save.get("file_name") or "").lower()
+                        if ext != "zip" and not fname.endswith(".zip"):
+                            continue
+                        db.record_romm_sync(conn, username, rom_id, save["id"], "inbound", None)
+                        baselined += 1
+                    db.mark_romm_pull_initialized(conn, username, rom_id)
+                    conn.commit()
+                    log.info(
+                        "romm_vsc: rom_id=%d baselined %d existing save(s) — future saves will sync, user=%s",
+                        rom_id,
+                        baselined,
+                        username,
+                    )
+                    continue
                 for save in saves:
                     save_id = save["id"]
                     ext = (save.get("file_extension") or "").lower()
@@ -299,7 +320,10 @@ def start_pull_loop(staging_dir, archive_dir, interval_sec: int = 900) -> None:
 
     def _loop():
         while True:
+            try:
+                pull(staging_dir, archive_dir)
+            except Exception:
+                log.exception("romm_vsc: pull loop iteration failed")
             time.sleep(interval_sec)
-            pull(staging_dir, archive_dir)
 
     threading.Thread(target=_loop, daemon=True, name="romm-vsc-pull").start()

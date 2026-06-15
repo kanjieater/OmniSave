@@ -145,15 +145,15 @@ export default function EventsPage() {
             emptyMessage={
               activeFilters
                 ? 'No matching events — try adjusting your filters.'
-                : 'No activity yet. Claim a profile on a device to see your sync history.'
+                : 'No activity yet. Add a client to start syncing your saves.'
             }
             emptyAction={
               !activeFilters ? (
                 <Link
-                  to="/devices"
+                  to="/settings#pair-device"
                   className="text-sm font-[var(--font-weight-medium)] text-[var(--color-text-primary)] underline underline-offset-2 hover:text-[var(--color-text-secondary)]"
                 >
-                  Go to Devices →
+                  Add a Client →
                 </Link>
               ) : undefined
             }

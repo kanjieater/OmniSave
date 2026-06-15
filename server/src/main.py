@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 import database as db
 import romm_api
+import romm_index
 import romm_meta
 import romm_vsc
 import romm_worker
@@ -123,8 +124,11 @@ def main():
         romm_meta.load_or_create_device_id(conn)
     # RomM virtual devices are per-user; registered on demand, not at startup.
     conn.commit()
+    t0 = time.perf_counter()
     titledb.prefetch()
+    log.info("startup: titledb.prefetch() launched (%.1fs)", time.perf_counter() - t0)
     romm_meta.warm_cache_all(conn)
+    romm_index.build_title_id_index_async()
     romm_vsc.start_pull_loop(STAGING_DIR, ARCHIVE_DIR)
     romm_worker.start_worker_loop()
 

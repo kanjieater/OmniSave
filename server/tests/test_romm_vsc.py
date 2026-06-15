@@ -348,6 +348,8 @@ def test_pull_ingests_new_save(conn, tmp_path, tmp_dirs, monkeypatch):
     staging, archive = tmp_dirs
     _setup_romm(monkeypatch, tmp_path, conn)
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    conn.commit()
     monkeypatch.setattr(romm_meta, "list_all_saves_for_rom", lambda rid: [{"id": 7, "file_extension": "zip", "file_name": "save.zip"}])
     monkeypatch.setattr(romm_meta, "download_save_content", lambda sid: SAVE_BYTES)
     romm_vsc.pull(staging, archive)
@@ -359,6 +361,8 @@ def test_pull_uses_all_saves_not_device_filtered(conn, tmp_path, tmp_dirs, monke
     staging, archive = tmp_dirs
     _setup_romm(monkeypatch, tmp_path, conn)
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    conn.commit()
     all_saves_called = []
     monkeypatch.setattr(romm_meta, "list_all_saves_for_rom", lambda rid: all_saves_called.append(rid) or [])
     monkeypatch.setattr(romm_meta, "list_saves_for_rom", lambda rid, did: (_ for _ in ()).throw(AssertionError("should not call filtered variant")))
@@ -370,6 +374,7 @@ def test_pull_skips_already_synced(conn, tmp_path, tmp_dirs, monkeypatch):
     staging, archive = tmp_dirs
     _setup_romm(monkeypatch, tmp_path, conn)
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    db.mark_romm_pull_initialized(conn, USER, ROM_ID)
     db.record_romm_sync(conn, USER, ROM_ID, 7, "inbound", "existing-txn")
     downloaded = []
     monkeypatch.setattr(romm_meta, "list_all_saves_for_rom", lambda rid: [{"id": 7, "file_extension": "zip", "file_name": "save.zip"}])
@@ -382,6 +387,8 @@ def test_pull_download_failure_skips(conn, tmp_path, tmp_dirs, monkeypatch):
     staging, archive = tmp_dirs
     _setup_romm(monkeypatch, tmp_path, conn)
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    conn.commit()
     monkeypatch.setattr(romm_meta, "list_all_saves_for_rom", lambda rid: [{"id": 8, "file_extension": "zip", "file_name": "save.zip"}])
     monkeypatch.setattr(romm_meta, "download_save_content", lambda sid: None)
     romm_vsc.pull(staging, archive)
@@ -483,6 +490,8 @@ def test_pull_skips_non_zip_extension(conn, tmp_path, tmp_dirs, monkeypatch):
     staging, archive = tmp_dirs
     _setup_romm(monkeypatch, tmp_path, conn)
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    conn.commit()
     downloaded = []
     monkeypatch.setattr(romm_meta, "list_all_saves_for_rom",
                         lambda rid: [{"id": 9, "file_extension": "srm", "file_name": "save.srm"}])
@@ -695,3 +704,236 @@ def test_ping_fails_on_exception(monkeypatch):
 
 def test_ping_empty_host():
     assert romm_meta.ping("") is False
+
+
+# ── list_all_saves_for_rom response-format handling ────────────────────────────
+
+
+def _fake_urlopen(body: bytes):
+    import io
+
+    class _Resp:
+        def read(self):
+            return body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+    return lambda req, timeout=None: _Resp()
+
+
+def test_list_all_saves_for_rom_flat_list(monkeypatch):
+    """Old RomM: /api/saves returns a flat JSON array."""
+    import urllib.request as _ur
+
+    monkeypatch.setattr(romm_meta, "ROMM_HOST", "http://romm.local")
+    monkeypatch.setattr(romm_meta, "ROMM_API_KEY", "key")
+    body = b'[{"id": 7, "file_extension": "zip"}]'
+    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen(body))
+    result = romm_meta.list_all_saves_for_rom(ROM_ID)
+    assert result == [{"id": 7, "file_extension": "zip"}]
+
+
+def test_list_all_saves_for_rom_paginated_dict(monkeypatch):
+    """RomM 4.9+: /api/saves returns {"items": [...], "total": N}.
+    Before the fix, iterating the dict's string keys caused TypeError and silently
+    aborted the pull loop for all titles."""
+    import urllib.request as _ur
+
+    monkeypatch.setattr(romm_meta, "ROMM_HOST", "http://romm.local")
+    monkeypatch.setattr(romm_meta, "ROMM_API_KEY", "key")
+    body = b'{"items": [{"id": 7, "file_extension": "zip"}], "total": 1}'
+    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen(body))
+    result = romm_meta.list_all_saves_for_rom(ROM_ID)
+    assert result == [{"id": 7, "file_extension": "zip"}]
+
+
+def test_list_all_saves_for_rom_paginated_empty(monkeypatch):
+    """RomM 4.9+ empty: {"items": [], "total": 0} must return [] without error."""
+    import urllib.request as _ur
+
+    monkeypatch.setattr(romm_meta, "ROMM_HOST", "http://romm.local")
+    monkeypatch.setattr(romm_meta, "ROMM_API_KEY", "key")
+    body = b'{"items": [], "total": 0}'
+    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen(body))
+    result = romm_meta.list_all_saves_for_rom(ROM_ID)
+    assert result == []
+
+
+def test_pull_ingests_cross_instance_save(conn, tmp_path, tmp_dirs, monkeypatch):
+    """Save uploaded by dev OmniSave (different device, fresh romm_save_id) is ingested
+    by prod's pull loop. Prod DB has no prior record of this save_id — it must NOT be
+    blocked by any loop guard from a different instance."""
+    staging, archive = tmp_dirs
+    _setup_romm(monkeypatch, tmp_path, conn)
+    db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    conn.commit()
+    # Prod DB has never seen save_id=99 — simulates save uploaded by dev OmniSave
+    assert not db.has_romm_sync(conn, USER, ROM_ID, 99, "inbound")
+    monkeypatch.setattr(
+        romm_meta,
+        "list_all_saves_for_rom",
+        lambda rid: [{"id": 99, "file_extension": "zip", "file_name": "game.zip"}],
+    )
+    monkeypatch.setattr(romm_meta, "download_save_content", lambda sid: SAVE_BYTES)
+    romm_vsc.pull(staging, archive)
+    assert db.has_romm_sync(conn, USER, ROM_ID, 99, "inbound"), (
+        "prod must ingest save uploaded by dev instance"
+    )
+
+
+def test_pull_loop_runs_immediately_on_startup(tmp_dirs, monkeypatch):
+    """start_pull_loop fires pull() before the first sleep, not after.
+    Before the fix the loop slept 15 min first — saves available at startup were
+    invisible until the first poll completed."""
+    import threading as _threading
+
+    staging, archive = tmp_dirs
+    monkeypatch.setattr(romm_meta, "_db_path", None)  # pull is a no-op without db_path
+    pulled = _threading.Event()
+    monkeypatch.setattr(romm_vsc, "pull", lambda s, a: pulled.set())
+    romm_vsc.start_pull_loop(staging, archive, interval_sec=9999)
+    assert pulled.wait(timeout=2), "pull() must be called immediately at loop startup"
+
+
+# ── pull_initialized — first-encounter baseline ───────────────────────────────
+
+
+def test_pull_first_encounter_baselines_not_ingests(conn, tmp_path, tmp_dirs, monkeypatch):
+    """First pull for a ROM (pull_initialized=0): mark existing saves as seen, do NOT ingest.
+
+    Invariant: saves that existed in RomM before OmniSave connected must not be
+    delivered to Switch clients. Only saves that arrive AFTER baseline are synced."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    conn.commit()
+
+    staging, archive = tmp_dirs
+    monkeypatch.setattr(
+        romm_meta,
+        "list_all_saves_for_rom",
+        lambda rom_id: [{"id": 42, "file_extension": "zip", "file_name": "save.zip"}],
+    )
+    download_calls: list = []
+    monkeypatch.setattr(romm_meta, "download_save_content", lambda sid: download_calls.append(sid) or SAVE_BYTES)
+
+    romm_vsc._pull_for_user(staging, archive, USER)
+
+    assert not download_calls, "first encounter must not download saves"
+    txns = conn.execute("SELECT COUNT(*) FROM sync_transactions WHERE direction='inbound'").fetchone()[0]
+    assert txns == 0, "first encounter must not create inbound transactions"
+    assert db.has_romm_sync(conn, USER, ROM_ID, 42, "inbound"), "existing save must be marked as seen"
+    row = conn.execute(
+        "SELECT pull_initialized FROM romm_title_map WHERE username=? AND rom_id=?", (USER, ROM_ID)
+    ).fetchone()
+    assert row["pull_initialized"] == 1, "pull_initialized must advance to 1 after baseline"
+
+
+def test_pull_zero_saves_first_encounter_advances_state(conn, tmp_path, tmp_dirs, monkeypatch):
+    """First pull with zero saves must still advance pull_initialized to 1.
+
+    Prevents the edge case where a ROM starts empty → first real save gets
+    baselined instead of ingested because first_encounter never clears."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    conn.commit()
+
+    staging, archive = tmp_dirs
+    monkeypatch.setattr(romm_meta, "list_all_saves_for_rom", lambda rom_id: [])
+
+    romm_vsc._pull_for_user(staging, archive, USER)
+
+    row = conn.execute(
+        "SELECT pull_initialized FROM romm_title_map WHERE username=? AND rom_id=?", (USER, ROM_ID)
+    ).fetchone()
+    assert row["pull_initialized"] == 1, "pull_initialized must advance even when ROM has zero saves"
+
+
+def test_pull_first_encounter_skips_non_zip_in_baseline(conn, tmp_path, tmp_dirs, monkeypatch):
+    """Non-zip saves are NOT baselined — only ZIP saves establish the seen-record."""
+    staging, archive = tmp_dirs
+    _setup_romm(monkeypatch, tmp_path, conn)
+    db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    conn.commit()
+
+    monkeypatch.setattr(
+        romm_meta,
+        "list_all_saves_for_rom",
+        lambda rid: [
+            {"id": 1, "file_extension": "srm", "file_name": "game.srm"},
+            {"id": 2, "file_extension": "zip", "file_name": "save.zip"},
+        ],
+    )
+    romm_vsc._pull_for_user(staging, archive, USER)
+
+    assert not db.has_romm_sync(conn, USER, ROM_ID, 1, "inbound"), "non-zip must NOT be baselined"
+    assert db.has_romm_sync(conn, USER, ROM_ID, 2, "inbound"), "zip save must be baselined"
+    row = conn.execute(
+        "SELECT pull_initialized FROM romm_title_map WHERE username=? AND rom_id=?", (USER, ROM_ID)
+    ).fetchone()
+    assert row["pull_initialized"] == 1
+
+
+def test_pull_established_ingests_all_new_saves(conn, tmp_path, tmp_dirs, monkeypatch):
+    """Established path ingests ALL saves that appeared after baseline, not just the latest.
+
+    Saves uploaded by multiple clients between pull cycles must all be delivered
+    so conflict resolution can pick the right HEAD."""
+    staging, archive = tmp_dirs
+    _setup_romm(monkeypatch, tmp_path, conn)
+    db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    conn.commit()
+
+    monkeypatch.setattr(
+        romm_meta,
+        "list_all_saves_for_rom",
+        lambda rid: [
+            {"id": 3, "file_extension": "zip", "file_name": "s3.zip"},
+            {"id": 7, "file_extension": "zip", "file_name": "s7.zip"},
+        ],
+    )
+    monkeypatch.setattr(romm_meta, "download_save_content", lambda sid: SAVE_BYTES)
+
+    romm_vsc._pull_for_user(staging, archive, USER)
+
+    txns = conn.execute(
+        "SELECT COUNT(*) FROM sync_transactions WHERE direction='inbound'"
+    ).fetchone()[0]
+    assert txns == 2, "all post-baseline saves must be ingested"
+    assert db.has_romm_sync(conn, USER, ROM_ID, 3, "inbound")
+    assert db.has_romm_sync(conn, USER, ROM_ID, 7, "inbound")
+
+
+def test_pull_established_ingests_new_save(conn, tmp_path, tmp_dirs, monkeypatch):
+    """After baseline (pull_initialized=1), new save → ingest; existing seen save → skip."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    db.mark_romm_pull_initialized(conn, USER, ROM_ID)  # already initialized
+    db.record_romm_sync(conn, USER, ROM_ID, 42, "inbound", None)  # save 42 already seen
+    db.upsert_virtual_device(conn, "romm:admin", "RomM", "romm-vsc", client_type="romm", owner_user_id=USER)
+    db.set_user_config(conn, USER, "romm_source_id", "romm:admin")
+    conn.commit()
+
+    staging, archive = tmp_dirs
+    monkeypatch.setattr(
+        romm_meta,
+        "list_all_saves_for_rom",
+        lambda rom_id: [
+            {"id": 42, "file_extension": "zip", "file_name": "save.zip"},  # already seen
+            {"id": 99, "file_extension": "zip", "file_name": "save.zip"},  # new
+        ],
+    )
+    monkeypatch.setattr(romm_meta, "download_save_content", lambda sid: SAVE_BYTES)
+
+    romm_vsc._pull_for_user(staging, archive, USER)
+
+    txns = conn.execute(
+        "SELECT COUNT(*) FROM sync_transactions WHERE direction='inbound'"
+    ).fetchone()[0]
+    assert txns == 1, "only the new save (id=99) must be ingested"
+    assert db.has_romm_sync(conn, USER, ROM_ID, 99, "inbound"), "new save must be recorded"

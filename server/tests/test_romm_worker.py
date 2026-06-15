@@ -668,3 +668,99 @@ def test_fanout_does_not_cross_user_physical_switch(conn, tmp_dirs):
         (SWITCH_C,),
     ).fetchone()[0]
     assert same_user == 1, "USER's save must fan out to USER's other physical Switch"
+
+
+# ── Catalog registration must not trigger delivery ────────────────────────────
+
+
+def test_reconcile_does_not_auto_push_on_first_connect(conn, tmp_path, tmp_dirs, monkeypatch):
+    """First RomM connection: HEAD exists for a title but no outbound has ever been attempted.
+    _reconcile_undelivered must NOT bootstrap delivery — that would dump all existing saves."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    _setup_db_for_worker(conn, tmp_path)
+
+    staging, archive = tmp_dirs
+    # Existing inbound from a physical Switch — arrived before RomM was connected
+    processing.ingest_direct(TITLE, "AA:BB:CC:DD:EE:FF", SAVE_BYTES, staging, archive, conn,
+                             owner_user_id=USER)
+    # Drain the outbound fanout created by processing so the RomM outbound from
+    # fanout doesn't interfere — complete it manually to simulate it already done
+    conn.execute(
+        "UPDATE sync_transactions SET state='COMPLETED', updated_at=datetime('now')"
+        " WHERE direction='outbound' AND target_device_id=? AND state='READY_FOR_RESTORE'",
+        (ROMM_DEVICE_ID,),
+    )
+    conn.commit()
+
+    upload_calls: list = []
+    monkeypatch.setattr(romm_meta, "upload_save",
+                        lambda *a, **kw: upload_calls.append(a) or ({"id": 99}, None))
+    # Now delete the completed outbound to simulate "no outbound ever attempted"
+    conn.execute("DELETE FROM sync_transactions WHERE direction='outbound' AND target_device_id=?",
+                 (ROMM_DEVICE_ID,))
+    conn.commit()
+
+    romm_worker.run_once(conn)
+
+    assert not upload_calls, "first-connect must not auto-push existing saves"
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM sync_transactions"
+        " WHERE direction='outbound' AND target_device_id=? AND state='READY_FOR_RESTORE'",
+        (ROMM_DEVICE_ID,),
+    ).fetchone()[0]
+    assert pending == 0, "no outbound transactions must be created on first connect"
+
+
+def test_reconcile_retries_on_failed_outbound(conn, tmp_path, tmp_dirs, monkeypatch):
+    """When a previous outbound delivery attempt FAILED, reconcile must retry.
+
+    This is the legitimate retry path: delivery was attempted, failed, and the
+    new inbound re-trigger won't fire because HEAD hasn't changed."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    _setup_db_for_worker(conn, tmp_path)
+
+    staging, archive = tmp_dirs
+    processing.ingest_direct(TITLE, "AA:BB:CC:DD:EE:FF", SAVE_BYTES, staging, archive, conn,
+                             owner_user_id=USER)
+    # Mark the fanout outbound as FAILED to simulate a failed delivery
+    conn.execute(
+        "UPDATE sync_transactions SET state='FAILED', updated_at=datetime('now')"
+        " WHERE direction='outbound' AND target_device_id=? AND state='READY_FOR_RESTORE'",
+        (ROMM_DEVICE_ID,),
+    )
+    conn.commit()
+
+    upload_calls: list = []
+    monkeypatch.setattr(romm_meta, "upload_save",
+                        lambda *a, **kw: upload_calls.append(a) or ({"id": 99}, None))
+    monkeypatch.setattr(romm_meta, "ping", lambda host: True)
+
+    # Cycle 1: reconcile detects FAILED outbound, queues a new READY_FOR_RESTORE outbound.
+    # Cycle 2: worker picks up that new outbound and calls upload_save.
+    romm_worker.run_once(conn)
+    romm_worker.run_once(conn)
+
+    assert upload_calls, "reconcile must retry upload after FAILED outbound"
+
+
+def test_new_save_after_romm_connect_creates_outbound(conn, tmp_path, tmp_dirs, monkeypatch):
+    """Desired behavior: new save arrives after RomM is connected → exactly one upload.
+
+    Proves the normal delivery path (processing fanout → worker upload) still works
+    after removing the bootstrap behavior."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    _setup_db_for_worker(conn, tmp_path)
+
+    staging, archive = tmp_dirs
+    # New save arrives — processing creates outbound for RomM via catalog fanout
+    processing.ingest_direct(TITLE, "AA:BB:CC:DD:EE:FF", SAVE_BYTES, staging, archive, conn,
+                             owner_user_id=USER)
+
+    upload_calls: list = []
+    monkeypatch.setattr(romm_meta, "upload_save",
+                        lambda *a, **kw: upload_calls.append(a) or ({"id": 99}, None))
+    monkeypatch.setattr(romm_meta, "ping", lambda host: True)
+
+    romm_worker.run_once(conn)
+
+    assert len(upload_calls) == 1, "exactly one upload must be made for the new save"

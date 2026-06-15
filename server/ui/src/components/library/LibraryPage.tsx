@@ -163,13 +163,13 @@ export default function LibraryPage() {
         ) : (
           <EmptyState
             title="No games yet"
-            description="Claim a profile on a device to see your saves here."
+            description="Add a client to start syncing your saves."
             action={
               <Link
-                to="/devices"
+                to="/settings#pair-device"
                 className="text-sm font-[var(--font-weight-medium)] text-[var(--color-text-primary)] underline underline-offset-2 hover:text-[var(--color-text-secondary)]"
               >
-                Go to Devices →
+                Add a Client →
               </Link>
             }
           />

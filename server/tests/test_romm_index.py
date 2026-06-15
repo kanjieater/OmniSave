@@ -117,7 +117,7 @@ def test_build_maps_title_when_found(conn, tmp_path, monkeypatch):
     cached = db.get_romm_game_cache(conn, USER, ROM_ID)
     assert cached["name"] == "Code: Realize"
     assert cached["icon_url"] == "https://cdn.example.com/cover.jpg"
-    assert TITLE_A in push_calls
+    assert not push_calls  # catalog registration must not trigger save delivery
 
 
 def test_build_skips_already_mapped_rom(conn, tmp_path, monkeypatch):
@@ -170,8 +170,11 @@ def test_build_discovers_title_unknown_to_omnisave(conn, tmp_path, monkeypatch):
     romm_index.build_title_id_index()
 
     assert db.get_romm_rom_id(conn, USER, TITLE_A) == ROM_ID
-    # RomM ingestion must not write to device tables
-    assert not conn.execute("SELECT 1 FROM device_installed_games").fetchone()
+    # After indexing, catalog sync must populate device_installed_games immediately.
+    row = conn.execute(
+        "SELECT 1 FROM device_installed_games WHERE title_id=?", (TITLE_A,)
+    ).fetchone()
+    assert row is not None
 
 
 def test_build_skips_already_mapped_rom_id(conn, tmp_path, monkeypatch):
@@ -328,3 +331,56 @@ def test_fetch_rom_detail_returns_none_on_error(monkeypatch):
     with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
         result = romm_index._fetch_rom_detail(99)
     assert result is None
+
+
+# ── build_title_id_index catalog sync ─────────────────────────────────────────
+
+
+def test_build_title_id_index_syncs_catalog_after_build(monkeypatch, tmp_path, conn):
+    """After indexing, build_title_id_index must call sync_romm_catalog_to_device
+    so games appear immediately without waiting for the next worker cycle."""
+    _setup(monkeypatch, tmp_path, conn)
+
+    sync_calls = []
+
+    def _fake_build(c, username, host, key):
+        db.upsert_romm_title_map(c, username, TITLE_A, ROM_ID)
+        c.commit()
+
+    monkeypatch.setattr(romm_index, "_build_for_user", _fake_build)
+    monkeypatch.setattr(db, "sync_romm_catalog_to_device", lambda c, u, d: sync_calls.append((u, d)))
+
+    romm_index.build_title_id_index()
+
+    assert len(sync_calls) == 1
+    u, d = sync_calls[0]
+    assert u == USER
+    assert "romm" in d
+
+
+def test_build_does_not_call_push_head_async(conn, tmp_path, monkeypatch):
+    """Catalog registration must never trigger save delivery.
+
+    Invariant: index build ≠ save push. Connecting RomM and running the index
+    must not push any existing saves — only new inbounds should create outbounds."""
+    _setup(monkeypatch, tmp_path, conn)
+    _seed_inbound(conn, TITLE_A)
+
+    push_calls: list[str] = []
+    monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: push_calls.append(tid))
+    monkeypatch.setattr(romm_index, "_fetch_switch_rom_ids", lambda: [ROM_ID])
+    monkeypatch.setattr(
+        romm_index,
+        "_fetch_rom_detail",
+        lambda rid: {
+            "id": rid,
+            "name": "Code: Realize",
+            "url_cover": "https://cdn.example.com/cover.jpg",
+            "path_cover_large": "",
+            "files": [{"file_name": f"Code Realize [{TITLE_A}][v0].xci"}],
+        },
+    )
+
+    romm_index.build_title_id_index()
+
+    assert not push_calls, "index build must not call push_head_async"

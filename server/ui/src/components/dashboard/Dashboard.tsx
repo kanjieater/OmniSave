@@ -147,13 +147,13 @@ export default function Dashboard() {
             <div className="col-span-full py-[var(--spacing-8)] flex flex-col items-center gap-[var(--spacing-3)] text-center">
               <Gamepad2 size={32} className="text-[var(--color-text-muted)]" aria-hidden="true" />
               <p className="text-sm text-[var(--color-text-muted)]">
-                No games yet — claim a profile on a device to get started.
+                No games yet — add a client to start syncing your saves.
               </p>
               <Link
-                to="/devices"
+                to="/settings#pair-device"
                 className="text-sm font-[var(--font-weight-medium)] text-[var(--color-text-primary)] underline underline-offset-2 hover:text-[var(--color-text-secondary)]"
               >
-                Go to Devices →
+                Add a Client →
               </Link>
             </div>
           ) : (

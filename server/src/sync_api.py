@@ -593,10 +593,17 @@ def device_config(body: DeviceConfigBody, request: Request):
         (device_id, _bootstrap_now, _bootstrap_now),
     )
 
-    # Update known profiles regardless of token state
+    # Update known profiles regardless of token state.
+    # Auto-claim: if the device already has an owner and this profile hasn't been
+    # claimed by anyone yet, claim it automatically so UI badges work without a
+    # manual claim step in the web interface.
+    _device_owner = db.get_device_owner(_conn, device_id)
     for p in body.known_profiles:
         if p.profile_id:
             db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
+            if _device_owner and db.get_profile_owner(_conn, device_id, p.profile_id) is None:
+                db.upsert_device_profile(_conn, device_id, p.profile_id, _device_owner, p.profile_name)
+                db.backfill_owner_on_profile_claim(_conn, device_id, p.profile_id, _device_owner)
 
     # Catalog update: atomically replace installed-game inventory, then backfill outbounds.
     if body.installed_titles is not None:

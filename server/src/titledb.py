@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -26,18 +27,22 @@ log = logging.getLogger(__name__)
 
 _TITLEDB_PATH = os.environ.get("OMNISAVE_TITLEDB", "")
 _DATA_DIR = Path(os.environ.get("OMNISAVE_DATA", "/app/data"))
+_SKIP_REGIONS = os.environ.get("OMNISAVE_TITLEDB_SKIP_REGIONS", "").lower() in ("1", "true", "yes")
 
 _CACHE_US = _DATA_DIR / "titledb_cache_us.json"
 _META_US = _DATA_DIR / "titledb_meta_us.json"
 _URL_US = "https://raw.githubusercontent.com/blawar/titledb/master/US.en.json"
 
 # All non-US regions merged into a single fallback DB.
-# English regions are listed first so their names win when the same title
-# appears in multiple regions (first-write-wins merge).
+# Downloaded sequentially in priority order: EN → JP → rest.
+# First-write-wins merge, so earlier regions win name conflicts.
 _FALLBACK_REGIONS: list[tuple[str, str]] = [
+    # English
     ("GB", "en"),
-    ("AU", "en"),
+    # Japanese
     ("JP", "ja"),
+    ("AU", "en"),
+    # Rest
     ("DE", "de"),
     ("FR", "fr"),
     ("ES", "es"),
@@ -111,6 +116,7 @@ def _fetch_and_cache(
 
         log.info("titledb: fetching %s", url)
         req = urllib.request.Request(url, headers=headers)
+        t0 = time.perf_counter()
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 if resp.status == 304:
@@ -124,6 +130,8 @@ def _fetch_and_cache(
                 log.info("titledb: %s not modified (304), keeping cache", url)
                 return
             raise
+        elapsed = time.perf_counter() - t0
+        size_kb = len(data.encode()) // 1024
 
         raw = json.loads(data)
         parsed = _parse(raw)
@@ -133,7 +141,13 @@ def _fetch_and_cache(
 
         with lock:
             db_ref_setter(parsed)
-        log.info("titledb: downloaded and cached %d entries from %s", len(parsed), url)
+        log.info(
+            "titledb: cached %s — %d entries, %d KB in %.1fs",
+            url.split("/")[-1],
+            len(parsed),
+            size_kb,
+            elapsed,
+        )
     except Exception as exc:
         log.warning("titledb: fetch failed for %s: %s", url, exc)
 
@@ -164,6 +178,8 @@ def _ensure_us() -> dict:
 
 def _ensure_extra() -> dict:
     """Load all cached regional files into _db_extra on first access (first-write-wins)."""
+    if _SKIP_REGIONS:
+        return {}
     global _db_extra
     if _db_extra is not None:
         return _db_extra
@@ -204,7 +220,13 @@ def _extract_name(entry) -> str | None:
 
 
 def prefetch() -> None:
-    """Spawn background threads to prefetch US + all regional fallbacks."""
+    """Spawn background threads to prefetch US + all regional fallbacks.
+
+    Regional downloads run sequentially in a single thread to avoid bursting
+    13 simultaneous writes to the data directory (critical on NAS mounts).
+    Set OMNISAVE_TITLEDB_SKIP_REGIONS=true to skip regional downloads entirely.
+    """
+    log.info("titledb: prefetch pid=%d skip_regions=%s", os.getpid(), _SKIP_REGIONS)
 
     def _set_us(parsed):
         global _db_us
@@ -230,15 +252,20 @@ def prefetch() -> None:
             name="titledb-fetch-us",
         ).start()
 
-    for region, lang in _FALLBACK_REGIONS:
-        url = f"https://raw.githubusercontent.com/blawar/titledb/master/{region}.{lang}.json"
-        cache = _DATA_DIR / f"titledb_cache_{region.lower()}_{lang}.json"
-        meta = _DATA_DIR / f"titledb_meta_{region.lower()}_{lang}.json"
+    if not _SKIP_REGIONS:
+        merger = _make_extra_merger()
+
+        def _fetch_regions() -> None:
+            for region, lang in _FALLBACK_REGIONS:
+                url = f"https://raw.githubusercontent.com/blawar/titledb/master/{region}.{lang}.json"
+                cache = _DATA_DIR / f"titledb_cache_{region.lower()}_{lang}.json"
+                meta = _DATA_DIR / f"titledb_meta_{region.lower()}_{lang}.json"
+                _fetch_and_cache(url, cache, meta, _lock_extra, merger)
+
         threading.Thread(
-            target=_fetch_and_cache,
-            args=(url, cache, meta, _lock_extra, _make_extra_merger()),
+            target=_fetch_regions,
             daemon=True,
-            name=f"titledb-fetch-{region.lower()}-{lang}",
+            name="titledb-fetch-regions",
         ).start()
 
 

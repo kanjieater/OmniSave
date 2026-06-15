@@ -333,7 +333,11 @@ def list_all_saves_for_rom(rom_id: int) -> list:
         qs = urllib.parse.urlencode({"rom_id": rom_id})
         req = urllib.request.Request(f"{_effective_host()}/api/saves?{qs}", headers=_auth_headers())
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode())
+            data = json.loads(resp.read().decode())
+        # RomM 4.9+ returns {"items": [...], "total": N}; older versions return a flat list
+        items = data if isinstance(data, list) else data.get("items", [])
+        log.debug("romm_meta: list_all_saves_for_rom rom_id=%d count=%d", rom_id, len(items))
+        return items
     except Exception as exc:
         log.warning("romm_meta: list_all_saves failed rom_id=%d: %s", rom_id, exc)
         return []

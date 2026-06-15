@@ -1974,6 +1974,11 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
                     "UPDATE devices SET deleted_at=NULL WHERE device_id=? AND client_type='romm'",
                     (romm_device_id,),
                 )
+                db.sync_romm_catalog_to_device(_conn, username, romm_device_id)
+                import romm_index as _romm_index
+
+                _romm_index.request_index_refresh()
+                _romm_index.maybe_run_index()
             else:
                 # Auth failed — keep device hidden
                 _conn.execute(
