@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEV_ROOT="/mnt/srv/omnisavedev"
-COMPOSE="$DEV_ROOT/docker-compose.yml"
+COMPOSE="$DEV_ROOT/compose.yml"
 ENV="$DEV_ROOT/.env"
 DATA="$DEV_ROOT/data"
 

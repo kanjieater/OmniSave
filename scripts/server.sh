@@ -3,7 +3,7 @@ set -euo pipefail
 
 OMNISAVE_ROOT="${OMNISAVE_ROOT:-/mnt/srv/omnisavedev}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE_SRC="${REPO_ROOT}/deploy/docker-compose.yml"
+COMPOSE_SRC="${REPO_ROOT}/deploy/compose.yml"
 ENV_FILE="${OMNISAVE_ROOT}/.env"
 
 usage() {
@@ -53,8 +53,8 @@ cmd_init() {
     fi
 
     mkdir -p "${OMNISAVE_ROOT}/data" "${OMNISAVE_ROOT}/config"
-    cp "${COMPOSE_SRC}" "${OMNISAVE_ROOT}/docker-compose.yml"
-    cp "${REPO_ROOT}/deploy/docker-compose.no-network.yml" "${OMNISAVE_ROOT}/"
+    cp "${COMPOSE_SRC}" "${OMNISAVE_ROOT}/compose.yml"
+    cp "${REPO_ROOT}/deploy/compose.no-network.yml" "${OMNISAVE_ROOT}/"
 
     sync_env_file
 
@@ -63,18 +63,18 @@ cmd_init() {
 }
 
 compose() {
-    if [ ! -f "${OMNISAVE_ROOT}/docker-compose.yml" ]; then
+    if [ ! -f "${OMNISAVE_ROOT}/compose.yml" ]; then
         echo "Run: $(basename "$0") init"
         exit 1
     fi
-    docker compose -f "${OMNISAVE_ROOT}/docker-compose.yml" \
+    docker compose -f "${OMNISAVE_ROOT}/compose.yml" \
         --project-directory "${OMNISAVE_ROOT}" \
         --env-file "${ENV_FILE}" \
         "$@"
 }
 
 cmd_up() {
-    cp "${COMPOSE_SRC}" "${OMNISAVE_ROOT}/docker-compose.yml"
+    cp "${COMPOSE_SRC}" "${OMNISAVE_ROOT}/compose.yml"
     sync_env_file
     compose up -d --build
     echo ""

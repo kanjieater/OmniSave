@@ -80,7 +80,7 @@ State machine: `UPLOADING → PROCESSING → READY_FOR_RESTORE → COMPLETED | F
 
 **UI** (`server/ui/src/`) — React + TypeScript + Tailwind SPA. Vite build output goes to `server/static/dist/`.
 
-**Production deploy** (`deploy/`) — `docker-compose.yml` and `docker-compose.no-network.yml` for production.
+**Production deploy** (`deploy/`) — `compose.yml` and `compose.no-network.yml` for production.
 
 ### Data flow (happy path — server V2 protocol)
 ```

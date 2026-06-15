@@ -4,15 +4,35 @@
 #       ghcr.io/kanjieater/omnisave:dev-<sha>  (immutable)
 #
 # Usage:
-#   ./scripts/publish-dev.sh            # build from current commit
-#   ./scripts/publish-dev.sh --no-push  # build only, skip push
+#   ./scripts/publish-dev.sh            # build + push to GHCR
+#   ./scripts/publish-dev.sh --no-push  # build with GHCR tags, skip push
+#   ./scripts/publish-dev.sh --local    # build as omnisave:local (no registry, no clean-tree check)
 set -euo pipefail
 
 REGISTRY="ghcr.io/kanjieater/omnisave"
+LOCAL_TAG="omnisave:local"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 NO_PUSH=0
-for arg in "$@"; do [[ "$arg" == "--no-push" ]] && NO_PUSH=1; done
+LOCAL=0
+for arg in "$@"; do
+    [[ "$arg" == "--no-push" ]] && NO_PUSH=1
+    [[ "$arg" == "--local" ]]   && LOCAL=1
+done
+
+_deploy_hint() {
+    local tag="$1"
+    echo ""
+    echo "  Tag: ${tag}"
+    echo "  Use: OMNISAVE_IMAGE=${tag} ./scripts/server.sh up"
+}
+
+if [[ "$LOCAL" -eq 1 ]]; then
+    echo "Building ${LOCAL_TAG} (local only) ..."
+    docker build -t "${LOCAL_TAG}" "${REPO_ROOT}/server"
+    _deploy_hint "${LOCAL_TAG}"
+    exit 0
+fi
 
 # Require a clean working tree — dev images must be reproducible.
 if ! git -C "$REPO_ROOT" diff --quiet HEAD; then
@@ -33,9 +53,8 @@ docker build \
     "${REPO_ROOT}/server"
 
 if [[ "$NO_PUSH" -eq 1 ]]; then
-    echo "Built (push skipped):"
-    echo "  ${TAG_SHA}"
-    echo "  ${TAG_FLOAT}"
+    echo "Built (push skipped)."
+    _deploy_hint "${TAG_SHA}"
     exit 0
 fi
 
@@ -43,14 +62,7 @@ echo "Pushing ..."
 docker push "${TAG_SHA}"
 docker push "${TAG_FLOAT}"
 
+echo "Published."
+_deploy_hint "${TAG_SHA}"
 echo ""
-echo "Published:"
-echo "  ${TAG_SHA}   ← pin this in .env for a specific build"
-echo "  ${TAG_FLOAT}  ← always latest dev"
-echo ""
-echo "To deploy:"
-echo "  # floating (auto-pull latest dev):"
-echo "  OMNISAVE_IMAGE=${TAG_FLOAT} ./scripts/server.sh up"
-echo ""
-echo "  # pinned to this commit:"
-echo "  OMNISAVE_IMAGE=${TAG_SHA} ./scripts/server.sh up"
+echo "  Tag (floating): ${TAG_FLOAT}"

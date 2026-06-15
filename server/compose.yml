@@ -1,5 +1,5 @@
 # Run from repo root:
-#   docker compose -f server/docker-compose.yml --env-file .env up --build
+#   docker compose -f server/compose.yml --env-file .env up --build
 
 services:
   omnisave:

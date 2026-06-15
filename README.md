@@ -53,7 +53,7 @@ OmniSave solves this. When a save changes on one device, OmniSave automatically 
 - Docker and Docker Compose
 
 ```yaml
-# docker-compose.yml
+# compose.yml
 services:
   omnisave:
     image: ghcr.io/kanjieater/omnisave:latest
@@ -299,7 +299,7 @@ OMNISAVE_DATA=/tmp/omnisave python src/main.py
 OmniSave/
 ├── assets/                  # Logo and screenshot assets
 ├── context/                 # Design docs and planning artifacts
-├── deploy/                  # Production docker-compose configs
+├── deploy/                  # Production compose configs
 └── server/
     ├── Dockerfile
     ├── src/                 # Python server source
