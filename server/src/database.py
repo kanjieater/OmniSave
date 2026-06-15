@@ -318,6 +318,15 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
 
+    # Add pull_initialized to romm_title_map — tracks whether the pull loop has
+    # established its baseline for this ROM (existing saves marked as seen, not ingested).
+    try:
+        conn.execute(
+            "ALTER TABLE romm_title_map ADD COLUMN pull_initialized INTEGER NOT NULL DEFAULT 0"
+        )
+    except sqlite3.OperationalError:
+        pass
+
     # Global snapshot counter: flatten per-device → per-title
     counters_cols = {r[1] for r in conn.execute("PRAGMA table_info(snapshot_counters)").fetchall()}
     if "device_id" in counters_cols:
@@ -1233,7 +1242,8 @@ def get_pending_outbound(conn, device_id: str) -> list:
         "checkpoint_ledger,COALESCE(user_key,'') AS user_key,"
         "COALESCE(target_profile_uid,'') AS target_profile_uid "
         "FROM sync_transactions "
-        "WHERE target_device_id=? AND direction='outbound' AND state='READY_FOR_RESTORE'",
+        "WHERE target_device_id=? AND direction='outbound' AND state='READY_FOR_RESTORE'"
+        " ORDER BY rowid ASC LIMIT 50",
         (device_id,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -1515,11 +1525,18 @@ def get_romm_title_map(conn, username: str) -> list:
     return [
         dict(r)
         for r in conn.execute(
-            "SELECT title_id, rom_id, mapped_at FROM romm_title_map"
+            "SELECT title_id, rom_id, mapped_at, pull_initialized FROM romm_title_map"
             " WHERE username=? ORDER BY mapped_at DESC",
             (username,),
         ).fetchall()
     ]
+
+
+def mark_romm_pull_initialized(conn, username: str, rom_id: int) -> None:
+    conn.execute(
+        "UPDATE romm_title_map SET pull_initialized=1 WHERE username=? AND rom_id=?",
+        (username, rom_id),
+    )
 
 
 # ── RomM game cache ────────────────────────────────────────────────────────────
@@ -1614,10 +1631,10 @@ def record_romm_sync(
 
 
 def get_romm_undelivered_head_txns(conn, username: str, romm_device_id: str) -> list:
-    """Return inbound HEAD transactions that have no COMPLETED/pending outbound to romm_device_id.
+    """Return inbound HEAD transactions where all delivery attempts to romm_device_id failed.
 
-    Used by reconciliation loop to detect titles where all delivery attempts failed
-    and no new inbound will re-trigger outbound creation."""
+    Retry-only: only fires when at least one FAILED outbound exists for this title+device.
+    Never bootstraps on initial connection — new outbounds are created by processing fanout."""
     return conn.execute(
         "SELECT st.transaction_id, st.title_id, st.snapshot_sequence"
         " FROM sync_transactions st"
@@ -1637,8 +1654,15 @@ def get_romm_undelivered_head_txns(conn, username: str, romm_device_id: str) -> 
         "       AND outb.direction = 'outbound'"
         "       AND outb.state IN ('READY_FOR_RESTORE','DELIVERING','COMPLETED')"
         "       AND outb.snapshot_sequence = st.snapshot_sequence"
+        "   )"
+        "   AND EXISTS ("
+        "     SELECT 1 FROM sync_transactions failed"
+        "     WHERE failed.title_id = st.title_id"
+        "       AND failed.target_device_id = ?"
+        "       AND failed.direction = 'outbound'"
+        "       AND failed.state = 'FAILED'"
         "   )",
-        (username, username, romm_device_id),
+        (username, username, romm_device_id, romm_device_id),
     ).fetchall()
 
 
@@ -1830,11 +1854,48 @@ def set_auth_user_password(conn, username: str, password_hash: str) -> None:
 
 
 def rename_auth_user(conn, old_username: str, new_username: str) -> None:
-    """Rename a user. Raises sqlite3.IntegrityError if new_username already exists."""
-    conn.execute("UPDATE auth_users SET username=? WHERE username=?", (new_username, old_username))
-    conn.execute(
-        "UPDATE auth_sessions SET username=? WHERE username=?", (new_username, old_username)
-    )
+    """Rename a user across all ownership tables. Raises sqlite3.IntegrityError if
+    new_username already exists. Atomic: all tables update or none do."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "UPDATE auth_users SET username=? WHERE username=?", (new_username, old_username)
+        )
+        conn.execute(
+            "UPDATE auth_sessions SET username=? WHERE username=?", (new_username, old_username)
+        )
+        conn.execute(
+            "UPDATE user_config SET username=? WHERE username=?", (new_username, old_username)
+        )
+        conn.execute(
+            "UPDATE devices SET owner_user_id=? WHERE owner_user_id=?", (new_username, old_username)
+        )
+        conn.execute(
+            "UPDATE sync_transactions SET owner_user_id=? WHERE owner_user_id=?",
+            (new_username, old_username),
+        )
+        conn.execute(
+            "UPDATE events SET owner_user_id=? WHERE owner_user_id=?", (new_username, old_username)
+        )
+        conn.execute(
+            "UPDATE device_auth SET user_id=? WHERE user_id=?", (new_username, old_username)
+        )
+        conn.execute(
+            "UPDATE device_profile_map SET user_id=? WHERE user_id=?", (new_username, old_username)
+        )
+        conn.execute(
+            "UPDATE romm_title_map SET username=? WHERE username=?", (new_username, old_username)
+        )
+        conn.execute(
+            "UPDATE romm_game_cache SET username=? WHERE username=?", (new_username, old_username)
+        )
+        conn.execute(
+            "UPDATE romm_save_sync SET username=? WHERE username=?", (new_username, old_username)
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 # ── Device auth ───────────────────────────────────────────────────────────────
@@ -1959,6 +2020,14 @@ def get_profile_owner(conn, device_id: str, profile_id: str) -> str | None:
         (device_id, profile_id),
     ).fetchone()
     return row["user_id"] if row else None
+
+
+def get_device_owner(conn, device_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT owner_user_id FROM devices WHERE device_id=?",
+        (device_id,),
+    ).fetchone()
+    return row["owner_user_id"] if row else None
 
 
 def get_user_profile_on_device(conn, device_id: str, user_id: str) -> str | None:
