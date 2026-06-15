@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-OMNISAVE_ROOT="${OMNISAVE_ROOT:-/mnt/srv/omnisave}"
+OMNISAVE_ROOT="${OMNISAVE_ROOT:-/mnt/srv/omnisavedev}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE_SRC="${REPO_ROOT}/deploy/docker-compose.yml"
 ENV_FILE="${OMNISAVE_ROOT}/.env"
