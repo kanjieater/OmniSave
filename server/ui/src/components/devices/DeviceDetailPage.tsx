@@ -447,12 +447,13 @@ export default function DeviceDetailPage() {
           </div>
         )}
 
-        {games.length === 0 ? (
-          (() => {
-            const isRommDevice = device.client_type === 'romm'
-            const scanRunning = gamesData?.scan_running ?? false
-            const scanQueued = gamesData?.scan_queued ?? false
-            const scanError = gamesData?.scan_error ?? null
+        {(() => {
+          const isRommDevice = device.client_type === 'romm'
+          const scanRunning = gamesData?.scan_running ?? false
+          const scanQueued = gamesData?.scan_queued ?? false
+          const scanError = gamesData?.scan_error ?? null
+
+          if (games.length === 0) {
             if (isRommDevice && (scanRunning || scanQueued)) {
               return (
                 <EmptyState
@@ -488,30 +489,39 @@ export default function DeviceDetailPage() {
                 description="No saves found for this client. Claim a profile in Settings to see your save history."
               />
             )
-          })()
-        ) : filteredGames.length === 0 ? (
-          <EmptyState title="No results" description={`No games match "${gameSearch}"`} />
-        ) : (
-          <>
-            <div className="grid grid-cols-3 md:grid-cols-5 gap-x-[var(--spacing-3)] gap-y-[var(--spacing-5)]">
-              {filteredGames.slice(0, visibleGames).map((game) => (
-                <SyncCard
-                  key={game.title_id}
-                  game={game}
-                  deviceId={device_id!}
-                  queryKey={gamesKey}
-                />
-              ))}
-            </div>
-            {filteredGames.length > visibleGames && (
-              <div className="flex justify-center">
-                <Button variant="ghost" size="sm" onClick={() => setVisibleGames((n) => n + 500)}>
-                  Load more games
-                </Button>
+          }
+
+          if (filteredGames.length === 0) {
+            return <EmptyState title="No results" description={`No games match "${gameSearch}"`} />
+          }
+
+          return (
+            <>
+              {isRommDevice && scanError && (
+                <div className="flex items-center gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+                  RomM scan error — showing cached games: {scanError}
+                </div>
+              )}
+              <div className="grid grid-cols-3 md:grid-cols-5 gap-x-[var(--spacing-3)] gap-y-[var(--spacing-5)]">
+                {filteredGames.slice(0, visibleGames).map((game) => (
+                  <SyncCard
+                    key={game.title_id}
+                    game={game}
+                    deviceId={device_id!}
+                    queryKey={gamesKey}
+                  />
+                ))}
               </div>
-            )}
-          </>
-        )}
+              {filteredGames.length > visibleGames && (
+                <div className="flex justify-center">
+                  <Button variant="ghost" size="sm" onClick={() => setVisibleGames((n) => n + 500)}>
+                    Load more games
+                  </Button>
+                </div>
+              )}
+            </>
+          )
+        })()}
       </section>
 
       <ConfirmDialog

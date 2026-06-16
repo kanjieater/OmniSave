@@ -15,6 +15,7 @@ import logging
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -101,25 +102,20 @@ def _fetch_rom_detail(rom_id: int) -> dict | None:
 def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
     """Index build for one user. Credentials are set explicitly — no shared state."""
     global _last_scan_error, _last_scan_ts
-    import titledb as tdb
 
     romm_meta.set_request_creds(host, api_key)
     scan_started = time.monotonic()
     try:
-        # Candidates: any title on a paired device OR in the upload history, not yet mapped.
-        unmapped: set[str] = {
-            r["title_id"]
-            for r in conn.execute(
-                "SELECT DISTINCT title_id FROM ("
-                "  SELECT title_id FROM sync_transactions"
-                "  UNION"
-                "  SELECT title_id FROM device_installed_games"
-                ") WHERE title_id NOT IN"
-                " (SELECT title_id FROM romm_title_map WHERE username=?)",
-                (username,),
-            ).fetchall()
-        }
-        log.info("romm_index: scanning RomM (unmapped=%d) user=%s", len(unmapped), username)
+        unmapped_count = conn.execute(
+            "SELECT COUNT(DISTINCT title_id) FROM ("
+            "  SELECT title_id FROM sync_transactions"
+            "  UNION"
+            "  SELECT title_id FROM device_installed_games"
+            ") WHERE title_id NOT IN"
+            " (SELECT title_id FROM romm_title_map WHERE username=?)",
+            (username,),
+        ).fetchone()[0]
+        log.info("romm_index: scanning RomM (unmapped=%d) user=%s", unmapped_count, username)
         already_mapped_rom_ids: set[int] = {
             r["rom_id"]
             for r in conn.execute(
@@ -156,14 +152,13 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
             conn.commit()
             already_mapped_rom_ids -= stale_rom_ids
 
-        # ── Pass 1: file scan — match via [TITLEID] in RomM filenames ────────
+        # ── File scan — match via [TITLEID] in RomM filenames only ───────────
         # Phase 0 (no HTTP): extract title_id from list-response fields directly.
-        # Phase 1 (parallel): batch-fetch details for the rest with ThreadPoolExecutor.
+        # Phase 1 (parallel): batch-fetch details for the rest; skip if still no bracket ID.
         mapped_count = 0
         detail_calls = 0
         detail_ms_total = 0
         matched_from_file = 0
-        matched_from_titledb_name = 0
         needs_detail: dict[int, dict] = {}  # rom_id → list-response item
 
         for rom in roms:
@@ -183,14 +178,13 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                     "romm_index: file-matched title=%s → rom_id=%d name=%r user=%s",
                     title_id, rom_id, name, username,
                 )
-                unmapped.discard(title_id)
                 already_mapped_rom_ids.add(rom_id)
                 mapped_count += 1
                 matched_from_file += 1
             else:
                 needs_detail[rom_id] = rom
 
-        # Phase 1: parallel detail fetch for ROMs without [TITLEID] in list data.
+        # Phase 1: parallel detail fetch; skip ROM if still no bracket title ID.
         if needs_detail:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=8) as executor:
@@ -207,6 +201,8 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                     if detail is None:
                         continue
                     title_id = _base_title_id(detail)
+                    if not title_id:
+                        continue  # no bracket ID in filename or files[] — skip
                     name = (
                         detail.get("name") or detail.get("fs_name_no_tags") or detail.get("fs_name")
                         or rom.get("name") or rom.get("fs_name_no_tags") or rom.get("fs_name")
@@ -216,75 +212,25 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                         or detail.get("path_cover_large")
                         or detail.get("path_cover_small")
                     )
-                    match_method = "file"
-                    if not title_id and name:
-                        title_id = tdb.find_title_id_by_name(name)
-                        match_method = "titledb-name"
-                    if title_id:
-                        icon_url = romm_meta._abs_url(raw_icon)
-                        db.upsert_romm_title_map(conn, username, title_id, rom_id)
-                        db.upsert_romm_game_cache(conn, username, rom_id, name, icon_url)
-                        log.info(
-                            "romm_index: %s-matched title=%s → rom_id=%d name=%r user=%s",
-                            match_method, title_id, rom_id, name, username,
-                        )
-                        unmapped.discard(title_id)
-                        already_mapped_rom_ids.add(rom_id)
-                        mapped_count += 1
-                        if match_method == "file":
-                            matched_from_file += 1
-                        else:
-                            matched_from_titledb_name += 1
-
-        # ── Pass 2: name search fallback — for titles still unmatched ─────────
-        for title_id in list(unmapped):
-            name = tdb.resolve_game_name(title_id)
-            if not name:
-                continue
-            try:
-                results = romm_meta.search_roms(name, limit=5)
-            except Exception as exc:
-                log.debug("romm_index: name search error title=%s: %s", title_id, exc)
-                continue
-            if len(results) != 1:
-                log.debug(
-                    "romm_index: name search ambiguous title=%s name=%r results=%d user=%s",
-                    title_id,
-                    name,
-                    len(results),
-                    username,
-                )
-                continue
-            rom = results[0]
-            if rom["id"] in already_mapped_rom_ids:
-                log.debug(
-                    "romm_index: name search skipped title=%s — rom_id=%d already mapped user=%s",
-                    title_id,
-                    rom["id"],
-                    username,
-                )
-                continue
-            db.upsert_romm_title_map(conn, username, title_id, rom["id"])
-            db.upsert_romm_game_cache(conn, username, rom["id"], rom["name"], rom["icon_url"])
-            log.info(
-                "romm_index: name-matched title=%s → rom_id=%d name=%r user=%s",
-                title_id,
-                rom["id"],
-                rom["name"],
-                username,
-            )
-            unmapped.discard(title_id)
-            mapped_count += 1
+                    icon_url = romm_meta._abs_url(raw_icon)
+                    db.upsert_romm_title_map(conn, username, title_id, rom_id)
+                    db.upsert_romm_game_cache(conn, username, rom_id, name, icon_url)
+                    log.info(
+                        "romm_index: file-matched title=%s → rom_id=%d name=%r user=%s",
+                        title_id, rom_id, name, username,
+                    )
+                    already_mapped_rom_ids.add(rom_id)
+                    mapped_count += 1
+                    matched_from_file += 1
 
         log.info(
             "romm_index: scan done user=%s roms=%d detail_calls=%d detail_ms=%d "
-            "matched_file=%d matched_titledb=%d mapped=%d elapsed_ms=%d",
+            "matched_file=%d mapped=%d elapsed_ms=%d",
             username,
             len(roms),
             detail_calls,
             detail_ms_total,
             matched_from_file,
-            matched_from_titledb_name,
             mapped_count,
             int((time.monotonic() - scan_started) * 1000),
         )
@@ -294,7 +240,16 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
         _last_scan_error = str(exc)
         _last_scan_ts = time.time()
         log.warning("romm_index: error user=%s: %s", username, exc)
-        request_index_refresh()  # re-queue so next worker cycle retries
+        if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403):
+            log.warning("romm_index: auth error (HTTP %d) — not retrying user=%s", exc.code, username)
+            try:
+                db.set_user_config(conn, username, "romm_connect_status", "auth_failed")
+                db.set_user_config(conn, username, "romm_connect_detail", f"HTTP {exc.code} — check RomM API key")
+                conn.commit()
+            except Exception:
+                pass
+        else:
+            request_index_refresh()
 
 
 def build_title_id_index() -> None:
@@ -371,7 +326,9 @@ def maybe_run_index() -> None:
     _REFRESH_REQUESTED.clear()
 
     def _run() -> None:
+        global _last_scan_error
         _INDEX_RUNNING.set()
+        _last_scan_error = None  # clear stale error so UI banner drops immediately on retry
         try:
             build_title_id_index()
         finally:

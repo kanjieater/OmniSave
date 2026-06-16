@@ -243,46 +243,54 @@ def test_build_icon_falls_back_to_path_cover(conn, tmp_path, monkeypatch):
     assert cached["icon_url"] == "http://romm.local/assets/roms/21/4586/cover/big.png"
 
 
-def test_build_matches_via_titledb_name_when_no_title_id_in_filename(conn, tmp_path, monkeypatch):
-    """When list + detail have no [TITLEID], titledb name lookup is the fallback match."""
+def test_build_skips_rom_without_bracket_title_id(conn, tmp_path, monkeypatch):
+    """ROM with no [TITLEID] in filename or detail files[] must not be mapped."""
     _setup(monkeypatch, tmp_path, conn)
     _seed_inbound(conn, TITLE_A)
-    monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: None)
-    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
-    monkeypatch.setattr(
-        romm_index,
-        "_fetch_rom_detail",
-        lambda rid: {"id": rid, "name": "Code Realize", "url_cover": None,
-                     "path_cover_large": None, "path_cover_small": None, "files": []},
-    )
-    import titledb as tdb
-    monkeypatch.setattr(tdb, "find_title_id_by_name", lambda name: TITLE_A)
-
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [
+        {"id": ROM_ID, "platform_id": 21, "fs_name": "Pokemon Scarlet.nsp",
+         "fs_name_no_tags": "Pokemon Scarlet", "name": "Pokémon Scarlet",
+         "url_cover": None, "path_cover_large": None, "path_cover_small": None},
+    ])
+    monkeypatch.setattr(romm_index, "_fetch_rom_detail", lambda rid: {
+        "id": rid, "name": "Pokémon Scarlet", "files": [{"file_name": "Pokemon Scarlet.nsp"}],
+        "url_cover": None, "path_cover_large": None, "path_cover_small": None,
+    })
     romm_index.build_title_id_index()
-
-    assert db.get_romm_rom_id(conn, USER, TITLE_A) == ROM_ID
+    assert db.get_romm_rom_id(conn, USER, TITLE_A) is None
 
 
 TITLE_B = "0100AAA000010000"
 
 
-def test_build_pass2_skips_search_result_already_mapped(conn, tmp_path, monkeypatch):
-    """Pass 2: when name search finds a rom_id already in romm_title_map, skip it."""
+def test_build_no_retry_on_403(conn, tmp_path, monkeypatch):
+    """HTTP 403 from RomM must not re-queue the scan."""
+    import urllib.error as _ue
     _setup(monkeypatch, tmp_path, conn)
-    # TITLE_B is unknown to OmniSave's map → in unmapped; ROM_ID is already mapped via TITLE_A
-    _seed_inbound(conn, TITLE_B)
-    db.upsert_romm_title_map(conn, USER, TITLE_A, ROM_ID)
-    conn.commit()
-    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
-    monkeypatch.setattr(romm_index, "_fetch_rom_detail", lambda rid: None)
-    import titledb as tdb
-    monkeypatch.setattr(tdb, "resolve_game_name", lambda tid: "Some Game" if tid == TITLE_B else None)
-    monkeypatch.setattr(romm_meta, "search_roms", lambda name, limit: [{"id": ROM_ID, "name": name, "icon_url": None}])
+    _seed_inbound(conn, TITLE_A)
 
-    romm_index.build_title_id_index()
+    def _fail_403():
+        raise _ue.HTTPError(None, 403, "Forbidden", {}, None)
 
-    # TITLE_B must not have been mapped — the found rom_id was already in the map
-    assert db.get_romm_rom_id(conn, USER, TITLE_B) is None
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: _fail_403())
+    romm_index._REFRESH_REQUESTED.clear()
+    romm_index._build_for_user(conn, USER, "http://romm.local", "bad-key")
+    assert not romm_index._REFRESH_REQUESTED.is_set()
+    assert "403" in (romm_index._last_scan_error or "")
+
+
+def test_build_403_db_write_failure_swallowed(conn, tmp_path, monkeypatch):
+    """DB write failure inside the 403 handler must be silently ignored."""
+    import urllib.error as _ue
+    _setup(monkeypatch, tmp_path, conn)
+    _seed_inbound(conn, TITLE_A)
+
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms",
+                        lambda: (_ for _ in ()).throw(_ue.HTTPError(None, 403, "Forbidden", {}, None)))
+    monkeypatch.setattr(db, "set_user_config", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("db gone")))
+    romm_index._REFRESH_REQUESTED.clear()
+    romm_index._build_for_user(conn, USER, "http://romm.local", "bad-key")  # must not raise
+    assert not romm_index._REFRESH_REQUESTED.is_set()
 
 
 def test_build_exception_swallowed(tmp_path, monkeypatch):

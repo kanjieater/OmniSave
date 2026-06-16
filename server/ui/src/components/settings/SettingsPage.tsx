@@ -110,8 +110,8 @@ function RommServerSection() {
   const statusDot = (() => {
     if (isLoading) return null
     const connectStatus = data?.romm_connect_status ?? ''
-    const hasError = !!connectStatus && connectStatus !== 'ok' && !data?.romm_username
-    const active = enabled && !!data?.host && !!data?.has_api_key && !!data?.romm_username
+    const hasError = !!connectStatus && connectStatus !== 'ok'
+    const active = enabled && !!data?.host && !!data?.has_api_key && !!data?.romm_username && !hasError
     const partial = enabled && !!data?.host && !data?.has_api_key
     const color = hasError
       ? 'bg-[var(--color-error)]'

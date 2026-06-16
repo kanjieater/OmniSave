@@ -2306,6 +2306,74 @@ def test_verify_password_malformed_hash_returns_false():
     assert _ui._verify_password("anypassword", "not-a-valid-hash-format") is False
 
 
+def test_admin_rename_cascades_owned_data(client, conn):
+    """Admin rename cascades ownership across all data tables and preserves session."""
+    token = _login(client)
+    now = _now()
+
+    _seed_device(conn, DEVICE_A)  # covers devices.owner_user_id + device_profile_map.user_id
+    conn.execute(
+        "INSERT INTO user_config (username, key, value) VALUES (?,?,?)",
+        (ADMIN_USER, "rename_cascade_probe", "1"),
+    )
+    conn.execute(
+        "INSERT INTO romm_title_map (username, title_id, rom_id, mapped_at) VALUES (?,?,?,?)",
+        (ADMIN_USER, TITLE_1, 42, now),
+    )
+    conn.execute(
+        "INSERT INTO romm_game_cache (username, rom_id, name, icon_url, fetched_at) VALUES (?,?,?,?,?)",
+        (ADMIN_USER, 42, "Game", None, now),
+    )
+    conn.execute(
+        "INSERT INTO romm_save_sync (username, rom_id, romm_save_id, direction, transaction_id, synced_at)"
+        " VALUES (?,?,?,?,?,?)",
+        (ADMIN_USER, 42, 99, "inbound", None, now),
+    )
+    conn.execute(
+        "INSERT INTO device_auth (device_id, device_token, user_id, created_at) VALUES (?,?,?,?)",
+        (DEVICE_A, "tok-cascade", ADMIN_USER, now),
+    )
+    _seed_txn(conn, title_id=TITLE_1, source_device_id=DEVICE_A)
+    _seed_event(conn, device_id=DEVICE_A)
+    conn.commit()
+
+    r = client.post(
+        "/api/v1/ui/settings/credentials",
+        json={"current_password": "admin", "new_username": "admin_renamed"},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200, r.text
+
+    checks = [
+        ("devices", "owner_user_id"),
+        ("user_config", "username"),
+        ("romm_title_map", "username"),
+        ("romm_game_cache", "username"),
+        ("romm_save_sync", "username"),
+        ("device_auth", "user_id"),
+        ("device_profile_map", "user_id"),
+        ("events", "owner_user_id"),
+        ("sync_transactions", "owner_user_id"),
+        ("auth_sessions", "username"),
+    ]
+    for table, col in checks:
+        old = conn.execute(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE {col}=?",  # noqa: S608
+            (ADMIN_USER,),
+        ).fetchone()["n"]
+        assert old == 0, f"{table}.{col} still has old admin username"
+        new = conn.execute(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE {col}=?",  # noqa: S608
+            ("admin_renamed",),
+        ).fetchone()["n"]
+        assert new > 0, f"{table}.{col} was not updated to new admin username"
+
+    # Session token must still resolve after rename.
+    r2 = client.get("/api/v1/ui/auth/status", headers=_hdr(token))
+    assert r2.status_code == 200
+    assert r2.json()["username"] == "admin_renamed"
+
+
 # ── User management ────────────────────────────────────────────────────────────
 
 

@@ -2035,8 +2035,8 @@ def change_credentials(body: ChangeCredentialsBody, request: Request, response: 
             return JSONResponse({"error": "current password incorrect"}, status_code=403)
         if body.new_username:
             old_admin = db.get_config(_conn, "admin_username") or "admin"
+            db.rename_auth_user(_conn, old_admin, body.new_username)
             db.set_config(_conn, "admin_username", body.new_username)
-            db.rename_auth_sessions_user(_conn, old_admin, body.new_username)
             log.info("admin username changed")
         if body.new_password:
             db.set_config(_conn, "admin_password_hash", _hash_password(body.new_password))
