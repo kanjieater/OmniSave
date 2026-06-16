@@ -1517,6 +1517,87 @@ def test_device_games_last_synced_at_null_for_outbound_only(client, conn):
     assert game["last_synced_at"] is None
 
 
+# ── device_games — RomM device and Switch catalog ingestion ───────────────────
+
+
+def test_device_games_switch_shows_from_installed_catalog(client, conn):
+    """Switch device_games returns games from device_installed_games even with no transactions."""
+    _seed_device(conn, DEVICE_A)
+    conn.execute(
+        "INSERT INTO device_installed_games (device_id, title_id) VALUES (?,?)",
+        (DEVICE_A, TITLE_1),
+    )
+    conn.commit()
+    token = _login(client)
+    r = client.get(f"/api/v1/ui/devices/{DEVICE_A}/games", headers=_hdr(token))
+    assert r.status_code == 200
+    assert any(g["title_id"] == TITLE_1 for g in r.json()["games"])
+
+
+def test_device_config_then_switch_device_games_shows_installed_titles(client, conn):
+    """End-to-end: Switch posts device-config → UI device games endpoint shows the title."""
+    import database as _db
+    # Seed device and claim it so ui_api sees it as belonging to admin
+    _seed_device(conn, DEVICE_A)
+    conn.commit()
+
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"installed_titles": [TITLE_1], "known_profiles": []},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert r.status_code == 200
+
+    token = _login(client)
+    r = client.get(f"/api/v1/ui/devices/{DEVICE_A}/games", headers=_hdr(token))
+    assert r.status_code == 200
+    titles = [g["title_id"].upper() for g in r.json()["games"]]
+    assert TITLE_1.upper() in titles
+
+
+def test_device_games_romm_shows_catalog_entries(client, conn):
+    """device_games returns games seeded in device_installed_games for a RomM device."""
+    import database as _db
+    romm_id = "romm:admin"
+    _db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc",
+                               client_type="romm", owner_user_id=ADMIN_USER)
+    conn.execute(
+        "INSERT INTO device_installed_games (device_id, title_id) VALUES (?,?)",
+        (romm_id, TITLE_1),
+    )
+    conn.commit()
+    token = _login(client)
+    r = client.get(f"/api/v1/ui/devices/{romm_id}/games", headers=_hdr(token))
+    assert r.status_code == 200
+    games = r.json()["games"]
+    assert len(games) == 1
+    assert games[0]["title_id"] == TITLE_1
+    assert "sync_state" in games[0]
+    assert "sync_enabled" in games[0]
+    assert "pending_delivery" in games[0]
+
+
+def test_device_games_romm_out_of_sync_when_head_exists(client, conn):
+    """RomM device game shows OUT_OF_SYNC when a HEAD save exists and was not yet delivered."""
+    import database as _db
+    romm_id = "romm:admin"
+    _db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc",
+                               client_type="romm", owner_user_id=ADMIN_USER)
+    conn.execute(
+        "INSERT INTO device_installed_games (device_id, title_id) VALUES (?,?)",
+        (romm_id, TITLE_1),
+    )
+    _seed_device(conn, DEVICE_A)
+    _seed_txn(conn, title_id=TITLE_1, source_device_id=DEVICE_A,
+              state="READY_FOR_RESTORE", snapshot_sequence=1)
+    _db.upsert_romm_title_map(conn, ADMIN_USER, TITLE_1, 42)
+    conn.commit()
+    token = _login(client)
+    r = client.get(f"/api/v1/ui/devices/{romm_id}/games", headers=_hdr(token))
+    assert r.status_code == 200
+    assert r.json()["games"][0]["sync_state"] == "OUT_OF_SYNC"
+
+
 # ── Sync prefs ────────────────────────────────────────────────────────────────
 
 
@@ -2454,6 +2535,14 @@ def _mock_refresh_fail(conn, username, host="", key=""):
     _db.set_user_config(conn, username, "romm_connect_detail", "HTTP 403")
 
 
+def _mock_refresh_network_error(conn, username, host="", key=""):
+    """Simulates a network failure during RomM credential verification."""
+    import database as _db
+    _db.set_user_config(conn, username, "romm_username", "")
+    _db.set_user_config(conn, username, "romm_connect_status", "network_error")
+    _db.set_user_config(conn, username, "romm_connect_detail", "[Errno -3] Name resolution failure")
+
+
 def test_put_romm_settings_host_and_key(client, monkeypatch):
     import romm_meta as _romm_meta
     monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
@@ -2561,6 +2650,53 @@ def test_put_romm_settings_auth_failed_hides_device(client, monkeypatch):
     devices = client.get("/api/v1/ui/devices", headers=_hdr(token)).json()["devices"]
     romm = next((d for d in devices if d.get("client_type") == "romm"), None)
     assert romm is None or romm["is_deleted"] is True
+
+
+def test_put_romm_settings_network_error_leaves_device_visible(client, monkeypatch):
+    """Re-save with network error must NOT hide a previously visible device."""
+    import romm_meta as _romm_meta
+    import romm_index as _romm_index
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
+    monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: None)
+    monkeypatch.setattr(_romm_index, "maybe_run_index", lambda: None)
+    token = _login(client)
+    client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "good", "enabled": True},
+        headers=_hdr(token),
+    )
+
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_network_error)
+    r = client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "good"},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200
+    assert r.json()["romm_connect_status"] == "network_error"
+
+    devices = client.get("/api/v1/ui/devices", headers=_hdr(token)).json()["devices"]
+    romm = next((d for d in devices if d.get("client_type") == "romm"), None)
+    assert romm is not None and romm["is_deleted"] is False
+
+
+def test_put_romm_settings_initial_network_error_does_not_hide_device(client, monkeypatch):
+    """Fresh-wipe path: first credential save with network error must still show device."""
+    import romm_meta as _romm_meta
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_network_error)
+    token = _login(client)
+    r = client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "good", "enabled": True},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200
+    assert r.json()["romm_connect_status"] == "network_error"
+
+    devices = client.get("/api/v1/ui/devices", headers=_hdr(token)).json()["devices"]
+    romm = next((d for d in devices if d.get("client_type") == "romm"), None)
+    assert romm is not None
+    assert romm["is_deleted"] is False
 
 
 def test_put_romm_settings_auth_success_reveals_device(client, monkeypatch):

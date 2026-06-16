@@ -28,8 +28,10 @@ _deploy_hint() {
 }
 
 if [[ "$LOCAL" -eq 1 ]]; then
-    echo "Building ${LOCAL_TAG} (local only) ..."
-    docker build -t "${LOCAL_TAG}" "${REPO_ROOT}/server"
+    LOCAL_SHA=$(git -C "$REPO_ROOT" rev-parse --short=8 HEAD)
+    git -C "$REPO_ROOT" diff --quiet HEAD || LOCAL_SHA="${LOCAL_SHA}-dirty"
+    echo "Building ${LOCAL_TAG} (local, ${LOCAL_SHA}) ..."
+    docker build --build-arg GIT_SHA="${LOCAL_SHA}" -t "${LOCAL_TAG}" "${REPO_ROOT}/server"
     _deploy_hint "${LOCAL_TAG}"
     exit 0
 fi
@@ -46,6 +48,7 @@ TAG_FLOAT="${REGISTRY}:dev"
 
 echo "Building ${TAG_SHA} ..."
 docker build \
+    --build-arg GIT_SHA="${SHA}" \
     --label "org.opencontainers.image.revision=${SHA}" \
     --label "org.opencontainers.image.source=https://github.com/kanjieater/OmniSaveServer" \
     -t "${TAG_SHA}" \

@@ -478,3 +478,74 @@ def test_device_config_auto_claim_skips_unpaired_device(client, conn):
         headers={"X-Device-ID": DEVICE_A},
     )
     assert db.get_profile_owner(conn, DEVICE_A, PROF_A) is None
+
+
+# ── romm index refresh trigger ────────────────────────────────────────────────
+
+
+def test_device_config_changed_catalog_triggers_index_refresh(client, monkeypatch):
+    """device_config with a new title schedules an immediate background scan."""
+    import romm_index as _ri
+    calls = []
+    monkeypatch.setattr(_ri, "request_index_run_now", lambda: calls.append(1))
+
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"installed_titles": ["0100000000010000"], "known_profiles": []},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert r.status_code == 200
+    assert len(calls) == 1
+
+
+def test_device_config_same_catalog_does_not_retrigger_index_refresh(client, monkeypatch):
+    """Identical back-to-back catalog reports do not trigger repeated index scans."""
+    import romm_index as _ri
+    calls = []
+    monkeypatch.setattr(_ri, "request_index_run_now", lambda: calls.append(1))
+
+    payload = {"installed_titles": ["0100000000010000"], "known_profiles": []}
+    headers = {"X-Device-ID": DEVICE_A}
+    r1 = client.post("/api/v1/sync/device-config", json=payload, headers=headers)
+    assert r1.status_code == 200
+    r2 = client.post("/api/v1/sync/device-config", json=payload, headers=headers)
+    assert r2.status_code == 200
+    assert len(calls) == 1  # second identical report: no re-trigger
+
+
+def test_device_config_without_catalog_does_not_trigger_index_refresh(client, monkeypatch):
+    """device_config without installed_titles does NOT schedule an index scan."""
+    import romm_index as _ri
+    calls = []
+    monkeypatch.setattr(_ri, "request_index_run_now", lambda: calls.append(1))
+
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": []},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert r.status_code == 200
+    assert len(calls) == 0
+
+
+def test_device_config_empty_catalog_triggers_refresh_if_previously_nonempty(client, monkeypatch):
+    """Clearing a catalog (empty list) schedules scan when previous catalog was non-empty."""
+    import romm_index as _ri
+    calls = []
+    monkeypatch.setattr(_ri, "request_index_run_now", lambda: calls.append(1))
+
+    headers = {"X-Device-ID": DEVICE_A}
+    r1 = client.post(
+        "/api/v1/sync/device-config",
+        json={"installed_titles": ["0100000000010000"], "known_profiles": []},
+        headers=headers,
+    )
+    assert r1.status_code == 200
+    calls.clear()
+    r2 = client.post(
+        "/api/v1/sync/device-config",
+        json={"installed_titles": [], "known_profiles": []},
+        headers=headers,
+    )
+    assert r2.status_code == 200
+    assert len(calls) == 1

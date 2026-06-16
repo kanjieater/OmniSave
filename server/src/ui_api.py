@@ -1582,7 +1582,14 @@ def _device_games_inner(device_id: str, username: str):
             }
         )
     log.info("device_games: device=%s games=%d", device_id, len(games))
-    return JSONResponse({"games": games})
+    result: dict = {"games": games}
+    if device_client_type == "romm":
+        import romm_index as _ri
+        status = _ri.scan_status()
+        result["scan_running"] = status["running"]
+        result["scan_queued"] = status["queued"]
+        result["scan_error"] = status["last_error"]
+    return JSONResponse(result)
 
 
 class SyncPrefItem(BaseModel):
@@ -1970,6 +1977,8 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
         fresh_detail = db.get_user_config(_conn, username, "romm_connect_detail") or ""
         if has_host and has_key and db.get_user_config(_conn, username, "romm_enabled") != "0":
             if fresh_username:
+                # Auto-enable when credentials verify — removes need for a separate toggle.
+                db.set_user_config(_conn, username, "romm_enabled", "1")
                 _conn.execute(
                     "UPDATE devices SET deleted_at=NULL WHERE device_id=? AND client_type='romm'",
                     (romm_device_id,),
@@ -1979,8 +1988,9 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
 
                 _romm_index.request_index_refresh()
                 _romm_index.maybe_run_index()
-            else:
-                # Auth failed — keep device hidden
+            elif fresh_status == "auth_failed":
+                # Confirmed bad credentials (401/403) — keep device hidden.
+                # network_error / bad_response / unknown leave device state unchanged.
                 _conn.execute(
                     "UPDATE devices SET deleted_at=? WHERE device_id=? AND client_type='romm'",
                     (db._now(), romm_device_id),

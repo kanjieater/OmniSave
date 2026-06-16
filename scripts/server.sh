@@ -76,6 +76,9 @@ compose() {
 cmd_up() {
     cp "${COMPOSE_SRC}" "${OMNISAVE_ROOT}/compose.yml"
     sync_env_file
+    GIT_SHA=$(git -C "$REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
+    git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || GIT_SHA="${GIT_SHA}-dirty"
+    export GIT_SHA
     compose up -d --build
     echo ""
     echo "Server running."

@@ -98,7 +98,7 @@ export const api = {
 
   devices:       () => get<{ devices: Device[] }>('/devices'),
   deleteDevice:  (id: string) => del<void>(`/devices/${id}`),
-  deviceGames:   (id: string) => get<{ games: DeviceGame[] }>(`/devices/${id}/games`),
+  deviceGames:   (id: string) => get<{ games: DeviceGame[]; scan_running?: boolean; scan_queued?: boolean; scan_error?: string | null }>(`/devices/${id}/games`),
   restoreAll:    (id: string) => post<{ ok: boolean; queued: number }>(`/devices/${id}/restore-all`, {}),
   setSyncPrefs:  (id: string, prefs: { title_id: string; enabled: boolean }[]) =>
     post<{ ok: boolean }>(`/devices/${id}/games/sync/batch`, { preferences: prefs }),

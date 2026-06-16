@@ -23,6 +23,7 @@ import sync_deliver_api
 import titledb
 import ui_api
 
+VERSION = os.environ.get("OMNISAVE_VERSION", "unknown")
 DATA_DIR = Path(os.environ.get("OMNISAVE_DATA", "/app/data"))
 ARCHIVE_DIR = DATA_DIR / "archive"
 STAGING_DIR = DATA_DIR / "staging"
@@ -55,7 +56,7 @@ def _gc_loop(db_path: Path, staging_dir: Path, archive_dir: Path) -> None:
             log.error("periodic gc error: %s", e)
 
 
-app = FastAPI(title="OmniSave", version="1.0.0")
+app = FastAPI(title="OmniSave", version=VERSION)
 app.include_router(sync_api.router)
 app.include_router(sync_deliver_api.router)
 app.include_router(ui_api.router)
@@ -67,7 +68,7 @@ def health():
     return {
         "service": "OmniSave",
         "status": "online",
-        "version": "1.0.0",
+        "version": VERSION,
         "started_at": _start_time,
     }
 

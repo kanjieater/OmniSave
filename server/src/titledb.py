@@ -60,6 +60,8 @@ _lock_us = threading.Lock()
 _lock_extra = threading.Lock()
 _name_index: dict[str, str] | None = None  # lowercase name → title_id (base games only)
 _lock_name_index = threading.Lock()
+_warmup_us_started = False
+_warmup_us_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +138,9 @@ def _fetch_and_cache(
         raw = json.loads(data)
         parsed = _parse(raw)
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(raw))
+        tmp = cache_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(raw))
+        tmp.rename(cache_path)
         _write_meta(meta_path, etag, last_modified)
 
         with lock:
@@ -219,6 +223,13 @@ def _extract_name(entry) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _warm_us_cache() -> None:
+    try:
+        _ensure_us()
+    except Exception:
+        log.exception("titledb: warmup-us failed")
+
+
 def prefetch() -> None:
     """Spawn background threads to prefetch US + all regional fallbacks.
 
@@ -226,6 +237,7 @@ def prefetch() -> None:
     13 simultaneous writes to the data directory (critical on NAS mounts).
     Set OMNISAVE_TITLEDB_SKIP_REGIONS=true to skip regional downloads entirely.
     """
+    global _warmup_us_started
     log.info("titledb: prefetch pid=%d skip_regions=%s", os.getpid(), _SKIP_REGIONS)
 
     def _set_us(parsed):
@@ -235,16 +247,24 @@ def prefetch() -> None:
     def _make_extra_merger():
         def _merge(parsed):
             global _db_extra
-            with _lock_extra:
-                if _db_extra is None:
-                    _db_extra = {}
-                for k, v in parsed.items():
-                    if k not in _db_extra:
-                        _db_extra[k] = v
+            # Called inside 'with _lock_extra:' in _fetch_and_cache — do not re-acquire.
+            if _db_extra is None:
+                _db_extra = {}
+            for k, v in parsed.items():
+                if k not in _db_extra:
+                    _db_extra[k] = v
 
         return _merge
 
     if not _TITLEDB_PATH:
+        with _warmup_us_lock:
+            if not _warmup_us_started and _db_us is None:
+                _warmup_us_started = True
+                threading.Thread(
+                    target=_warm_us_cache,
+                    daemon=True,
+                    name="titledb-warmup-us",
+                ).start()
         threading.Thread(
             target=_fetch_and_cache,
             args=(_URL_US, _CACHE_US, _META_US, _lock_us, _set_us),

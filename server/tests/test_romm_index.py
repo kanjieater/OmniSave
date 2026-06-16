@@ -98,7 +98,7 @@ def test_build_maps_title_when_found(conn, tmp_path, monkeypatch):
 
     push_calls: list[str] = []
     monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: push_calls.append(tid))
-    monkeypatch.setattr(romm_index, "_fetch_switch_rom_ids", lambda: [ROM_ID])
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
     monkeypatch.setattr(
         romm_index,
         "_fetch_rom_detail",
@@ -126,7 +126,7 @@ def test_build_skips_already_mapped_rom(conn, tmp_path, monkeypatch):
     db.upsert_romm_title_map(conn, USER, TITLE_A, ROM_ID)
 
     detail_calls: list[int] = []
-    monkeypatch.setattr(romm_index, "_fetch_switch_rom_ids", lambda: [ROM_ID])
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
     monkeypatch.setattr(
         romm_index, "_fetch_rom_detail", lambda rid: detail_calls.append(rid) or {}
     )
@@ -141,7 +141,7 @@ def test_build_scans_even_with_no_known_titles(conn, tmp_path, monkeypatch):
     # No transactions — OmniSave has no known titles, but RomM may have ROMs to discover.
     ids_calls: list[bool] = []
     monkeypatch.setattr(
-        romm_index, "_fetch_switch_rom_ids", lambda: ids_calls.append(True) or []
+        romm_index, "_fetch_switch_roms", lambda: ids_calls.append(True) or []
     )
     romm_index.build_title_id_index()
     assert ids_calls  # always scans — RomM catalog is independent of OmniSave knowledge
@@ -154,7 +154,7 @@ def test_build_discovers_title_unknown_to_omnisave(conn, tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path, conn)
     # No _seed_inbound — title is completely unknown to OmniSave
     monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: None)
-    monkeypatch.setattr(romm_index, "_fetch_switch_rom_ids", lambda: [ROM_ID])
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
     monkeypatch.setattr(
         romm_index,
         "_fetch_rom_detail",
@@ -185,7 +185,7 @@ def test_build_skips_already_mapped_rom_id(conn, tmp_path, monkeypatch):
     db.upsert_romm_title_map(conn, USER, TITLE_A, ROM_ID)  # ROM_ID already mapped to a different title
 
     detail_calls: list[int] = []
-    monkeypatch.setattr(romm_index, "_fetch_switch_rom_ids", lambda: [ROM_ID])
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
     monkeypatch.setattr(
         romm_index, "_fetch_rom_detail", lambda rid: detail_calls.append(rid) or {}
     )
@@ -198,7 +198,7 @@ def test_build_skips_when_detail_fetch_fails(conn, tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path, conn)
     _seed_inbound(conn, TITLE_A)
     monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: None)
-    monkeypatch.setattr(romm_index, "_fetch_switch_rom_ids", lambda: [ROM_ID])
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
     monkeypatch.setattr(romm_index, "_fetch_rom_detail", lambda rid: None)
     romm_index.build_title_id_index()
     assert db.get_romm_rom_id(conn, USER, TITLE_A) is None  # detail failed → no mapping
@@ -207,7 +207,7 @@ def test_build_skips_when_detail_fetch_fails(conn, tmp_path, monkeypatch):
 def test_build_title_not_in_romm(conn, tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path, conn)
     _seed_inbound(conn, TITLE_A)
-    monkeypatch.setattr(romm_index, "_fetch_switch_rom_ids", lambda: [ROM_ID])
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
     monkeypatch.setattr(
         romm_index,
         "_fetch_rom_detail",
@@ -225,7 +225,7 @@ def test_build_icon_falls_back_to_path_cover(conn, tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path, conn)
     _seed_inbound(conn, TITLE_A)
     monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: None)
-    monkeypatch.setattr(romm_index, "_fetch_switch_rom_ids", lambda: [ROM_ID])
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
     monkeypatch.setattr(
         romm_index,
         "_fetch_rom_detail",
@@ -241,6 +241,48 @@ def test_build_icon_falls_back_to_path_cover(conn, tmp_path, monkeypatch):
     romm_index.build_title_id_index()
     cached = db.get_romm_game_cache(conn, USER, ROM_ID)
     assert cached["icon_url"] == "http://romm.local/assets/roms/21/4586/cover/big.png"
+
+
+def test_build_matches_via_titledb_name_when_no_title_id_in_filename(conn, tmp_path, monkeypatch):
+    """When list + detail have no [TITLEID], titledb name lookup is the fallback match."""
+    _setup(monkeypatch, tmp_path, conn)
+    _seed_inbound(conn, TITLE_A)
+    monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: None)
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
+    monkeypatch.setattr(
+        romm_index,
+        "_fetch_rom_detail",
+        lambda rid: {"id": rid, "name": "Code Realize", "url_cover": None,
+                     "path_cover_large": None, "path_cover_small": None, "files": []},
+    )
+    import titledb as tdb
+    monkeypatch.setattr(tdb, "find_title_id_by_name", lambda name: TITLE_A)
+
+    romm_index.build_title_id_index()
+
+    assert db.get_romm_rom_id(conn, USER, TITLE_A) == ROM_ID
+
+
+TITLE_B = "0100AAA000010000"
+
+
+def test_build_pass2_skips_search_result_already_mapped(conn, tmp_path, monkeypatch):
+    """Pass 2: when name search finds a rom_id already in romm_title_map, skip it."""
+    _setup(monkeypatch, tmp_path, conn)
+    # TITLE_B is unknown to OmniSave's map → in unmapped; ROM_ID is already mapped via TITLE_A
+    _seed_inbound(conn, TITLE_B)
+    db.upsert_romm_title_map(conn, USER, TITLE_A, ROM_ID)
+    conn.commit()
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
+    monkeypatch.setattr(romm_index, "_fetch_rom_detail", lambda rid: None)
+    import titledb as tdb
+    monkeypatch.setattr(tdb, "resolve_game_name", lambda tid: "Some Game" if tid == TITLE_B else None)
+    monkeypatch.setattr(romm_meta, "search_roms", lambda name, limit: [{"id": ROM_ID, "name": name, "icon_url": None}])
+
+    romm_index.build_title_id_index()
+
+    # TITLE_B must not have been mapped — the found rom_id was already in the map
+    assert db.get_romm_rom_id(conn, USER, TITLE_B) is None
 
 
 def test_build_exception_swallowed(tmp_path, monkeypatch):
@@ -265,7 +307,7 @@ def test_build_async_noop_without_host(monkeypatch):
     assert not fired.is_set()
 
 
-# ── _fetch_switch_rom_ids ─────────────────────────────────────────────────────
+# ── _fetch_switch_roms ────────────────────────────────────────────────────────
 
 
 def _make_resp(body: dict):
@@ -277,28 +319,30 @@ def _make_resp(body: dict):
     return m
 
 
-def test_fetch_switch_rom_ids_filters_platform(monkeypatch):
+def test_fetch_switch_roms_returns_all_platforms(monkeypatch):
+    """All ROMs are returned regardless of platform — caller decides what to match."""
     monkeypatch.setattr(romm_meta, "ROMM_HOST", "http://romm.local")
     monkeypatch.setattr(romm_meta, "ROMM_API_KEY", "key")
     page = {
         "total": 3,
         "items": [
-            {"id": 1, "platform_id": 21},
-            {"id": 2, "platform_id": 15},
-            {"id": 3, "platform_id": 21},
+            {"id": 1, "platform_id": 21, "fs_name": "Game1.nsp"},
+            {"id": 2, "platform_id": 15, "fs_name": "Other.iso"},
+            {"id": 3, "platform_id": 21, "fs_name": "Game3.nsp"},
         ],
     }
     with patch("urllib.request.urlopen", return_value=_make_resp(page)):
-        result = romm_index._fetch_switch_rom_ids()
-    assert result == [1, 3]
+        result = romm_index._fetch_switch_roms()
+    assert [r["id"] for r in result] == [1, 2, 3]
+    assert all("fs_name" in r for r in result)
 
 
-def test_fetch_switch_rom_ids_paginates(monkeypatch):
+def test_fetch_switch_roms_paginates(monkeypatch):
     monkeypatch.setattr(romm_meta, "ROMM_HOST", "http://romm.local")
     monkeypatch.setattr(romm_meta, "ROMM_API_KEY", "key")
     pages = [
-        {"total": 250, "items": [{"id": i, "platform_id": 21} for i in range(200)]},
-        {"total": 250, "items": [{"id": i, "platform_id": 21} for i in range(200, 250)]},
+        {"total": 250, "items": [{"id": i, "platform_id": 21, "fs_name": f"g{i}.nsp"} for i in range(200)]},
+        {"total": 250, "items": [{"id": i, "platform_id": 21, "fs_name": f"g{i}.nsp"} for i in range(200, 250)]},
     ]
     call_count = {"n": 0}
 
@@ -308,7 +352,7 @@ def test_fetch_switch_rom_ids_paginates(monkeypatch):
         return resp
 
     with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-        result = romm_index._fetch_switch_rom_ids()
+        result = romm_index._fetch_switch_roms()
     assert len(result) == 250
     assert call_count["n"] == 2
 
@@ -368,7 +412,7 @@ def test_build_does_not_call_push_head_async(conn, tmp_path, monkeypatch):
 
     push_calls: list[str] = []
     monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: push_calls.append(tid))
-    monkeypatch.setattr(romm_index, "_fetch_switch_rom_ids", lambda: [ROM_ID])
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
     monkeypatch.setattr(
         romm_index,
         "_fetch_rom_detail",
@@ -384,3 +428,148 @@ def test_build_does_not_call_push_head_async(conn, tmp_path, monkeypatch):
     romm_index.build_title_id_index()
 
     assert not push_calls, "index build must not call push_head_async"
+
+
+def test_build_for_user_populates_romm_device_catalog(conn, tmp_path, monkeypatch):
+    """End-to-end: _build_for_user() maps a title → sync_romm_catalog_to_device()
+    writes it into device_installed_games so the UI device games endpoint returns it."""
+    _setup(monkeypatch, tmp_path, conn)
+    romm_id = f"romm:{USER}"
+    db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc",
+                              client_type="romm", owner_user_id=USER)
+    conn.commit()
+
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": None, "url_cover": None, "path_cover_large": None, "path_cover_small": None}])
+    monkeypatch.setattr(
+        romm_index,
+        "_fetch_rom_detail",
+        lambda rid: {
+            "id": rid,
+            "name": "Code: Realize",
+            "url_cover": None,
+            "path_cover_large": None,
+            "path_cover_small": None,
+            "files": [{"file_name": f"Code Realize [{TITLE_A}][v0].xci"}],
+        },
+    )
+    monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: None)
+
+    romm_index._build_for_user(conn, USER, "http://romm.local", "key")
+    db.sync_romm_catalog_to_device(conn, USER, romm_id)
+
+    rows = conn.execute(
+        "SELECT title_id FROM device_installed_games WHERE device_id=?", (romm_id,)
+    ).fetchall()
+    assert {r["title_id"] for r in rows} == {TITLE_A}
+
+
+# ── transient failure — partial success ───────────────────────────────────────
+
+
+TITLE_B = "0100AAA000010000"
+ROM_ID_B = 9999
+
+
+def test_build_maps_successful_roms_when_some_detail_calls_fail(conn, tmp_path, monkeypatch):
+    """Some _fetch_rom_detail calls return None (transient failure); others succeed.
+    The successful ones must still be mapped — a single failure must not abort the scan."""
+    _setup(monkeypatch, tmp_path, conn)
+    _seed_inbound(conn, TITLE_A)
+    _seed_inbound(conn, TITLE_B)
+    monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: None)
+
+    roms = [
+        {"id": ROM_ID, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": "Good Game", "url_cover": None, "path_cover_large": None, "path_cover_small": None},
+        {"id": ROM_ID_B, "platform_id": 21, "fs_name": "", "fs_name_no_tags": "", "name": "Bad Game", "url_cover": None, "path_cover_large": None, "path_cover_small": None},
+    ]
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: roms)
+
+    def _detail(rid):
+        if rid == ROM_ID:
+            return {"id": rid, "name": "Good Game", "url_cover": None, "path_cover_large": None,
+                    "path_cover_small": None, "files": [{"file_name": f"Good Game [{TITLE_A}][v0].nsp"}]}
+        return None  # transient failure for ROM_ID_B
+
+    monkeypatch.setattr(romm_index, "_fetch_rom_detail", _detail)
+
+    romm_index.build_title_id_index()
+
+    assert db.get_romm_rom_id(conn, USER, TITLE_A) == ROM_ID   # succeeded
+    assert db.get_romm_rom_id(conn, USER, TITLE_B) is None      # failed — not mapped
+
+
+# ── parallel detail fetch (_fetch_detail_with_creds) ─────────────────────────
+
+
+def test_fetch_detail_with_creds_sets_thread_creds_and_returns_detail(monkeypatch):
+    """_fetch_detail_with_creds sets per-thread creds and returns (detail, elapsed_ms)."""
+    detail_payload = {"id": ROM_ID, "name": "Code: Realize", "files": []}
+    monkeypatch.setattr(romm_index, "_fetch_rom_detail", lambda rid: detail_payload)
+    creds_set = []
+    monkeypatch.setattr(romm_meta, "set_request_creds", lambda h, k: creds_set.append((h, k)))
+
+    detail, elapsed_ms = romm_index._fetch_detail_with_creds(ROM_ID, "http://romm.local", "key")
+
+    assert detail == detail_payload
+    assert isinstance(elapsed_ms, int)
+    assert elapsed_ms >= 0
+    assert creds_set == [("http://romm.local", "key")]
+
+
+def test_build_uses_list_data_no_detail_call_when_fs_name_has_title_id(conn, tmp_path, monkeypatch):
+    """Phase 0 optimization: when fs_name contains [TITLEID], no detail fetch needed."""
+    _setup(monkeypatch, tmp_path, conn)
+    _seed_inbound(conn, TITLE_A)
+    monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: None)
+
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [
+        {"id": ROM_ID, "platform_id": 21,
+         "fs_name": f"Code Realize [{TITLE_A}][v0].nsp",
+         "fs_name_no_tags": "Code Realize", "name": "Code: Realize",
+         "url_cover": "https://covers.example.com/1.jpg",
+         "path_cover_large": None, "path_cover_small": None}
+    ])
+    detail_calls: list[int] = []
+    monkeypatch.setattr(romm_index, "_fetch_rom_detail", lambda rid: detail_calls.append(rid) or {})
+
+    romm_index.build_title_id_index()
+
+    assert not detail_calls, "Phase 0 must resolve title_id from list data — no detail HTTP call"
+    assert db.get_romm_rom_id(conn, USER, TITLE_A) == ROM_ID
+
+
+# ── scan_status ───────────────────────────────────────────────────────────────
+
+
+def test_scan_status_reflects_scan_error(conn, tmp_path, monkeypatch):
+    """When _build_for_user raises, scan_status() reports the error."""
+    _setup(monkeypatch, tmp_path, conn)
+    _seed_inbound(conn, TITLE_A)
+
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: (_ for _ in ()).throw(RuntimeError("network down")))
+
+    # Clear module state before test
+    romm_index._last_scan_error = None
+    romm_index._last_scan_ts = 0.0
+
+    romm_index.build_title_id_index()
+
+    status = romm_index.scan_status()
+    assert status["last_error"] is not None
+    assert "network down" in status["last_error"]
+    assert status["last_scan_ts"] is not None
+
+
+def test_scan_status_clears_error_on_success(conn, tmp_path, monkeypatch):
+    """A successful scan clears last_error."""
+    _setup(monkeypatch, tmp_path, conn)
+    romm_index._last_scan_error = "previous error"
+    romm_index._last_scan_ts = 0.0
+
+    monkeypatch.setattr(romm_vsc, "push_head_async", lambda tid: None)
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [])
+
+    romm_index.build_title_id_index()
+
+    assert romm_index.scan_status()["last_error"] is None
+    assert romm_index.scan_status()["last_scan_ts"] is not None

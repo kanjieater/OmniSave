@@ -36,6 +36,16 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Compute build version
+        id: ver
+        run: |
+          SHA=$(git rev-parse --short=8 HEAD)
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "value=${{ github.ref_name }} (${SHA})" >> $GITHUB_OUTPUT
+          else
+            echo "value=${SHA}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build & push
         uses: docker/build-push-action@v6
         with:
@@ -43,5 +53,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: GIT_SHA=${{ steps.ver.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

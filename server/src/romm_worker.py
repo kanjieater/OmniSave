@@ -38,7 +38,7 @@ def _reconcile_romm_catalog_backstop(conn, username: str) -> None:
         return
     _catalog_check_ts[username] = now
     try:
-        current_ids = frozenset(romm_index._fetch_switch_rom_ids())
+        current_ids = frozenset(r["id"] for r in romm_index._fetch_switch_roms())
         last_seen = _catalog_last_seen.get(username)
         if last_seen is None:
             _catalog_last_seen[username] = current_ids  # seed snapshot, no refresh

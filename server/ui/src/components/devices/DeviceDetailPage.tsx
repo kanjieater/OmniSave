@@ -1,4 +1,4 @@
-import { Download, RefreshCw, Search, Settings, Upload } from 'lucide-react'
+import { Download, Loader2, RefreshCw, Search, Settings, Upload } from 'lucide-react'
 import * as React from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -448,10 +448,47 @@ export default function DeviceDetailPage() {
         )}
 
         {games.length === 0 ? (
-          <EmptyState
-            title="No games"
-            description="No saves found for this client. Claim a profile in Settings to see your save history."
-          />
+          (() => {
+            const isRommDevice = device.client_type === 'romm'
+            const scanRunning = gamesData?.scan_running ?? false
+            const scanQueued = gamesData?.scan_queued ?? false
+            const scanError = gamesData?.scan_error ?? null
+            if (isRommDevice && (scanRunning || scanQueued)) {
+              return (
+                <EmptyState
+                  title="Indexing RomM library…"
+                  description={
+                    <span className="flex items-center gap-2 justify-center">
+                      <Loader2 size={14} className="animate-spin shrink-0" />
+                      Scanning your RomM catalog for games. This may take a minute.
+                    </span>
+                  }
+                />
+              )
+            }
+            if (isRommDevice && scanError) {
+              return (
+                <EmptyState
+                  title="RomM scan failed"
+                  description={`Could not index RomM library: ${scanError}`}
+                />
+              )
+            }
+            if (isRommDevice) {
+              return (
+                <EmptyState
+                  title="No games found"
+                  description="No games matched in your RomM library. Check that RomM is reachable and your ROMs have title IDs in their filenames."
+                />
+              )
+            }
+            return (
+              <EmptyState
+                title="No games"
+                description="No saves found for this client. Claim a profile in Settings to see your save history."
+              />
+            )
+          })()
         ) : filteredGames.length === 0 ? (
           <EmptyState title="No results" description={`No games match "${gameSearch}"`} />
         ) : (

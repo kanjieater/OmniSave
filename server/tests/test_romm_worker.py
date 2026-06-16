@@ -764,3 +764,69 @@ def test_new_save_after_romm_connect_creates_outbound(conn, tmp_path, tmp_dirs, 
     romm_worker.run_once(conn)
 
     assert len(upload_calls) == 1, "exactly one upload must be made for the new save"
+
+
+# ── catalog backstop drift detection ─────────────────────────────────────────
+
+
+def test_catalog_backstop_seeds_snapshot_on_first_call(conn, tmp_path, monkeypatch):
+    """First backstop call seeds the snapshot without requesting a refresh."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    import romm_index
+
+    fetch_calls: list = []
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: fetch_calls.append(1) or [{"id": 1}])
+    refresh_calls: list = []
+    monkeypatch.setattr(romm_index, "request_index_refresh", lambda: refresh_calls.append(1))
+
+    # Clear throttle state so backstop fires immediately
+    romm_worker._catalog_check_ts.clear()
+    romm_worker._catalog_last_seen.clear()
+
+    romm_worker._reconcile_romm_catalog_backstop(conn, USER)
+
+    assert fetch_calls, "must fetch current ROM IDs"
+    assert not refresh_calls, "first call seeds snapshot — must not request refresh"
+
+
+def test_catalog_backstop_triggers_refresh_on_drift(conn, tmp_path, monkeypatch):
+    """When catalog changes between backstop calls, request_index_refresh is called."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    import romm_index
+
+    refresh_calls: list = []
+    monkeypatch.setattr(romm_index, "request_index_refresh", lambda: refresh_calls.append(1))
+
+    # Seed initial snapshot with ROM id=1
+    romm_worker._catalog_check_ts.clear()
+    romm_worker._catalog_last_seen.clear()
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": 1}])
+    romm_worker._reconcile_romm_catalog_backstop(conn, USER)  # seeds snapshot
+
+    # Force throttle to expire so next call fires immediately
+    romm_worker._catalog_check_ts[USER] = 0.0
+
+    # Catalog now has a new ROM (id=2 added)
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": 1}, {"id": 2}])
+    romm_worker._reconcile_romm_catalog_backstop(conn, USER)
+
+    assert len(refresh_calls) == 1, "drift detected → must call request_index_refresh"
+
+
+def test_catalog_backstop_throttled(conn, tmp_path, monkeypatch):
+    """Backstop is throttled — second call within interval does not re-fetch."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    import romm_index
+
+    fetch_calls: list = []
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: fetch_calls.append(1) or [])
+    monkeypatch.setattr(romm_index, "request_index_refresh", lambda: None)
+
+    # Set check timestamp to now so throttle is active
+    import time
+    romm_worker._catalog_check_ts[USER] = time.time()
+    romm_worker._catalog_last_seen.clear()
+
+    romm_worker._reconcile_romm_catalog_backstop(conn, USER)
+
+    assert not fetch_calls, "throttled — must not fetch within interval"

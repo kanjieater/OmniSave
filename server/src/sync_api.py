@@ -607,24 +607,50 @@ def device_config(body: DeviceConfigBody, request: Request):
 
     # Catalog update: atomically replace installed-game inventory, then backfill outbounds.
     if body.installed_titles is not None:
+        log.info(
+            "device-config: received device_id=%s installed_titles_present=True count=%d profiles=%d",
+            device_id,
+            len(body.installed_titles),
+            len(body.known_profiles or []),
+        )
         for t in body.installed_titles:
             if not _TITLE_RE.match(t):
                 return _err(f"invalid title_id in installed_titles: {t!r}")
+        incoming_catalog = {t.upper() for t in body.installed_titles}
+        catalog_changed = False
         _conn.execute("BEGIN IMMEDIATE")
         try:
+            prev_catalog = {
+                r["title_id"].upper()
+                for r in _conn.execute(
+                    "SELECT title_id FROM device_installed_games WHERE device_id=?",
+                    (device_id,),
+                ).fetchall()
+            }
+            catalog_changed = prev_catalog != incoming_catalog
             db.replace_device_catalog(_conn, device_id, body.installed_titles)
+            _backfill_outbound_for_device(_conn, device_id, body.installed_titles)
+            n = db.supersede_failed_outbounds_for_uninstalled(_conn)
+            if n:
+                log.info(
+                    "device-config: superseded %d FAILED outbound(s) after catalog update for %s",
+                    n,
+                    device_id,
+                )
             _conn.execute("COMMIT")
         except Exception:
             _conn.execute("ROLLBACK")
             raise
-        _backfill_outbound_for_device(_conn, device_id, body.installed_titles)
-        n = db.supersede_failed_outbounds_for_uninstalled(_conn)
-        if n:
-            log.info(
-                "device-config: superseded %d FAILED outbound(s) after catalog update for %s",
-                n,
-                device_id,
-            )
+        log.info(
+            "device-config: catalog committed device_id=%s prev=%d incoming=%d changed=%s",
+            device_id,
+            len(prev_catalog),
+            len(incoming_catalog),
+            catalog_changed,
+        )
+        if catalog_changed:
+            import romm_index as _romm_index
+            _romm_index.request_index_run_now()
 
     device_row = db.get_device(_conn, device_id)
     token = db.consume_pending_config(
