@@ -129,7 +129,9 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
         list_ms = int((time.monotonic() - list_t0) * 1000)
         log.info(
             "romm_index: list fetch done roms=%d list_ms=%d user=%s",
-            len(roms), list_ms, username,
+            len(roms),
+            list_ms,
+            username,
         )
         rom_ids_set = {r["id"] for r in roms}
         stale_rom_ids = already_mapped_rom_ids - rom_ids_set
@@ -169,14 +171,19 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
             if title_id:
                 name = rom.get("name") or rom.get("fs_name_no_tags") or rom.get("fs_name")
                 raw_icon = (
-                    rom.get("url_cover") or rom.get("path_cover_large") or rom.get("path_cover_small")
+                    rom.get("url_cover")
+                    or rom.get("path_cover_large")
+                    or rom.get("path_cover_small")
                 )
                 icon_url = romm_meta._abs_url(raw_icon)
                 db.upsert_romm_title_map(conn, username, title_id, rom_id)
                 db.upsert_romm_game_cache(conn, username, rom_id, name, icon_url)
                 log.info(
                     "romm_index: file-matched title=%s → rom_id=%d name=%r user=%s",
-                    title_id, rom_id, name, username,
+                    title_id,
+                    rom_id,
+                    name,
+                    username,
                 )
                 already_mapped_rom_ids.add(rom_id)
                 mapped_count += 1
@@ -187,6 +194,7 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
         # Phase 1: parallel detail fetch; skip ROM if still no bracket title ID.
         if needs_detail:
             from concurrent.futures import ThreadPoolExecutor, as_completed
+
             with ThreadPoolExecutor(max_workers=8) as executor:
                 futures = {
                     executor.submit(_fetch_detail_with_creds, rom_id, host, api_key): rom_id
@@ -204,8 +212,12 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                     if not title_id:
                         continue  # no bracket ID in filename or files[] — skip
                     name = (
-                        detail.get("name") or detail.get("fs_name_no_tags") or detail.get("fs_name")
-                        or rom.get("name") or rom.get("fs_name_no_tags") or rom.get("fs_name")
+                        detail.get("name")
+                        or detail.get("fs_name_no_tags")
+                        or detail.get("fs_name")
+                        or rom.get("name")
+                        or rom.get("fs_name_no_tags")
+                        or rom.get("fs_name")
                     )
                     raw_icon = (
                         detail.get("url_cover")
@@ -217,7 +229,10 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                     db.upsert_romm_game_cache(conn, username, rom_id, name, icon_url)
                     log.info(
                         "romm_index: file-matched title=%s → rom_id=%d name=%r user=%s",
-                        title_id, rom_id, name, username,
+                        title_id,
+                        rom_id,
+                        name,
+                        username,
                     )
                     already_mapped_rom_ids.add(rom_id)
                     mapped_count += 1
@@ -241,10 +256,14 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
         _last_scan_ts = time.time()
         log.warning("romm_index: error user=%s: %s", username, exc)
         if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403):
-            log.warning("romm_index: auth error (HTTP %d) — not retrying user=%s", exc.code, username)
+            log.warning(
+                "romm_index: auth error (HTTP %d) — not retrying user=%s", exc.code, username
+            )
             try:
                 db.set_user_config(conn, username, "romm_connect_status", "auth_failed")
-                db.set_user_config(conn, username, "romm_connect_detail", f"HTTP {exc.code} — check RomM API key")
+                db.set_user_config(
+                    conn, username, "romm_connect_detail", f"HTTP {exc.code} — check RomM API key"
+                )
                 conn.commit()
             except Exception:
                 pass

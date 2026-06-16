@@ -1585,6 +1585,7 @@ def _device_games_inner(device_id: str, username: str):
     result: dict = {"games": games}
     if device_client_type == "romm":
         import romm_index as _ri
+
         status = _ri.scan_status()
         result["scan_running"] = status["running"]
         result["scan_queued"] = status["queued"]

@@ -277,7 +277,9 @@ def prefetch() -> None:
 
         def _fetch_regions() -> None:
             for region, lang in _FALLBACK_REGIONS:
-                url = f"https://raw.githubusercontent.com/blawar/titledb/master/{region}.{lang}.json"
+                url = (
+                    f"https://raw.githubusercontent.com/blawar/titledb/master/{region}.{lang}.json"
+                )
                 cache = _DATA_DIR / f"titledb_cache_{region.lower()}_{lang}.json"
                 meta = _DATA_DIR / f"titledb_meta_{region.lower()}_{lang}.json"
                 _fetch_and_cache(url, cache, meta, _lock_extra, merger)

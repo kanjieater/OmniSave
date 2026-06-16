@@ -602,7 +602,9 @@ def device_config(body: DeviceConfigBody, request: Request):
         if p.profile_id:
             db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
             if _device_owner and db.get_profile_owner(_conn, device_id, p.profile_id) is None:
-                db.upsert_device_profile(_conn, device_id, p.profile_id, _device_owner, p.profile_name)
+                db.upsert_device_profile(
+                    _conn, device_id, p.profile_id, _device_owner, p.profile_name
+                )
                 db.backfill_owner_on_profile_claim(_conn, device_id, p.profile_id, _device_owner)
 
     # Catalog update: atomically replace installed-game inventory, then backfill outbounds.
@@ -650,6 +652,7 @@ def device_config(body: DeviceConfigBody, request: Request):
         )
         if catalog_changed:
             import romm_index as _romm_index
+
             _romm_index.request_index_run_now()
 
     device_row = db.get_device(_conn, device_id)
