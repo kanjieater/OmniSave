@@ -152,7 +152,7 @@ export const api = {
     if (token) headers['Authorization'] = `Bearer ${token}`
     const r = await fetch(`/api/v1/ui/snapshots/${transactionId}/download`, { headers })
     if (!r.ok) {
-      const raw = await r.clone().text()
+      const raw = await r.text()
       let message = `Download failed (${r.status})`
       try {
         const j = JSON.parse(raw) as { error?: string }
@@ -166,6 +166,6 @@ export const api = {
     const a = document.createElement('a')
     a.href = url; a.download = filename
     document.body.appendChild(a); a.click(); document.body.removeChild(a)
-    setTimeout(() => URL.revokeObjectURL(url), 1_000)
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
   },
 };

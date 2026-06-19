@@ -753,6 +753,7 @@ export function SnapshotTimeline({
       )}
 
       <SnapshotDetailsSheet
+        key={selected?.transaction_id ?? 'none'}
         snap={selected}
         open={!!selected}
         onClose={() => setSelected(null)}
