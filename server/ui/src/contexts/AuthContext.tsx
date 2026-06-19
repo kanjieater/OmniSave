@@ -51,6 +51,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const s = await api.authStatus();
         if (cancelled) return;
+        const hasToken = !!localStorage.getItem('os_token');
+        // If the server says "not authenticated" but we have a stored token,
+        // treat it as a transient failure and retry — same as a network error.
+        // This covers race conditions, proxy hiccups, and brief DB blips.
+        if (!s.authenticated && hasToken && attemptsLeft > 0) {
+          schedule(() => void check(attemptsLeft - 1), 1000);
+          return;
+        }
         setAuthenticated(s.authenticated);
         setUsername(s.username ?? '');
         setIsAdmin(s.is_admin ?? false);
@@ -59,7 +67,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {
         if (cancelled) return;
         if (attemptsLeft > 0 && localStorage.getItem('os_token')) {
-          // Still have rapid retries left — try again in 1s
           schedule(() => void check(attemptsLeft - 1), 1000);
         } else if (localStorage.getItem('os_token')) {
           // Rapid retries exhausted but token exists — show reconnect screen,
