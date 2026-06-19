@@ -44,7 +44,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (u: string, p: string) => {
-    // Retry on network errors (TypeError = fetch itself threw; Error = server 4xx, don't retry)
+    // TypeError = fetch() itself threw (network drop, DNS failure). Error = server responded
+    // with 4xx — wrong password, don't retry. Programming bugs inside req() could also throw
+    // TypeError, but loginWithCredentials is a single fetch with no post-processing, so the
+    // risk of masking a bug here is negligible.
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const { admin_token } = await api.loginWithCredentials(u, p);

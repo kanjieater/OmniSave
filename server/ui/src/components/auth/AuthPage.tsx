@@ -20,9 +20,7 @@ export default function AuthPage() {
     try {
       await login(username.trim(), password)
     } catch (e) {
-      const isNetwork = e instanceof TypeError ||
-        (e instanceof DOMException && e.name === 'AbortError')
-      setErr(isNetwork ? 'Connection error — try again' : 'Invalid username or password')
+      setErr(e instanceof TypeError ? 'Connection error — try again' : 'Invalid username or password')
     } finally {
       setBusy(false)
     }
