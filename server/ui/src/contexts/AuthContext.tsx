@@ -50,6 +50,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const s = await api.authStatus();
         if (cancelled) return;
+        // If server says "not authenticated" but we have a stored token, treat it
+        // as a transient failure (shared DB conn race, proxy blip) and retry before
+        // dropping the user to the login form.
+        if (!s.authenticated && hasToken && attemptsLeft > 0) {
+          schedule(() => void check(attemptsLeft - 1), 1000);
+          return;
+        }
         setAuthenticated(s.authenticated);
         setUsername(s.username ?? '');
         setIsAdmin(s.is_admin ?? false);
@@ -59,11 +66,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (attemptsLeft > 0) {
           schedule(() => void check(attemptsLeft - 1), 1000);
         } else if (!hasToken) {
-          // No token and can't reach server — user is stuck, show error screen.
           setNetError(true);
         }
-        // If we have a token and can't reach server: stay optimistic.
-        // The main UI is shown and React Query handles individual failures.
+        // Token exists + can't reach server: stay optimistic, React Query handles failures.
       }
     };
     void check(7);

@@ -428,7 +428,7 @@ class LoginBody(BaseModel):
 
 
 @router.get("/auth/status")
-def auth_status(request: Request):
+async def auth_status(request: Request):
     username = _current_username(request) or ""
     return {
         "bootstrapped": True,
