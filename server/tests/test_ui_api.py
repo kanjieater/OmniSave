@@ -1598,6 +1598,35 @@ def test_device_games_romm_out_of_sync_when_head_exists(client, conn):
     assert r.json()["games"][0]["sync_state"] == "OUT_OF_SYNC"
 
 
+def test_dashboard_romm_pull_source_not_counted_as_pending(client, conn):
+    """RomM device that sourced the inbound (pull from RomM) must not show as pending.
+
+    When RomM is the source_device_id of an inbound, processing sets
+    device_title_head for the romm device at that seq. No outbound to romm is
+    ever created (romm is excluded from fanout as the source). Without this fix,
+    _romm_unsynced_count would count the title as unsynced because no COMPLETED
+    outbound exists — a false positive."""
+    import database as _db
+    romm_id = "romm:admin"
+    _db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc",
+                               client_type="romm", owner_user_id=ADMIN_USER)
+    conn.execute(
+        "INSERT INTO device_installed_games (device_id, title_id) VALUES (?,?)",
+        (romm_id, TITLE_1),
+    )
+    # Inbound sourced from romm (a pull) — no outbound to romm created
+    _seed_txn(conn, title_id=TITLE_1, source_device_id=romm_id,
+              state="READY_FOR_RESTORE", snapshot_sequence=5)
+    # Processing stamps device_title_head for the source device
+    _db.upsert_device_title_head(conn, TITLE_1, romm_id, 5)
+    conn.commit()
+    token = _login(client)
+    data = client.get("/api/v1/ui/dashboard", headers=_hdr(token)).json()
+    romm_entry = next((d for d in data["devices"] if d["device_id"] == romm_id), None)
+    assert romm_entry is not None
+    assert romm_entry["pending_count"] == 0
+
+
 # ── Sync prefs ────────────────────────────────────────────────────────────────
 
 

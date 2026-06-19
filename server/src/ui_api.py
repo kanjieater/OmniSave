@@ -326,9 +326,9 @@ def _romm_unsynced_count(conn, username: str, device_id: str) -> int:
     Returns the number of romm catalog games that have a HEAD save but no
     successful delivery to any user romm device at that HEAD sequence,
     AND no active READY_FOR_RESTORE outbound (those are already counted by
-    the main pending_by_dev SQL — excluding them avoids double-counting).
-    Used to make pending_count on the devices list/dashboard consistent with
-    the per-game sync state shown on the device detail page."""
+    the main pending_by_dev SQL — excluding them avoids double-counting),
+    AND device_title_head does not already reflect the HEAD sequence (which
+    is set when romm is the inbound source, i.e. a pull from RomM)."""
     row = conn.execute(
         "SELECT COUNT(DISTINCT dig.title_id) AS n"
         " FROM device_installed_games dig"
@@ -357,8 +357,18 @@ def _romm_unsynced_count(conn, username: str, device_id: str) -> int:
         "  SELECT 1 FROM sync_transactions pending"
         "  WHERE pending.title_id=dig.title_id AND pending.direction='outbound'"
         "  AND pending.state='READY_FOR_RESTORE' AND pending.target_device_id=dig.device_id"
+        " )"
+        " AND NOT EXISTS ("
+        "  SELECT 1 FROM device_title_head dth"
+        "  WHERE dth.device_id=dig.device_id AND dth.title_id=dig.title_id"
+        "  AND dth.last_seq>=("
+        "   SELECT MAX(snapshot_sequence) FROM sync_transactions"
+        "   WHERE title_id=dig.title_id AND direction='inbound'"
+        "   AND state='READY_FOR_RESTORE' AND has_conflict=0 AND preservation=0"
+        "   AND owner_user_id=?"
+        "  )"
         " )",
-        (device_id, username, username, username),
+        (device_id, username, username, username, username),
     ).fetchone()
     return row["n"] if row else 0
 
