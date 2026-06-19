@@ -2,6 +2,17 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
 import { api } from '../api';
 import { queryClient } from '../lib/queryClient';
 
+// Retry fn up to 3x on network errors (TypeError = fetch threw; Error = server responded).
+async function retryNetwork<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return await fn(); } catch (e) {
+      if (!(e instanceof TypeError) || attempt === 2) throw e;
+      await new Promise(r => setTimeout(r, 600));
+    }
+  }
+  throw new Error('unreachable');
+}
+
 interface AuthCtx {
   authenticated: boolean;
   username: string;
@@ -33,34 +44,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         // Network error (server restarting) — retry if we have a stored token
         if (attemptsLeft > 0 && localStorage.getItem('os_token')) {
-          setTimeout(() => check(attemptsLeft - 1), 1500);
+          setTimeout(() => check(attemptsLeft - 1), 1000);
         } else {
           setLoading(false);
         }
       }
     };
-    void check(4);
+    void check(7);
     return () => { cancelled = true; };
   }, []);
 
   const login = useCallback(async (u: string, p: string) => {
-    // TypeError = fetch() itself threw (network drop, DNS failure). Error = server responded
-    // with 4xx — wrong password, don't retry. Programming bugs inside req() could also throw
-    // TypeError, but loginWithCredentials is a single fetch with no post-processing, so the
-    // risk of masking a bug here is negligible.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const { admin_token } = await api.loginWithCredentials(u, p);
-        localStorage.setItem('os_token', admin_token);
-        break;
-      } catch (e) {
-        if (!(e instanceof TypeError) || attempt === 2) throw e;
-        await new Promise(r => setTimeout(r, 600));
-      }
-    }
-    // authStatus lives outside the retry loop — a blip after a successful token
-    // issue should not surface as a credential failure.
-    const status = await api.authStatus();
+    const { admin_token } = await retryNetwork(() => api.loginWithCredentials(u, p));
+    localStorage.setItem('os_token', admin_token);
+    // authStatus is a separate request — retry independently so a blip between
+    // the two calls doesn't surface as a credential failure.
+    const status = await retryNetwork(() => api.authStatus());
     setAuthenticated(true);
     setUsername(status.username || u);
     setIsAdmin(status.is_admin ?? false);
