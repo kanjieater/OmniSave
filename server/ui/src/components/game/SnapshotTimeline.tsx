@@ -561,10 +561,24 @@ function SnapshotDetailsSheet({
   onDeleted: (txnId: string) => void
 }) {
   const [confirmDelete, setConfirmDelete] = React.useState(false)
+  const [dlBusy, setDlBusy] = React.useState(false)
+  const [dlErr, setDlErr] = React.useState<string | null>(null)
   const del = useMutation({
     mutationFn: (id: string) => api.deleteSnapshot(id),
     onSuccess: (_, txnId) => { setConfirmDelete(false); onClose(); onDeleted(txnId) },
   })
+
+  const handleDownload = async () => {
+    if (dlBusy || !snap) return
+    setDlBusy(true); setDlErr(null)
+    try {
+      await api.downloadSnapshot(snap.transaction_id)
+    } catch (e) {
+      setDlErr(e instanceof Error ? e.message : 'Download failed')
+    } finally {
+      setDlBusy(false)
+    }
+  }
 
   const handleClose = () => { if (!del.isPending) { setConfirmDelete(false); del.reset(); onClose() } }
 
@@ -596,12 +610,15 @@ function SnapshotDetailsSheet({
               ))}
             </div>
 
-            <Button variant="secondary" size="sm" className="w-full" asChild>
-              <a href={`/api/v1/ui/snapshots/${snap.transaction_id}/download`} download>
-                <Download size={ICON_SM} className="shrink-0" />
-                <span className="truncate min-w-0">{`Download ${gameName} [${_fmtTs(snap.ingest_timestamp)}].zip`}</span>
-              </a>
+            <Button variant="secondary" size="sm" className="w-full" onClick={() => void handleDownload()} disabled={dlBusy}>
+              <Download size={ICON_SM} className="shrink-0" />
+              <span className="truncate min-w-0">{dlBusy ? 'Downloading…' : `Download ${gameName} [${_fmtTs(snap.ingest_timestamp)}].zip`}</span>
             </Button>
+            {dlErr && (
+              <div role="alert" className="text-sm text-[var(--color-error)] bg-[var(--color-error-subtle)] border border-[var(--color-error-border)] rounded-[var(--radius-md)] px-[var(--spacing-3)] py-[var(--spacing-2)]">
+                {dlErr}
+              </div>
+            )}
 
             <Separator />
 
@@ -736,6 +753,7 @@ export function SnapshotTimeline({
       )}
 
       <SnapshotDetailsSheet
+        key={selected?.transaction_id ?? 'none'}
         snap={selected}
         open={!!selected}
         onClose={() => setSelected(null)}

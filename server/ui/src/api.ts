@@ -145,4 +145,32 @@ export const api = {
 
   health: () =>
     fetch('/api/health').then(r => r.json() as Promise<{ version: string; service: string }>),
+
+  downloadSnapshot: async (transactionId: string): Promise<void> => {
+    const token = localStorage.getItem('os_token')
+    const headers: Record<string, string> = {}
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const r = await fetch(`/api/v1/ui/snapshots/${transactionId}/download`, { headers })
+    if (!r.ok) {
+      const raw = await r.text()
+      let message = `Download failed (${r.status})`
+      try {
+        const j = JSON.parse(raw) as { error?: string }
+        if (j.error) message = j.error
+      } catch { /* not JSON */ }
+      throw new Error(message)
+    }
+    const blob = await r.blob()
+    // Starlette uses filename*=utf-8''<pct-encoded> when the name contains spaces/brackets;
+    // fall back to filename="..." for plain ASCII names.
+    const disposition = r.headers.get('content-disposition') ?? ''
+    const extMatch = disposition.match(/filename\*=utf-8''([^;,\s]+)/i)
+    const basicMatch = disposition.match(/filename="([^"]+)"/)
+    const filename = extMatch ? decodeURIComponent(extMatch[1]) : (basicMatch?.[1] ?? 'save.zip')
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = filename
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  },
 };
