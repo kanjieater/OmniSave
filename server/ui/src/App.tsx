@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react'
-import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth } from './contexts/AuthContext'
 import AuthPage from './components/auth/AuthPage'
@@ -38,21 +37,7 @@ function FullScreenMessage({ title, sub, action }: { title: string; sub: string;
 }
 
 function AuthGuard({ children }: { children: ReactNode }) {
-  const { authenticated, loading, netError, retryAuth } = useAuth()
-  const [showLoading, setShowLoading] = useState(false)
-
-  useEffect(() => {
-    if (!loading) { setShowLoading(false); return; }
-    const t = setTimeout(() => setShowLoading(true), 300)
-    return () => clearTimeout(t)
-  }, [loading])
-
-  if (loading) return showLoading ? (
-    <FullScreenMessage
-      title="Connecting…"
-      sub="Reaching your OmniSave server"
-    />
-  ) : null
+  const { authenticated, netError, retryAuth } = useAuth()
   if (netError) return (
     <FullScreenMessage
       title="Can't reach server"

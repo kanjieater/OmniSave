@@ -19,7 +19,6 @@ interface AuthCtx {
   isAdmin: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  loading: boolean;
   netError: boolean;
   retryAuth: () => void;
 }
@@ -27,18 +26,18 @@ interface AuthCtx {
 const Ctx = createContext<AuthCtx>(null!);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [authenticated, setAuthenticated] = useState(false);
+  // Optimistic: if a token is in localStorage, assume authenticated immediately.
+  // The background check corrects this if the token turns out to be invalid.
+  const [authenticated, setAuthenticated] = useState(() => !!localStorage.getItem('os_token'));
   const [username, setUsername] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [netError, setNetError] = useState(false);
   const [checkTrigger, setCheckTrigger] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setNetError(false);
+    const hasToken = !!localStorage.getItem('os_token');
 
     const schedule = (fn: () => void, delay: number) => {
       timerRef.current = setTimeout(() => {
@@ -51,32 +50,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const s = await api.authStatus();
         if (cancelled) return;
-        const hasToken = !!localStorage.getItem('os_token');
-        // If the server says "not authenticated" but we have a stored token,
-        // treat it as a transient failure and retry — same as a network error.
-        // This covers race conditions, proxy hiccups, and brief DB blips.
-        if (!s.authenticated && hasToken && attemptsLeft > 0) {
-          schedule(() => void check(attemptsLeft - 1), 1000);
-          return;
-        }
         setAuthenticated(s.authenticated);
         setUsername(s.username ?? '');
         setIsAdmin(s.is_admin ?? false);
         setNetError(false);
-        setLoading(false);
       } catch {
         if (cancelled) return;
-        if (attemptsLeft > 0 && localStorage.getItem('os_token')) {
+        if (attemptsLeft > 0) {
           schedule(() => void check(attemptsLeft - 1), 1000);
-        } else if (localStorage.getItem('os_token')) {
-          // Rapid retries exhausted but token exists — show reconnect screen,
-          // keep auto-retrying every 5s in the background.
+        } else if (!hasToken) {
+          // No token and can't reach server — user is stuck, show error screen.
           setNetError(true);
-          setLoading(false);
-          schedule(() => void check(7), 5000);
-        } else {
-          setLoading(false);
         }
+        // If we have a token and can't reach server: stay optimistic.
+        // The main UI is shown and React Query handles individual failures.
       }
     };
     void check(7);
@@ -100,7 +87,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const retryAuth = useCallback(() => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
     setNetError(false);
-    setLoading(true);
     setCheckTrigger(t => t + 1);
   }, []);
 
@@ -115,7 +101,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <Ctx.Provider value={{ authenticated, username, isAdmin, login, logout, loading, netError, retryAuth }}>
+    <Ctx.Provider value={{ authenticated, username, isAdmin, login, logout, netError, retryAuth }}>
       {children}
     </Ctx.Provider>
   );
