@@ -19,8 +19,8 @@ export default function AuthPage() {
     setErr('')
     try {
       await login(username.trim(), password)
-    } catch {
-      setErr('Invalid username or password')
+    } catch (e) {
+      setErr(e instanceof TypeError ? 'Connection error — try again' : 'Invalid username or password')
     } finally {
       setBusy(false)
     }

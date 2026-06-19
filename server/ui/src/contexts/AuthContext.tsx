@@ -44,9 +44,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (u: string, p: string) => {
-    const { admin_token } = await api.loginWithCredentials(u, p);
-    localStorage.setItem('os_token', admin_token);
-    // Fetch status to get is_admin
+    // TypeError = fetch() itself threw (network drop, DNS failure). Error = server responded
+    // with 4xx — wrong password, don't retry. Programming bugs inside req() could also throw
+    // TypeError, but loginWithCredentials is a single fetch with no post-processing, so the
+    // risk of masking a bug here is negligible.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { admin_token } = await api.loginWithCredentials(u, p);
+        localStorage.setItem('os_token', admin_token);
+        break;
+      } catch (e) {
+        if (!(e instanceof TypeError) || attempt === 2) throw e;
+        await new Promise(r => setTimeout(r, 600));
+      }
+    }
+    // authStatus lives outside the retry loop — a blip after a successful token
+    // issue should not surface as a credential failure.
     const status = await api.authStatus();
     setAuthenticated(true);
     setUsername(status.username || u);
