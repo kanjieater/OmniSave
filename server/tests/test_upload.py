@@ -5,7 +5,7 @@ Covers: inbound initiation, manifest POST, window idempotency,
 """
 
 import sync_api
-from helpers import CHECKPOINT_SIZE, DEVICE_A, TITLE_1, WINDOW_SIZE, auth_header, compute_ledger, do_upload, start_inbound, sync_hdrs
+from helpers import CHECKPOINT_SIZE, DEVICE_A, DEVICE_B, TITLE_1, TITLE_2, WINDOW_SIZE, auth_header, compute_ledger, do_upload, pair_device, start_inbound, sync_hdrs
 
 SAVE_DATA = b"X" * 1024  # small save, fits in one checkpoint
 
@@ -76,6 +76,24 @@ def test_manifest_post_freezes_ledger(client, device_token):
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert r.json()["server_verified_bytes"] == 0
+
+
+def test_manifest_repost_returns_actual_svb(client, device_token):
+    """Re-posting manifest after partial upload returns current server_verified_bytes, not 0.
+
+    Scenario: Switch loses session.json (sysmodule restart), re-calls start_inbound
+    (server reuses session), re-posts manifest. Server must return the real SVB so the
+    Switch can resume from the correct offset instead of restarting from 0."""
+    _, session_id, _ = start_inbound(client, DEVICE_A, TITLE_1, len(SAVE_DATA), device_token)
+    h = sync_hdrs(DEVICE_A, device_token)
+    ledger = compute_ledger(SAVE_DATA)
+    manifest_body = {"checkpoint_size": CHECKPOINT_SIZE, "checkpoint_ledger": ledger}
+    client.post(f"/api/v1/sync/sessions/{session_id}/manifest", json=manifest_body, headers=h)
+    client.put(f"/api/v1/sync/sessions/{session_id}/window?offset=0", content=SAVE_DATA, headers=h)
+    # Re-post manifest (simulates Switch losing session.json and starting over)
+    r = client.post(f"/api/v1/sync/sessions/{session_id}/manifest", json=manifest_body, headers=h)
+    assert r.status_code == 200
+    assert r.json()["server_verified_bytes"] == len(SAVE_DATA)
 
 
 def test_manifest_wrong_checkpoint_size_rejected(client, device_token):
@@ -329,6 +347,70 @@ def test_window_empty_body_rejected(client):
                 json={"checkpoint_size": CHECKPOINT_SIZE, "checkpoint_ledger": ledger}, headers=hdrs)
     r = client.put(f"/api/v1/sync/sessions/{session_id}/window?offset=0", content=b"", headers=hdrs)
     assert r.status_code == 400
+
+
+# ── Idempotent inbound open ───────────────────────────────────────────────────
+
+
+def test_start_inbound_same_slot_reuses_session(client, conn):
+    """Same device+title+parent_seq+size while UPLOADING → returns existing txn/session (no new row)."""
+    token = pair_device(client, DEVICE_A)
+    hdrs = sync_hdrs(DEVICE_A, token)
+    body = {"title_id": TITLE_1, "total_size_bytes": 100}
+
+    r1 = client.post("/api/v1/sync/transactions/inbound", json=body, headers=hdrs)
+    r2 = client.post("/api/v1/sync/transactions/inbound", json=body, headers=hdrs)
+
+    assert r1.status_code == r2.status_code == 200
+    assert r1.json()["transaction_id"] == r2.json()["transaction_id"]
+    assert r1.json()["session_id"] == r2.json()["session_id"]
+    count = conn.execute(
+        "SELECT count(*) FROM sync_transactions "
+        "WHERE source_device_id=? AND title_id=? AND state='UPLOADING'",
+        (DEVICE_A, TITLE_1),
+    ).fetchone()[0]
+    assert count == 1
+
+
+def test_start_inbound_different_parent_seq_gets_new_txn(client):
+    """Different parent_sequence_num → new transaction (genuine next save in chain)."""
+    token = pair_device(client, DEVICE_A)
+    hdrs = sync_hdrs(DEVICE_A, token)
+
+    r1 = client.post("/api/v1/sync/transactions/inbound",
+                     json={"title_id": TITLE_1, "total_size_bytes": 100, "parent_sequence_num": 1},
+                     headers=hdrs)
+    r2 = client.post("/api/v1/sync/transactions/inbound",
+                     json={"title_id": TITLE_1, "total_size_bytes": 100, "parent_sequence_num": 2},
+                     headers=hdrs)
+
+    assert r1.json()["transaction_id"] != r2.json()["transaction_id"]
+
+
+def test_start_inbound_different_title_gets_new_txn(client):
+    """Different title → always a new transaction."""
+    token = pair_device(client, DEVICE_A)
+    hdrs = sync_hdrs(DEVICE_A, token)
+
+    r1 = client.post("/api/v1/sync/transactions/inbound",
+                     json={"title_id": TITLE_1, "total_size_bytes": 100}, headers=hdrs)
+    r2 = client.post("/api/v1/sync/transactions/inbound",
+                     json={"title_id": TITLE_2, "total_size_bytes": 100}, headers=hdrs)
+
+    assert r1.json()["transaction_id"] != r2.json()["transaction_id"]
+
+
+def test_start_inbound_different_size_gets_new_txn(client):
+    """Same slot but different total_size_bytes → new transaction (save data changed)."""
+    token = pair_device(client, DEVICE_A)
+    hdrs = sync_hdrs(DEVICE_A, token)
+
+    r1 = client.post("/api/v1/sync/transactions/inbound",
+                     json={"title_id": TITLE_1, "total_size_bytes": 100}, headers=hdrs)
+    r2 = client.post("/api/v1/sync/transactions/inbound",
+                     json={"title_id": TITLE_1, "total_size_bytes": 200}, headers=hdrs)
+
+    assert r1.json()["transaction_id"] != r2.json()["transaction_id"]
 
 
 def test_window_oversized_body_rejected(client, device_token):

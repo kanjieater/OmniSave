@@ -173,7 +173,28 @@ def start_inbound(body: InboundBody, request: Request):
     if not owner_user_id:
         owner_user_id = auth.user_id
 
-    # 3. Insert transaction with ownership already resolved
+    # 3. Idempotent open: same slot already UPLOADING → reuse its session.
+    # Prevents orphaned transaction storms (e.g. after a lineage wipe the Switch
+    # sends parent_seq=null for every title repeatedly — one session per slot is enough).
+    existing = db.find_uploading_inbound(
+        _conn,
+        auth.device_id,
+        body.title_id,
+        body.parent_sequence_num,
+        body.user_key,
+        body.total_size_bytes,
+    )
+    if existing:
+        txn_id, session_id = existing
+        log.info(
+            "start_inbound: reusing session txn=%s device=%s title=%s",
+            txn_id[:8],
+            auth.device_id,
+            body.title_id,
+        )
+        return {"transaction_id": txn_id, "session_id": session_id}
+
+    # 4. Insert transaction with ownership already resolved
     db.upsert_device(_conn, auth.device_id, body.hardware_type)
     # Update known profiles cache whenever a user_key is seen
     if body.user_key:
@@ -236,7 +257,9 @@ def post_manifest(session_id: str, body: ManifestBody, request: Request):
             return _err("ledger contains out-of-range uint32 value")
 
     if sess["checkpoint_ledger"] is not None:
-        return JSONResponse({"ok": True, "server_verified_bytes": 0}, status_code=200)
+        return JSONResponse(
+            {"ok": True, "server_verified_bytes": sess["server_verified_bytes"]}, status_code=200
+        )
 
     db.set_session_manifest(_conn, session_id, json.dumps(body.checkpoint_ledger))
     log.info(
@@ -665,8 +688,22 @@ def device_config(body: DeviceConfigBody, request: Request):
 
     # If device has no token and no owner yet, generate/refresh a pairing code
     # so the overlay can display it for the user to claim on the web UI.
-    auth_row = _conn.execute("SELECT 1 FROM device_auth WHERE device_id=?", (device_id,)).fetchone()
+    auth_row = _conn.execute(
+        "SELECT device_token FROM device_auth WHERE device_id=?", (device_id,)
+    ).fetchone()
     if not auth_row:
         pairing_code = db.create_pairing_code(_conn, device_id)
         return {"pairing_code": pairing_code, "pairing_expires_in": 900}
+
+    # Device has a server-side token but sent no Bearer — it lost its local token
+    # (e.g. omnisave folder wiped, or blank token after a server switch). Re-deliver
+    # so the device can recover without manual DB intervention.
+    # Only re-deliver when Bearer is absent entirely; a stale-but-present token
+    # means the device still thinks it's paired and will clear it naturally on 401.
+    bearer = request.headers.get("authorization", "")
+    bearer_token = bearer[7:] if bearer.startswith("Bearer ") else None
+    if bearer_token is None:
+        log.info("device-config: re-delivering lost token to %s", device_id)
+        return {"device_token": auth_row["device_token"]}
+
     return {}
