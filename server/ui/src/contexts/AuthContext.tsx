@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { queryClient } from '../lib/queryClient';
 
@@ -20,6 +20,8 @@ interface AuthCtx {
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   loading: boolean;
+  netError: boolean;
+  retryAuth: () => void;
 }
 
 const Ctx = createContext<AuthCtx>(null!);
@@ -29,9 +31,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [username, setUsername] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [netError, setNetError] = useState(false);
+  const [checkTrigger, setCheckTrigger] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setNetError(false);
+
+    const schedule = (fn: () => void, delay: number) => {
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        if (!cancelled) fn();
+      }, delay);
+    };
+
     const check = async (attemptsLeft: number) => {
       try {
         const s = await api.authStatus();
@@ -39,20 +54,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setAuthenticated(s.authenticated);
         setUsername(s.username ?? '');
         setIsAdmin(s.is_admin ?? false);
+        setNetError(false);
         setLoading(false);
       } catch {
         if (cancelled) return;
-        // Network error (server restarting) — retry if we have a stored token
         if (attemptsLeft > 0 && localStorage.getItem('os_token')) {
-          setTimeout(() => check(attemptsLeft - 1), 1000);
+          // Still have rapid retries left — try again in 1s
+          schedule(() => void check(attemptsLeft - 1), 1000);
+        } else if (localStorage.getItem('os_token')) {
+          // Rapid retries exhausted but token exists — show reconnect screen,
+          // keep auto-retrying every 5s in the background.
+          setNetError(true);
+          setLoading(false);
+          schedule(() => void check(7), 5000);
         } else {
           setLoading(false);
         }
       }
     };
     void check(7);
-    return () => { cancelled = true; };
-  }, []);
+    return () => {
+      cancelled = true;
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    };
+  }, [checkTrigger]);
 
   const login = useCallback(async (u: string, p: string) => {
     const { admin_token } = await retryNetwork(() => api.loginWithCredentials(u, p));
@@ -65,6 +90,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsAdmin(status.is_admin ?? false);
   }, []);
 
+  const retryAuth = useCallback(() => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    setNetError(false);
+    setLoading(true);
+    setCheckTrigger(t => t + 1);
+  }, []);
+
   const logout = useCallback(async () => {
     await api.apiLogout().catch(() => {});
     localStorage.removeItem('os_token');
@@ -72,10 +104,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthenticated(false);
     setUsername('');
     setIsAdmin(false);
+    setNetError(false);
   }, []);
 
   return (
-    <Ctx.Provider value={{ authenticated, username, isAdmin, login, logout, loading }}>
+    <Ctx.Provider value={{ authenticated, username, isAdmin, login, logout, loading, netError, retryAuth }}>
       {children}
     </Ctx.Provider>
   );

@@ -226,14 +226,15 @@ def test_device_config_upserts_known_profiles(client):
     assert PROF_A in ids
 
 
-def test_device_config_no_pending_returns_empty(client, conn):
+def test_device_config_no_pending_returns_empty_when_bearer_sent(client, conn):
+    """Device sends its token as Bearer and config_pending=0 → {} (nothing to deliver)."""
     _seed(client)
-    # Auto-pair sets config_pending=1; simulate already-delivered state
+    device_token = pair_device(client, DEVICE_A)
     conn.execute("UPDATE device_auth SET config_pending=0 WHERE device_id=?", (DEVICE_A,))
     r = client.post(
         "/api/v1/sync/device-config",
         json={},
-        headers={"X-Device-ID": DEVICE_A},
+        headers={"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {device_token}"},
     )
     assert r.status_code == 200
     assert r.json() == {}
@@ -254,12 +255,20 @@ def test_device_config_delivers_token_when_pending(client):
     assert r.json().get("device_token") == expected_token
 
 
-def test_device_config_token_consumed_on_second_call(client):
+def test_device_config_returns_empty_on_second_call_when_bearer_sent(client):
+    """Once device has its token and sends Bearer, device-config returns {} (nothing to deliver)."""
     _seed(client)
     token = _login(client)
-    client.post(f"/api/v1/ui/devices/{DEVICE_A}/token", headers=_hdr(token))
+    pair_r = client.post(f"/api/v1/ui/devices/{DEVICE_A}/token", headers=_hdr(token))
+    device_token = pair_r.json()["token"]
+    # First call (no Bearer): delivers token
     client.post("/api/v1/sync/device-config", json={}, headers={"X-Device-ID": DEVICE_A})
-    r = client.post("/api/v1/sync/device-config", json={}, headers={"X-Device-ID": DEVICE_A})
+    # Second call (device now has its token, sends Bearer): nothing to do
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={},
+        headers={"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {device_token}"},
+    )
     assert r.json() == {}
 
 

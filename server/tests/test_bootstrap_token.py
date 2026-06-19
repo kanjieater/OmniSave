@@ -106,9 +106,10 @@ def test_device_config_happy_path_returns_token(client):
     assert r.json().get("device_token") == device_token
 
 
-def test_device_config_no_pending_flag_returns_empty(client, conn):
-    """Device registered and paired, but config_pending=0 → {}."""
-    _seed(client)  # auto-pairs (config_pending=1)
+def test_device_config_no_pending_flag_redelivers_when_no_bearer(client, conn):
+    """Paired device with config_pending=0 and no Bearer → re-delivers token (lost-token recovery)."""
+    _seed(client)
+    device_token = _pair(client)
     conn.execute("UPDATE device_auth SET config_pending=0 WHERE device_id=?", (DEVICE_A,))
     r = client.post(
         "/api/v1/sync/device-config",
@@ -116,7 +117,7 @@ def test_device_config_no_pending_flag_returns_empty(client, conn):
         headers={"X-Device-ID": DEVICE_A},
     )
     assert r.status_code == 200
-    assert r.json() == {}
+    assert r.json().get("device_token") == device_token
 
 
 def test_device_config_first_contact_returns_pairing_code(client, conn):
@@ -149,19 +150,19 @@ def test_device_config_stale_last_seen_still_delivers_token(client, conn):
     assert r.json().get("device_token") == device_token
 
 
-def test_device_config_idempotent_second_call_returns_empty(client):
-    """Token delivered once — second call returns {} (flag cleared)."""
+def test_device_config_repeated_calls_without_bearer_redeliver_token(client):
+    """Every no-Bearer device-config call re-delivers the token (lost-token recovery is repeatable)."""
     _seed(client)
-    _pair(client)
+    device_token = _pair(client)
     client.post("/api/v1/sync/device-config", json={"known_profiles": []}, headers={"X-Device-ID": DEVICE_A})
     r = client.post("/api/v1/sync/device-config", json={"known_profiles": []}, headers={"X-Device-ID": DEVICE_A})
-    assert r.json() == {}
+    assert r.json().get("device_token") == device_token
 
 
 def test_device_config_upserts_known_profiles_regardless_of_token(client, conn):
-    """Profiles reported are cached even when a token is delivered."""
+    """Profiles reported are cached even when device already has its token (sends Bearer → {} response)."""
     _seed(client)
-    # Clear config_pending so we can verify profiles are cached independently of token delivery
+    device_token = _pair(client)
     conn.execute("UPDATE device_auth SET config_pending=0 WHERE device_id=?", (DEVICE_A,))
     r = client.post(
         "/api/v1/sync/device-config",
@@ -169,14 +170,79 @@ def test_device_config_upserts_known_profiles_regardless_of_token(client, conn):
             {"profile_id": PROFILE_A, "profile_name": "Alice"},
             {"profile_id": PROFILE_B, "profile_name": "Bob"},
         ]},
-        headers={"X-Device-ID": DEVICE_A},
+        headers={"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {device_token}"},
     )
-    assert r.json() == {}  # no config_pending → no token
+    assert r.json() == {}  # device has token and sends it → nothing to deliver
     rows = conn.execute(
         "SELECT profile_id FROM device_known_profiles WHERE device_id=? ORDER BY profile_id",
         (DEVICE_A,),
     ).fetchall()
     assert {r["profile_id"] for r in rows} == {PROFILE_A, PROFILE_B}
+
+
+def test_device_config_redelivers_token_after_local_wipe(client, conn):
+    """
+    Device loses its local token (omnisave folder wiped on-device) after the initial
+    delivery (config_pending already consumed). Next device-config with no Authorization
+    header must re-deliver the token so the device can recover without SQL intervention.
+
+    Regression: delete-then-re-add from UI sets config_pending=1; token is delivered and
+    config_pending cleared; user then wipes the Switch omnisave folder; device is stuck —
+    server has device_auth row, config_pending=0, device has no token and gets {} forever.
+    """
+    _seed(client)
+    device_token = _pair(client)  # config_pending=1
+
+    # First delivery: Switch receives token, config_pending→0
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": []},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert r.json().get("device_token") == device_token
+    assert conn.execute(
+        "SELECT config_pending FROM device_auth WHERE device_id=?", (DEVICE_A,)
+    ).fetchone()["config_pending"] == 0
+
+    # Device wipes local state — calls device-config again with no Bearer token.
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": []},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert r.status_code == 200
+    assert r.json().get("device_token") == device_token
+
+
+def test_device_config_no_redeliver_when_stale_bearer(client, conn):
+    """Stale-but-correctly-formatted bearer → no re-delivery (let 401 cycle handle recovery)."""
+    _seed(client)
+    _pair(client)
+    conn.execute("UPDATE device_auth SET config_pending=0 WHERE device_id=?", (DEVICE_A,))
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": []},
+        headers={
+            "X-Device-ID": DEVICE_A,
+            "Authorization": "Bearer sk_device_thisisastaletokenfrompreviousserver",
+        },
+    )
+    assert r.status_code == 200
+    assert "device_token" not in r.json()
+
+
+def test_device_config_no_redeliver_when_bearer_present(client, conn):
+    """Device already has its token and sends it as Bearer — server returns {} (nothing to do)."""
+    _seed(client)
+    device_token = _pair(client)
+    conn.execute("UPDATE device_auth SET config_pending=0 WHERE device_id=?", (DEVICE_A,))
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": []},
+        headers={"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {device_token}"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {}
 
 
 def test_device_config_missing_device_id_header_400(client):

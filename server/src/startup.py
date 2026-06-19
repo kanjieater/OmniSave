@@ -193,12 +193,38 @@ def _recover_interrupted_processing(conn, staging_dir: Path, archive_dir: Path) 
             processing._run(txn_id, row["session_id"], staging_dir, archive_dir, conn.path)
 
 
+def _commit_complete_uploaded_sessions(conn, staging_dir: Path, archive_dir: Path) -> None:
+    """Auto-commit sessions that are 100% uploaded but never received a commit call.
+
+    This covers the crash window between the Switch sending the final window and
+    sending the commit POST — if the server restarts in that gap the session stays
+    ACTIVE with SVB==total forever. transition_to_processing already gates on the
+    completeness invariant (SVB==total), so this is safe to call unconditionally.
+    Must run BEFORE _expire_stale_uploads so complete sessions are committed, not failed.
+    """
+    rows = conn.execute(
+        "SELECT us.session_id, st.transaction_id "
+        "FROM upload_sessions us "
+        "JOIN sync_transactions st ON st.transaction_id = us.transaction_id "
+        "WHERE us.session_state = 'ACTIVE' "
+        "AND st.state = 'UPLOADING' "
+        "AND us.server_verified_bytes = us.total_size_bytes "
+        "AND us.checkpoint_ledger IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        txn_id = db.transition_to_processing(conn, row["session_id"])
+        if txn_id:
+            processing.submit(txn_id, row["session_id"], staging_dir, archive_dir, conn)
+            log.info("startup: auto-committed complete session txn=%s", txn_id[:8])
+
+
 def run(conn, staging_dir: Path, archive_dir: Path) -> None:
     _migrate_schema(conn)
     _supersede_legacy_bin_archives(conn)
     _repair_duplicate_sequences(conn)
     _sync_counters_and_resequence_heads(conn)
     _recover_interrupted_processing(conn, staging_dir, archive_dir)
+    _commit_complete_uploaded_sessions(conn, staging_dir, archive_dir)
     _expire_stale_uploads(conn, staging_dir)
     _fail_missing_archives(conn)
     _repair_null_ledgers(conn)

@@ -4,13 +4,21 @@ Covers: startup recovery, stale upload expiry, missing archive.
 """
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
-import pytest
+from helpers import (
+    CHECKPOINT_SIZE,
+    DEVICE_A,
+    DEVICE_B,
+    TITLE_1,
+    TITLE_2,
+    compute_ledger,
+    do_upload,
+    pair_device,
+    report_catalog,
+)
 
 import database as db
 import startup
-from helpers import DEVICE_A, DEVICE_B, TITLE_1, TITLE_2, do_upload, poll_queue, report_catalog
 
 SAVE = b"resilience-test-save"
 
@@ -19,7 +27,9 @@ def test_startup_expires_stale_uploading_transaction(conn, tmp_dirs):
     staging, archive = tmp_dirs
     # Create an UPLOADING transaction with last_active_at 13h ago
     txn_id, session_id = db.create_inbound_transaction(
-        conn, DEVICE_A, TITLE_1,
+        conn,
+        DEVICE_A,
+        TITLE_1,
         total_size_bytes=100,
         parent_sequence_num=None,
     )
@@ -70,7 +80,9 @@ def test_expire_writes_python_format_timestamp(conn, tmp_dirs):
 def test_startup_does_not_expire_recent_upload(conn, tmp_dirs):
     staging, archive = tmp_dirs
     txn_id, _ = db.create_inbound_transaction(
-        conn, DEVICE_A, TITLE_1,
+        conn,
+        DEVICE_A,
+        TITLE_1,
         total_size_bytes=100,
         parent_sequence_num=None,
     )
@@ -86,7 +98,9 @@ def test_startup_does_not_expire_recent_upload(conn, tmp_dirs):
 def test_startup_fails_ready_with_missing_archive(conn, tmp_dirs):
     staging, archive = tmp_dirs
     txn_id, _ = db.create_inbound_transaction(
-        conn, DEVICE_A, TITLE_1,
+        conn,
+        DEVICE_A,
+        TITLE_1,
         total_size_bytes=100,
         parent_sequence_num=None,
     )
@@ -109,7 +123,9 @@ def test_startup_fails_ready_with_missing_archive(conn, tmp_dirs):
 def test_startup_supersedes_legacy_bin_archives(conn, tmp_dirs):
     staging, archive = tmp_dirs
     txn_id, _ = db.create_inbound_transaction(
-        conn, DEVICE_A, TITLE_1,
+        conn,
+        DEVICE_A,
+        TITLE_1,
         total_size_bytes=9,
         parent_sequence_num=None,
     )
@@ -136,7 +152,9 @@ def test_startup_keeps_ready_with_existing_archive(conn, tmp_dirs):
     archive_path.write_bytes(b"real_data")
 
     txn_id, _ = db.create_inbound_transaction(
-        conn, DEVICE_A, TITLE_1,
+        conn,
+        DEVICE_A,
+        TITLE_1,
         total_size_bytes=9,
         parent_sequence_num=None,
     )
@@ -153,7 +171,6 @@ def test_startup_keeps_ready_with_existing_archive(conn, tmp_dirs):
         "SELECT state FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()
     assert txn["state"] == "READY_FOR_RESTORE"
-
 
 
 def test_orphan_staging_dirs_purged(conn, tmp_dirs):
@@ -274,6 +291,7 @@ def test_sync_counters_does_not_renumber_head_when_preservation_has_higher_seq(c
 def test_migration_removes_lease_columns(tmp_path):
     """Migration path: DB with old lease columns → lease cols dropped, DELIVERING → READY_FOR_RESTORE."""
     import sqlite3
+
     raw = sqlite3.connect(str(tmp_path / "old.db"))
     raw.row_factory = sqlite3.Row
     raw.executescript("""
@@ -320,7 +338,10 @@ def test_migration_removes_lease_columns(tmp_path):
     assert "lease_id" not in cols
     assert "lease_expires_at" not in cols
 
-    rows = {r["transaction_id"]: r["state"] for r in raw.execute("SELECT transaction_id, state FROM sync_transactions").fetchall()}
+    rows = {
+        r["transaction_id"]: r["state"]
+        for r in raw.execute("SELECT transaction_id, state FROM sync_transactions").fetchall()
+    }
     assert rows["txn-1"] == "READY_FOR_RESTORE"
     assert rows["txn-2"] == "READY_FOR_RESTORE"
     raw.close()
@@ -330,6 +351,7 @@ def test_migration_adds_owner_user_id_to_existing_db(tmp_path):
     """Upgrade path: existing DB with events table but no owner_user_id column.
     open_db() must complete without error and add the column + indexes."""
     import sqlite3
+
     raw = sqlite3.connect(str(tmp_path / "existing.db"))
     raw.row_factory = sqlite3.Row
     raw.executescript("""
@@ -390,6 +412,7 @@ def test_migration_adds_owner_user_id_to_existing_db(tmp_path):
 def test_migration_flattens_snapshot_counters_device_id(tmp_path):
     """Migration: old snapshot_counters with device_id column → global per-title counter."""
     import sqlite3
+
     raw = sqlite3.connect(str(tmp_path / "old_counters.db"))
     raw.row_factory = sqlite3.Row
     raw.executescript("""
@@ -450,7 +473,10 @@ def test_migration_flattens_snapshot_counters_device_id(tmp_path):
     assert "title_id" in cols
     assert "counter" in cols
 
-    rows = {r["title_id"]: r["counter"] for r in raw.execute("SELECT title_id, counter FROM snapshot_counters").fetchall()}
+    rows = {
+        r["title_id"]: r["counter"]
+        for r in raw.execute("SELECT title_id, counter FROM snapshot_counters").fetchall()
+    }
     assert rows["0100F2C0115B6000"] == 15
     assert rows["0100EC001DE7E000"] == 3
     raw.close()
@@ -459,6 +485,7 @@ def test_migration_flattens_snapshot_counters_device_id(tmp_path):
 def test_processing_rollback_on_finalize_error(conn, tmp_dirs, monkeypatch):
     """Exception inside BEGIN IMMEDIATE block → ROLLBACK issued, transaction set to FAILED."""
     import processing
+
     staging, archive = tmp_dirs
 
     txn_id, session_id = db.create_inbound_transaction(conn, DEVICE_A, TITLE_1, 5, None)
@@ -481,7 +508,9 @@ def test_processing_rollback_on_finalize_error(conn, tmp_dirs, monkeypatch):
     staging_file.parent.mkdir(parents=True)
     staging_file.write_bytes(b"save")
 
-    monkeypatch.setattr(db, "upsert_device_title_head", lambda *_: (_ for _ in ()).throw(RuntimeError("injected")))
+    monkeypatch.setattr(
+        db, "upsert_device_title_head", lambda *_: (_ for _ in ()).throw(RuntimeError("injected"))
+    )
 
     processing._run(txn_id, session_id, staging, archive, conn.path)
 
@@ -505,7 +534,6 @@ def test_crash_after_file_move_recovered_by_startup(conn, tmp_dirs, client):
     With the fix: startup._recover_interrupted_processing re-runs the commit step
     and advances the transaction to READY_FOR_RESTORE.
     """
-    import processing
 
     staging, archive = tmp_dirs
 
@@ -528,9 +556,12 @@ def test_crash_after_file_move_recovered_by_startup(conn, tmp_dirs, client):
     )
     conn.commit()
 
-    assert conn.execute(
-        "SELECT state FROM sync_transactions WHERE transaction_id=?", (txn_id,)
-    ).fetchone()["state"] == "PROCESSING"
+    assert (
+        conn.execute(
+            "SELECT state FROM sync_transactions WHERE transaction_id=?", (txn_id,)
+        ).fetchone()["state"]
+        == "PROCESSING"
+    )
 
     # Startup recovery should detect archive-in-place PROCESSING txn and re-run commit.
     startup.run(conn, staging, archive)
@@ -553,7 +584,7 @@ def test_repair_duplicate_sequences(conn):
     later = "2026-01-01T01:00:00Z"
     # Seed two inbound rows with the same snapshot_sequence but different sha256
     for txn_id, sha256, ts, device in [
-        ("txn-old-a", "aaa", now,   DEVICE_A),
+        ("txn-old-a", "aaa", now, DEVICE_A),
         ("txn-old-b", "bbb", later, DEVICE_B),
     ]:
         conn.execute(
@@ -590,7 +621,7 @@ def test_repair_duplicate_sequences_updates_outbound(conn):
     now = "2026-01-01T00:00:00Z"
     later = "2026-01-01T01:00:00Z"
     for txn_id, sha256, ts, device in [
-        ("in-a", "aaa", now,   DEVICE_A),
+        ("in-a", "aaa", now, DEVICE_A),
         ("in-b", "bbb", later, DEVICE_B),
     ]:
         conn.execute(
@@ -628,9 +659,7 @@ def test_repair_duplicate_sequences_updates_outbound(conn):
 def test_hard_delete_skips_recent_failed(conn, tmp_dirs):
     staging, archive = tmp_dirs
     txn_id, _ = db.create_inbound_transaction(conn, DEVICE_A, TITLE_1, 5, None)
-    conn.execute(
-        "UPDATE sync_transactions SET state='FAILED' WHERE transaction_id=?", (txn_id,)
-    )
+    conn.execute("UPDATE sync_transactions SET state='FAILED' WHERE transaction_id=?", (txn_id,))
 
     startup.hard_delete_old_failed(conn, archive)
 
@@ -742,6 +771,7 @@ _romm_save_id_counter = 0
 
 def _seed_romm_save_sync(conn, username, title_id, seq):
     import uuid
+
     global _romm_save_id_counter
     _romm_save_id_counter += 1
     txn_id = str(uuid.uuid4())
@@ -796,6 +826,7 @@ def test_repair_romm_backfill_insert_or_ignore(conn):
 def test_ack_supersedes_prior_failed_outbounds(conn, tmp_dirs, client):
     """ACK handler marks prior FAILED outbounds for same title+target as SUPERSEDED."""
     import uuid
+
     from helpers import do_ack
 
     now = "2026-01-01T00:00:00Z"
@@ -865,17 +896,131 @@ def test_supersede_failed_outbounds_for_uninstalled_titles(conn):
     n = db.supersede_failed_outbounds_for_uninstalled(conn)
     assert n == 1
 
-    assert conn.execute(
-        "SELECT state FROM sync_transactions WHERE transaction_id=?", (uninstalled_id,)
-    ).fetchone()["state"] == "SUPERSEDED"
+    assert (
+        conn.execute(
+            "SELECT state FROM sync_transactions WHERE transaction_id=?", (uninstalled_id,)
+        ).fetchone()["state"]
+        == "SUPERSEDED"
+    )
 
     # TITLE_2 is installed — row stays FAILED (still deliverable)
-    assert conn.execute(
-        "SELECT state FROM sync_transactions WHERE transaction_id=?", (installed_id,)
-    ).fetchone()["state"] == "FAILED"
+    assert (
+        conn.execute(
+            "SELECT state FROM sync_transactions WHERE transaction_id=?", (installed_id,)
+        ).fetchone()["state"]
+        == "FAILED"
+    )
 
 
 # ── Catalog report event triggers immediate supersede ─────────────────────────
+
+
+def test_startup_auto_commits_complete_session_after_server_restart(conn, tmp_dirs, client):
+    """Server restart between final window and commit must not lose the upload.
+
+    Reproduces: Switch sends final chunk, server restarts before commit POST arrives.
+    Session stays ACTIVE with SVB==total, upload is stuck forever unless startup recovers it.
+    """
+    staging, archive = tmp_dirs
+    data = b"complete-but-uncommitted-save-data"
+    token = pair_device(client, DEVICE_A)
+    hdrs = {"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {token}"}
+
+    # Open transaction + manifest
+    r = client.post(
+        "/api/v1/sync/transactions/inbound",
+        json={"title_id": TITLE_1, "total_size_bytes": len(data)},
+        headers=hdrs,
+    )
+    assert r.status_code == 200
+    txn_id = r.json()["transaction_id"]
+    session_id = r.json()["session_id"]
+
+    ledger = compute_ledger(data)
+    r = client.post(
+        f"/api/v1/sync/sessions/{session_id}/manifest",
+        json={"checkpoint_size": CHECKPOINT_SIZE, "checkpoint_ledger": ledger},
+        headers=hdrs,
+    )
+    assert r.status_code == 200
+
+    # Upload all data but DO NOT call commit (simulate server restart)
+    r = client.put(
+        f"/api/v1/sync/sessions/{session_id}/window?offset=0",
+        content=data,
+        headers=hdrs,
+    )
+    assert r.status_code == 200
+    assert r.json()["server_verified_bytes"] == len(data)
+
+    # Confirm session is ACTIVE + complete but transaction still UPLOADING
+    sess = conn.execute(
+        "SELECT session_state, server_verified_bytes, total_size_bytes "
+        "FROM upload_sessions WHERE session_id=?",
+        (session_id,),
+    ).fetchone()
+    assert sess["session_state"] == "ACTIVE"
+    assert sess["server_verified_bytes"] == sess["total_size_bytes"]
+
+    txn = conn.execute(
+        "SELECT state FROM sync_transactions WHERE transaction_id=?", (txn_id,)
+    ).fetchone()
+    assert txn["state"] == "UPLOADING"
+
+    # Startup recovery must auto-commit it to READY_FOR_RESTORE
+    startup.run(conn, staging, archive)
+
+    row = conn.execute(
+        "SELECT state, snapshot_path, snapshot_sequence "
+        "FROM sync_transactions WHERE transaction_id=?",
+        (txn_id,),
+    ).fetchone()
+    assert row["state"] == "READY_FOR_RESTORE", (
+        f"expected READY_FOR_RESTORE after startup recovery, got {row['state']}"
+    )
+    assert row["snapshot_path"] is not None
+    assert row["snapshot_sequence"] is not None
+
+
+def test_startup_does_not_auto_commit_incomplete_session(conn, tmp_dirs, client):
+    """Sessions that are only partially uploaded must not be auto-committed."""
+    staging, archive = tmp_dirs
+    token = pair_device(client, DEVICE_A)
+    hdrs = {"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {token}"}
+
+    r = client.post(
+        "/api/v1/sync/transactions/inbound",
+        json={"title_id": TITLE_1, "total_size_bytes": 100},
+        headers=hdrs,
+    )
+    assert r.status_code == 200
+    txn_id = r.json()["transaction_id"]
+    session_id = r.json()["session_id"]
+
+    # Post manifest but no data windows
+    ledger = compute_ledger(b"x" * 100)
+    r = client.post(
+        f"/api/v1/sync/sessions/{session_id}/manifest",
+        json={"checkpoint_size": CHECKPOINT_SIZE, "checkpoint_ledger": ledger},
+        headers=hdrs,
+    )
+    assert r.status_code == 200
+
+    # Force last_active_at to be recent (Python ISO format — space < T in ASCII,
+    # so SQLite datetime('now') would incorrectly sort before the Python cutoff)
+    recent = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(
+        "UPDATE upload_sessions SET last_active_at=? WHERE session_id=?",
+        (recent, session_id),
+    )
+    conn.commit()
+
+    startup.run(conn, staging, archive)
+
+    row = conn.execute(
+        "SELECT state FROM sync_transactions WHERE transaction_id=?", (txn_id,)
+    ).fetchone()
+    assert row["state"] == "UPLOADING", "incomplete session must not be auto-committed"
 
 
 def test_catalog_update_supersedes_failed_outbounds_for_uninstalled(conn, client):

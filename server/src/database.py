@@ -952,6 +952,34 @@ def create_inbound_transaction(
     return txn_id, session_id
 
 
+def find_uploading_inbound(
+    conn,
+    device_id: str,
+    title_id: str,
+    parent_sequence_num: int | None,
+    user_key: str,
+    total_size_bytes: int,
+) -> tuple[str, str] | None:
+    """Return (transaction_id, session_id) if an UPLOADING inbound already exists for this slot.
+
+    Slot = (device, title, parent_seq, user_key, total_size). total_size is included so that
+    a retry with different bytes (save changed) gets a fresh session, not the old one.
+    parent_sequence_num is read-only here — the server assigns the real sequence in PROCESSING.
+    """
+    row = conn.execute(
+        "SELECT st.transaction_id, us.session_id "
+        "FROM sync_transactions st "
+        "JOIN upload_sessions us ON us.transaction_id = st.transaction_id "
+        "WHERE st.source_device_id=? AND st.title_id=? AND st.direction='inbound' "
+        "AND st.state='UPLOADING' "
+        "AND COALESCE(st.parent_sequence_num,-1)=COALESCE(?,-1) "
+        "AND COALESCE(st.user_key,'')=COALESCE(?,'') "
+        "AND st.total_size_bytes=?",
+        (device_id, title_id.upper(), parent_sequence_num, user_key or "", total_size_bytes),
+    ).fetchone()
+    return (row["transaction_id"], row["session_id"]) if row else None
+
+
 def get_session(conn, session_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM upload_sessions WHERE session_id=?", (session_id,)).fetchone()
     return dict(row) if row else None
