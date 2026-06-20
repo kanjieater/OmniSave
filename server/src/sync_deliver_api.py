@@ -53,20 +53,25 @@ class TrustedDevice:
 def _require_device_auth(request: Request) -> "TrustedDevice | JSONResponse":
     device_id = _device(request)
     if not device_id:
+        log.warning("auth: missing/invalid X-Device-ID from %s", request.client)
         return JSONResponse({"error": "X-Device-ID header required or invalid"}, status_code=401)
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer sk_device_"):
+        log.warning("auth: no valid Bearer from device=%s path=%s", device_id, request.url.path)
         return JSONResponse(
             {"error": "device token required — pair this device first"}, status_code=401
         )
     token = auth[7:]
     row = db.get_device_auth_by_token(_conn, token)
     if not row or row["device_id"] != device_id:
+        log.warning("auth: token mismatch device=%s token_prefix=%.12s path=%s",
+                    device_id, token, request.url.path)
         return JSONResponse({"error": "invalid device token"}, status_code=401)
     deleted = _conn.execute(
         "SELECT deleted_at FROM devices WHERE device_id=?", (device_id,)
     ).fetchone()
     if deleted and deleted["deleted_at"] is not None:
+        log.warning("auth: device removed device=%s", device_id)
         return JSONResponse(
             {"error": "device has been removed — re-pair to continue"}, status_code=401
         )

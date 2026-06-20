@@ -19,6 +19,8 @@ server/static/
 # Claude Code local settings
 .claude/settings.local.json
 .claude/context
+.claude/hypothesis-*.md
+.claude/*.tmp.md
 
 # OS
 .DS_Store
