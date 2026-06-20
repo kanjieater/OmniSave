@@ -174,8 +174,8 @@ def test_push_upload_failure_swallowed(conn, tmp_path, monkeypatch):
 
 def test_push_stamps_device_title_head(conn, tmp_path, monkeypatch):
     """Successful push writes device_title_head so sync-state sees romm device as SYNCED.
-    The vsc_device_id written here must match what _romm_head_was_synced/_romm_unsynced_count
-    use to query device_title_head — both derive from get_user_romm_device_id."""
+    The vsc_device_id written here must match what _romm_head_was_synced uses to query
+    device_title_head — derives from get_user_romm_device_id."""
     _setup_romm(monkeypatch, tmp_path, conn)
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
     txn_id = str(uuid.uuid4())

@@ -320,59 +320,6 @@ def _effective_sync_state(
     return state
 
 
-def _romm_unsynced_count(conn, username: str, device_id: str) -> int:
-    """Aggregate equivalent of per-game OUT_OF_SYNC in _effective_sync_state.
-
-    Returns the number of romm catalog games that have a HEAD save but no
-    successful delivery to any user romm device at that HEAD sequence,
-    AND no active READY_FOR_RESTORE outbound (those are already counted by
-    the main pending_by_dev SQL — excluding them avoids double-counting),
-    AND device_title_head does not already reflect the HEAD sequence (which
-    is set when romm is the inbound source, i.e. a pull from RomM)."""
-    row = conn.execute(
-        "SELECT COUNT(DISTINCT dig.title_id) AS n"
-        " FROM device_installed_games dig"
-        " WHERE dig.device_id=?"
-        " AND EXISTS ("
-        "  SELECT 1 FROM sync_transactions"
-        "  WHERE title_id=dig.title_id AND direction='inbound'"
-        "  AND state='READY_FOR_RESTORE' AND has_conflict=0 AND preservation=0"
-        "  AND owner_user_id=?"
-        " )"
-        " AND NOT EXISTS ("
-        "  SELECT 1 FROM sync_transactions out"
-        "  WHERE out.title_id=dig.title_id AND out.direction='outbound'"
-        "  AND out.state='COMPLETED'"
-        "  AND out.snapshot_sequence=("
-        "   SELECT MAX(snapshot_sequence) FROM sync_transactions"
-        "   WHERE title_id=dig.title_id AND direction='inbound'"
-        "   AND state='READY_FOR_RESTORE' AND has_conflict=0 AND preservation=0"
-        "   AND owner_user_id=?"
-        "  )"
-        "  AND out.target_device_id IN ("
-        "   SELECT device_id FROM devices WHERE owner_user_id=? AND client_type='romm'"
-        "  )"
-        " )"
-        " AND NOT EXISTS ("
-        "  SELECT 1 FROM sync_transactions pending"
-        "  WHERE pending.title_id=dig.title_id AND pending.direction='outbound'"
-        "  AND pending.state='READY_FOR_RESTORE' AND pending.target_device_id=dig.device_id"
-        " )"
-        " AND NOT EXISTS ("
-        "  SELECT 1 FROM device_title_head dth"
-        "  WHERE dth.device_id=dig.device_id AND dth.title_id=dig.title_id"
-        "  AND dth.last_seq>=("
-        "   SELECT MAX(snapshot_sequence) FROM sync_transactions"
-        "   WHERE title_id=dig.title_id AND direction='inbound'"
-        "   AND state='READY_FOR_RESTORE' AND has_conflict=0 AND preservation=0"
-        "   AND owner_user_id=?"
-        "  )"
-        " )",
-        (device_id, username, username, username, username),
-    ).fetchone()
-    return row["n"] if row else 0
-
-
 # ── Auth helpers ───────────────────────────────────────────────────────────────
 
 
@@ -868,8 +815,10 @@ def dashboard(request: Request):
     pending_deliveries = _conn.execute(
         "SELECT COUNT(DISTINCT title_id) FROM sync_transactions"
         " WHERE direction='outbound' AND state='READY_FOR_RESTORE'"
-        " AND target_device_id IN (SELECT device_id FROM device_profile_map WHERE user_id=?)",
-        (username,),
+        " AND target_device_id IN ("
+        "   SELECT device_id FROM device_access WHERE user_id=?"
+        "   UNION SELECT device_id FROM devices WHERE owner_user_id=?)",
+        (username, username),
     ).fetchone()[0]
 
     game_rows = _conn.execute(
@@ -921,13 +870,6 @@ def dashboard(request: Request):
     ).fetchall()
 
     device_rows = list(db.get_devices_for_user(_conn, username))
-
-    for r in device_rows:
-        if r.get("client_type") == "romm":
-            n = _romm_unsynced_count(_conn, username, r["device_id"])
-            if n:
-                pending_by_dev[r["device_id"]] = pending_by_dev.get(r["device_id"], 0) + n
-                pending_deliveries += n
 
     return JSONResponse(
         {
@@ -1440,11 +1382,6 @@ def list_devices(request: Request):
             (username, username),
         ).fetchall()
     }
-    for r in rows:
-        if r.get("client_type") == "romm" and not r.get("is_deleted"):
-            n = _romm_unsynced_count(_conn, username, r["device_id"])
-            if n:
-                pending_by_dev[r["device_id"]] = pending_by_dev.get(r["device_id"], 0) + n
     return JSONResponse(
         {
             "devices": [

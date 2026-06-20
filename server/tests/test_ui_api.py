@@ -1601,11 +1601,9 @@ def test_device_games_romm_out_of_sync_when_head_exists(client, conn):
 def test_dashboard_romm_pull_source_not_counted_as_pending(client, conn):
     """RomM device that sourced the inbound (pull from RomM) must not show as pending.
 
-    When RomM is the source_device_id of an inbound, processing sets
-    device_title_head for the romm device at that seq. No outbound to romm is
-    ever created (romm is excluded from fanout as the source). Without this fix,
-    _romm_unsynced_count would count the title as unsynced because no COMPLETED
-    outbound exists — a false positive."""
+    When RomM is the source_device_id of an inbound, no outbound to romm is
+    ever created (romm is excluded from fanout as the source). pending_count
+    is outbound-only, so this device correctly shows 0."""
     import database as _db
     romm_id = "romm:admin"
     _db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc",
