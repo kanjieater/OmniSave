@@ -22,7 +22,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useLocalStorage } from '@/lib/useLocalStorage'
-import { getDisplayState, SYNC_STYLE, SYNC_SORT_ORDER } from '@/lib/syncState'
+import { getDisplayState, isPendingDelivery, SYNC_STYLE, SYNC_SORT_ORDER } from '@/lib/syncState'
 import type { DashboardData } from '@/types'
 import { useBackground } from '@/components/layout/AppShellV2'
 
@@ -369,7 +369,7 @@ export default function DeviceDetailPage() {
                 <span>
                   {games.filter((g) => g.sync_enabled).length} of {games.length} syncing · use the dot below each cover to toggle
                   {(() => {
-                    const n = games.filter((g) => g.sync_state === 'OUT_OF_SYNC' || g.sync_state === 'DOWNLOADING' || g.pending_delivery).length
+                    const n = games.filter(isPendingDelivery).length
                     return n > 0 ? ` · ${n} Pending` : null
                   })()}
                 </span>

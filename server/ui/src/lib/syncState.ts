@@ -39,5 +39,13 @@ export const SYNC_SORT_ORDER: Record<string, number> = {
   NO_DELIVERY:      5,
 }
 
+export function isPendingDelivery(game: {
+  sync_state: SyncState
+  pending_delivery: boolean
+  sync_enabled: boolean
+}): boolean {
+  return getDisplayState(game.sync_state, game.pending_delivery, game.sync_enabled) === 'PENDING_DELIVERY'
+}
+
 export const PENDING_LABEL = 'Pending'
 export const RETRY_LABEL = 'Needs Retry'
