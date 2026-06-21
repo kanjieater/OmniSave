@@ -11,7 +11,7 @@ export const SYNC_STYLE: Record<DisplayState, { dot: string; tip: string; label?
   UPLOADING:        { dot: 'bg-[var(--color-info)] animate-pulse', tip: 'Uploading',       label: 'Uploading' },
   PENDING_DELIVERY: { dot: 'bg-[var(--color-warning)]',            tip: 'Delivery Queued', label: 'Pending' },
   DOWNLOADING:      { dot: 'bg-[var(--color-info)] animate-pulse', tip: 'Downloading',     label: 'Downloading' },
-  NO_DELIVERY:      { dot: 'bg-[var(--color-text-muted)]',         tip: 'Not Configured' },
+  NO_DELIVERY:      { dot: 'bg-[var(--color-text-muted)]',         tip: 'Not yet synced' },
   SYNC_DISABLED:    { dot: 'bg-[var(--color-text-muted)]',         tip: 'Sync Disabled' },
   DELIVERY_FAILED:  { dot: 'bg-[var(--color-error)]',              tip: 'Delivery Failed', label: 'Failed' },
 }

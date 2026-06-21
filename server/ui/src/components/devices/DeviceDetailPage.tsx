@@ -69,12 +69,12 @@ function SyncCard({ game, deviceId, queryKey }: { game: DeviceGame; deviceId: st
               style={{ boxShadow: '0 0 0 2px var(--color-bg-base)' }}
               className={cn(
                 'absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full',
-                dotState ? SYNC_STYLE[dotState].dot : 'bg-[var(--color-text-muted)]',
+                SYNC_STYLE[dotState ?? 'NO_DELIVERY'].dot,
               )}
-              aria-label={dotState ? SYNC_STYLE[dotState].tip : ''}
+              aria-label={SYNC_STYLE[dotState ?? 'NO_DELIVERY'].tip}
             />
           </TooltipTrigger>
-          <TooltipContent>{dotState ? SYNC_STYLE[dotState].tip : ''}</TooltipContent>
+          <TooltipContent>{SYNC_STYLE[dotState ?? 'NO_DELIVERY'].tip}</TooltipContent>
         </Tooltip>
       </Link>
 
