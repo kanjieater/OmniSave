@@ -28,7 +28,7 @@ export function getDisplayState(
 }
 
 // Lower number = worse = sorts to top. Use with getDisplayState() for accurate ordering.
-export const SYNC_SORT_ORDER: Record<string, number> = {
+export const SYNC_SORT_ORDER: Record<DisplayState, number> = {
   DELIVERY_FAILED:  0,
   OUT_OF_SYNC:      1,
   PENDING_DELIVERY: 2,
@@ -44,7 +44,13 @@ export function isPendingDelivery(game: {
   pending_delivery: boolean
   sync_enabled: boolean
 }): boolean {
-  return getDisplayState(game.sync_state, game.pending_delivery, game.sync_enabled) === 'PENDING_DELIVERY'
+  // Check pending_delivery directly — the queue endpoint has no sync_enabled filter,
+  // so a delivery executes even when sync is toggled off. We must count it.
+  return (
+    game.pending_delivery &&
+    game.sync_state !== 'UPLOADING' &&
+    game.sync_state !== 'DELIVERY_FAILED'
+  )
 }
 
 export const PENDING_LABEL = 'Pending'

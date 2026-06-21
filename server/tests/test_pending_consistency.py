@@ -23,14 +23,6 @@ def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _login(client) -> str:
-    return login_admin(client)
-
-
-def _hdr(token: str) -> dict:
-    return auth_header(token)
-
-
 def _seed_device(conn, device_id: str, user_id: str = ADMIN_USER) -> None:
     now = _now()
     conn.execute(
@@ -38,6 +30,8 @@ def _seed_device(conn, device_id: str, user_id: str = ADMIN_USER) -> None:
         " VALUES (?, '', '', ?, ?, ?)",
         (device_id, now, now, user_id),
     )
+    # device_profile_map is NOT consulted by the pending UNION SQL (which uses device_access
+    # UNION devices.owner_user_id). This insert only matters for total_devices and legacy queries.
     conn.execute(
         "INSERT OR IGNORE INTO device_profile_map"
         " (device_id, profile_id, user_id, profile_name, created_at)"
@@ -46,6 +40,7 @@ def _seed_device(conn, device_id: str, user_id: str = ADMIN_USER) -> None:
     )
 
 
+# NOTE: duplicates test_ui_api._seed_txn — consider moving to helpers.py if schema diverges
 def _seed_outbound(
     conn,
     *,
@@ -95,13 +90,13 @@ def _seed_inbound(
 
 def test_romm_no_outbound_gives_zero_pending_dashboard(client, conn):
     """RomM device with inbound HEAD but no outbound forked → pending_count=0 on dashboard."""
-    token = _login(client)
+    token = login_admin(client)
     _seed_device(conn, DEVICE_A)
     db.upsert_virtual_device(conn, ROMM_ID, "RomM", "romm-vsc",
                               client_type="romm", owner_user_id=ADMIN_USER)
     _seed_inbound(conn, title_id=TITLE_1, snapshot_sequence=1)
 
-    r = client.get("/api/v1/ui/dashboard", headers=_hdr(token))
+    r = client.get("/api/v1/ui/dashboard", headers=auth_header(token))
     assert r.status_code == 200
     romm_entry = next((d for d in r.json()["devices"] if d["device_id"] == ROMM_ID), None)
     assert romm_entry is not None
@@ -110,13 +105,13 @@ def test_romm_no_outbound_gives_zero_pending_dashboard(client, conn):
 
 def test_romm_no_outbound_gives_zero_pending_devices_list(client, conn):
     """RomM device with inbound HEAD but no outbound forked → pending_count=0 on devices list."""
-    token = _login(client)
+    token = login_admin(client)
     _seed_device(conn, DEVICE_A)
     db.upsert_virtual_device(conn, ROMM_ID, "RomM", "romm-vsc",
                               client_type="romm", owner_user_id=ADMIN_USER)
     _seed_inbound(conn, title_id=TITLE_1, snapshot_sequence=1)
 
-    r = client.get("/api/v1/ui/devices", headers=_hdr(token))
+    r = client.get("/api/v1/ui/devices", headers=auth_header(token))
     assert r.status_code == 200
     romm_entry = next((d for d in r.json()["devices"] if d["device_id"] == ROMM_ID), None)
     assert romm_entry is not None
@@ -125,14 +120,14 @@ def test_romm_no_outbound_gives_zero_pending_devices_list(client, conn):
 
 def test_romm_with_outbound_shows_pending(client, conn):
     """RomM device with a READY_FOR_RESTORE outbound forked → pending_count=1."""
-    token = _login(client)
+    token = login_admin(client)
     _seed_device(conn, DEVICE_A)
     db.upsert_virtual_device(conn, ROMM_ID, "RomM", "romm-vsc",
                               client_type="romm", owner_user_id=ADMIN_USER)
     _seed_inbound(conn, title_id=TITLE_1, snapshot_sequence=1)
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=ROMM_ID, snapshot_sequence=1)
 
-    r = client.get("/api/v1/ui/devices", headers=_hdr(token))
+    r = client.get("/api/v1/ui/devices", headers=auth_header(token))
     assert r.status_code == 200
     romm_entry = next((d for d in r.json()["devices"] if d["device_id"] == ROMM_ID), None)
     assert romm_entry is not None
@@ -144,16 +139,16 @@ def test_romm_with_outbound_shows_pending(client, conn):
 
 def test_dashboard_and_devices_list_agree(client, conn):
     """dashboard.devices[D].pending_count == list_devices()[D].pending_count for every device."""
-    token = _login(client)
+    token = login_admin(client)
     _seed_device(conn, DEVICE_A)
     _seed_device(conn, DEVICE_B)
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=DEVICE_B, snapshot_sequence=1)
     _seed_outbound(conn, title_id=TITLE_2, target_device_id=DEVICE_B, snapshot_sequence=1)
 
     dash = {d["device_id"]: d["pending_count"]
-            for d in client.get("/api/v1/ui/dashboard", headers=_hdr(token)).json()["devices"]}
+            for d in client.get("/api/v1/ui/dashboard", headers=auth_header(token)).json()["devices"]}
     devs = {d["device_id"]: d["pending_count"]
-            for d in client.get("/api/v1/ui/devices", headers=_hdr(token)).json()["devices"]}
+            for d in client.get("/api/v1/ui/devices", headers=auth_header(token)).json()["devices"]}
 
     for device_id, count in devs.items():
         assert dash.get(device_id, 0) == count, (
@@ -166,44 +161,44 @@ def test_dashboard_and_devices_list_agree(client, conn):
 
 def test_pending_count_matches_game_detail_boolean(client, conn):
     """devices[D].pending_count == count of games where pending_delivery=True for device D."""
-    token = _login(client)
+    token = login_admin(client)
     _seed_device(conn, DEVICE_A)
     _seed_device(conn, DEVICE_B)
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=DEVICE_B, snapshot_sequence=1)
     _seed_outbound(conn, title_id=TITLE_2, target_device_id=DEVICE_B, snapshot_sequence=1)
 
     devices = {d["device_id"]: d
-               for d in client.get("/api/v1/ui/devices", headers=_hdr(token)).json()["devices"]}
+               for d in client.get("/api/v1/ui/devices", headers=auth_header(token)).json()["devices"]}
     card_count = devices[DEVICE_B]["pending_count"]
 
     pending_from_game_detail = 0
     for title in (TITLE_1, TITLE_2):
         matrix = {e["device_id"]: e for e in
-                  client.get(f"/api/v1/ui/games/{title}", headers=_hdr(token)).json()["device_sync_matrix"]}
+                  client.get(f"/api/v1/ui/games/{title}", headers=auth_header(token)).json()["device_sync_matrix"]}
         if matrix.get(DEVICE_B, {}).get("pending_delivery"):
             pending_from_game_detail += 1
 
     assert card_count == pending_from_game_detail
 
 
-# ── stats.pending_deliveries uses canonical device scope ──────────────────────
+# ── stats.pending_titles uses canonical device scope ──────────────────────
 
 
-def test_pending_deliveries_counts_owner_device_outbound(client, conn):
-    """stats.pending_deliveries counts READY_FOR_RESTORE outbounds on user-owned devices."""
-    token = _login(client)
+def test_pending_titles_counts_owner_device_outbound(client, conn):
+    """stats.pending_titles counts READY_FOR_RESTORE outbounds on user-owned devices."""
+    token = login_admin(client)
     _seed_device(conn, DEVICE_A)
     _seed_device(conn, DEVICE_B)
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=DEVICE_B, snapshot_sequence=1)
 
-    r = client.get("/api/v1/ui/dashboard", headers=_hdr(token))
+    r = client.get("/api/v1/ui/dashboard", headers=auth_header(token))
     assert r.status_code == 200
-    assert r.json()["stats"]["pending_deliveries"] == 1
+    assert r.json()["stats"]["pending_titles"] == 1
 
 
-def test_pending_deliveries_same_title_two_devices_counts_two(client, conn):
-    """One title pending on two devices → pending_deliveries counts each device separately."""
-    token = _login(client)
+def test_pending_titles_same_title_two_devices_counts_two(client, conn):
+    """One title pending on two devices → pending_titles counts each device separately."""
+    token = login_admin(client)
     _seed_device(conn, DEVICE_A)
     _seed_device(conn, DEVICE_B)
     db.upsert_virtual_device(conn, ROMM_ID, "RomM", "romm-vsc",
@@ -212,9 +207,9 @@ def test_pending_deliveries_same_title_two_devices_counts_two(client, conn):
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=DEVICE_B, snapshot_sequence=1)
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=ROMM_ID, snapshot_sequence=1)
 
-    r = client.get("/api/v1/ui/dashboard", headers=_hdr(token))
-    # pending_deliveries = COUNT(DISTINCT title_id) — same title on two devices still = 1
-    assert r.json()["stats"]["pending_deliveries"] == 1
+    r = client.get("/api/v1/ui/dashboard", headers=auth_header(token))
+    # pending_titles = COUNT(DISTINCT title_id) — same title on two devices still = 1
+    assert r.json()["stats"]["pending_titles"] == 1
     # But per-device pending_count should each be 1
     counts = {d["device_id"]: d["pending_count"] for d in r.json()["devices"]}
     assert counts.get(DEVICE_B, 0) == 1
@@ -226,7 +221,7 @@ def test_pending_deliveries_same_title_two_devices_counts_two(client, conn):
 
 def test_other_user_outbound_not_in_pending(client, conn):
     """Outbound for a device owned by another user is not counted in admin's pending."""
-    token = _login(client)
+    token = login_admin(client)
     _seed_device(conn, DEVICE_A)
     # DEVICE_B owned by a different user — not in admin's device_access or devices.owner_user_id
     now = _now()
@@ -238,8 +233,8 @@ def test_other_user_outbound_not_in_pending(client, conn):
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=DEVICE_B,
                    owner_user_id="other_user", snapshot_sequence=1)
 
-    r = client.get("/api/v1/ui/dashboard", headers=_hdr(token))
+    r = client.get("/api/v1/ui/dashboard", headers=auth_header(token))
     assert r.status_code == 200
     data = r.json()
-    assert data["stats"]["pending_deliveries"] == 0
+    assert data["stats"]["pending_titles"] == 0
     assert all(d["device_id"] != DEVICE_B for d in data["devices"])

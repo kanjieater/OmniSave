@@ -181,7 +181,7 @@ def test_dashboard_empty_db_zeros(client):
     assert stats["total_games"] == 0
     assert stats["total_devices"] == 0
     assert stats["active_errors"] == 0
-    assert stats["pending_deliveries"] == 0
+    assert stats["pending_titles"] == 0
     assert data["recent_games"] == []
     assert data["devices"] == []
     assert data["recent_events"] == []
@@ -202,7 +202,7 @@ def test_dashboard_seeded_counts(client, conn):
     assert len(data["recent_games"]) == 2
 
 
-def test_dashboard_pending_deliveries_counted(client, conn):
+def test_dashboard_pending_titles_counted(client, conn):
     token = _login(client)
     _seed_device(conn, DEVICE_A)
     _seed_device(conn, DEVICE_B)
@@ -213,7 +213,7 @@ def test_dashboard_pending_deliveries_counted(client, conn):
     )
 
     r = client.get("/api/v1/ui/dashboard", headers=_hdr(token))
-    assert r.json()["stats"]["pending_deliveries"] == 1
+    assert r.json()["stats"]["pending_titles"] == 1
 
 
 def test_dashboard_recent_events_present(client, conn):

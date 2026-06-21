@@ -34,7 +34,7 @@ function SyncCard({ game, deviceId, queryKey }: { game: DeviceGame; deviceId: st
   React.useEffect(() => { setLocalEnabled(game.sync_enabled) }, [game.sync_enabled])
 
   const label = game.display_name ?? game.title_id
-  const dotState = getDisplayState(game.sync_state, game.pending_delivery, true)
+  const dotState = getDisplayState(game.sync_state, game.pending_delivery, localEnabled)
 
   const handleToggle = async (next: boolean) => {
     setLocalEnabled(next)
@@ -196,8 +196,8 @@ export default function DeviceDetailPage() {
     })
     if (gameSortKey === 'name') g = [...g].sort((a, b) => (a.display_name ?? a.title_id).localeCompare(b.display_name ?? b.title_id))
     if (gameSortKey === 'status') g = [...g].sort((a, b) => {
-      const sa = getDisplayState(a.sync_state, a.pending_delivery, true) ?? 'NO_DELIVERY'
-      const sb = getDisplayState(b.sync_state, b.pending_delivery, true) ?? 'NO_DELIVERY'
+      const sa = getDisplayState(a.sync_state, a.pending_delivery, a.sync_enabled) ?? 'NO_DELIVERY'
+      const sb = getDisplayState(b.sync_state, b.pending_delivery, b.sync_enabled) ?? 'NO_DELIVERY'
       return (SYNC_SORT_ORDER[sa] ?? 5) - (SYNC_SORT_ORDER[sb] ?? 5)
     })
     return g
@@ -242,7 +242,7 @@ export default function DeviceDetailPage() {
         if (prevDash) {
           qc.setQueryData<DashboardData>(['dashboard'], {
             ...prevDash,
-            stats: { ...prevDash.stats, pending_deliveries: prevDash.stats.pending_deliveries + result.queued },
+            stats: { ...prevDash.stats, pending_titles: prevDash.stats.pending_titles + result.queued },
             devices: prevDash.devices.map((d) =>
               d.device_id === device_id
                 ? { ...d, pending_count: d.pending_count + result.queued }

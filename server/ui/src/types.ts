@@ -21,7 +21,7 @@ export interface DashboardStats {
   total_games: number;
   total_devices: number;
   active_errors: number;
-  pending_deliveries: number;
+  pending_titles: number;
 }
 
 export interface RecentGame {
