@@ -54,18 +54,26 @@ def _require_device_auth(request: Request) -> "TrustedDevice | JSONResponse":
     device_id = _device(request)
     if not device_id:
         log.warning("auth: missing/invalid X-Device-ID from %s", request.client)
-        return JSONResponse({"error": "X-Device-ID header required or invalid"}, status_code=401)
+        return JSONResponse(
+            {"error": "X-Device-ID header required or invalid"}, status_code=401
+        )
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer sk_device_"):
-        log.warning("auth: no valid Bearer from device=%s path=%s", device_id, request.url.path)
+        log.warning(
+            "auth: no valid Bearer from device=%s path=%s", device_id, request.url.path
+        )
         return JSONResponse(
             {"error": "device token required — pair this device first"}, status_code=401
         )
     token = auth[7:]
     row = db.get_device_auth_by_token(_conn, token)
     if not row or row["device_id"] != device_id:
-        log.warning("auth: token mismatch device=%s token_prefix=%.12s path=%s",
-                    device_id, token, request.url.path)
+        log.warning(
+            "auth: token mismatch device=%s token_prefix=%.12s path=%s",
+            device_id,
+            token,
+            request.url.path,
+        )
         return JSONResponse({"error": "invalid device token"}, status_code=401)
     deleted = _conn.execute(
         "SELECT deleted_at FROM devices WHERE device_id=?", (device_id,)
@@ -143,7 +151,9 @@ def ack_restore(body: AckBody, request: Request):
 
     txn = db.get_transaction(_conn, body.transaction_id)
     if txn and txn.get("snapshot_sequence") is not None:
-        db.upsert_device_title_head(_conn, txn["title_id"], device_id, txn["snapshot_sequence"])
+        db.upsert_device_title_head(
+            _conn, txn["title_id"], device_id, txn["snapshot_sequence"]
+        )
     if txn:
         _conn.execute(
             "UPDATE sync_transactions SET state='SUPERSEDED', updated_at=?"
@@ -195,6 +205,9 @@ def delivery_fail(body: FailBody, request: Request):
         owner_user_id=txn.get("owner_user_id") if txn else None,
     )
     log.info(
-        "delivery fail txn=%s code=%s marked=%s", body.transaction_id[:8], body.error_code, failed
+        "delivery fail txn=%s code=%s marked=%s",
+        body.transaction_id[:8],
+        body.error_code,
+        failed,
     )
     return {"ok": True}

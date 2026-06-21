@@ -67,11 +67,15 @@ def _require_device_auth(request: Request) -> "TrustedDevice | JSONResponse":
     device_id = _device(request)
     if not device_id:
         log.warning("auth: missing/invalid X-Device-ID from %s", request.client)
-        return JSONResponse({"error": "X-Device-ID header required or invalid"}, status_code=401)
+        return JSONResponse(
+            {"error": "X-Device-ID header required or invalid"}, status_code=401
+        )
 
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer sk_device_"):
-        log.warning("auth: no valid Bearer device=%s path=%s", device_id, request.url.path)
+        log.warning(
+            "auth: no valid Bearer device=%s path=%s", device_id, request.url.path
+        )
         return JSONResponse(
             {"error": "device token required — pair this device first"}, status_code=401
         )
@@ -79,8 +83,12 @@ def _require_device_auth(request: Request) -> "TrustedDevice | JSONResponse":
     token = auth[7:]
     row = db.get_device_auth_by_token(_conn, token)
     if not row or row["device_id"] != device_id:
-        log.warning("auth: token mismatch device=%s token_prefix=%.12s path=%s",
-                    device_id, token, request.url.path)
+        log.warning(
+            "auth: token mismatch device=%s token_prefix=%.12s path=%s",
+            device_id,
+            token,
+            request.url.path,
+        )
         return JSONResponse({"error": "invalid device token"}, status_code=401)
     # Reject soft-deleted devices even if their token somehow survived revocation
     deleted = _conn.execute(
@@ -153,7 +161,9 @@ class InboundBody(BaseModel):
     total_size_bytes: int
     hardware_type: str = ""
     parent_sequence_num: int | None = None
-    preservation: bool = False  # True = pre-restore backup; never fans out, never advances HEAD
+    preservation: bool = (
+        False  # True = pre-restore backup; never fans out, never advances HEAD
+    )
     user_key: str = ""  # opaque account UID hex from device; empty for legacy clients
     user_display: str = ""  # cosmetic account name; never used for routing
 
@@ -203,7 +213,9 @@ def start_inbound(body: InboundBody, request: Request):
     db.upsert_device(_conn, auth.device_id, body.hardware_type)
     # Update known profiles cache whenever a user_key is seen
     if body.user_key:
-        db.upsert_known_profile(_conn, auth.device_id, body.user_key, body.user_display or "")
+        db.upsert_known_profile(
+            _conn, auth.device_id, body.user_key, body.user_display or ""
+        )
     txn_id, session_id = db.create_inbound_transaction(
         _conn,
         device_id=auth.device_id,
@@ -224,7 +236,12 @@ def start_inbound(body: InboundBody, request: Request):
         transaction_id=txn_id,
         owner_user_id=owner_user_id,
     )
-    log.info("inbound started txn=%s device=%s title=%s", txn_id[:8], auth.device_id, body.title_id)
+    log.info(
+        "inbound started txn=%s device=%s title=%s",
+        txn_id[:8],
+        auth.device_id,
+        body.title_id,
+    )
     return {"transaction_id": txn_id, "session_id": session_id}
 
 
@@ -256,19 +273,24 @@ def post_manifest(session_id: str, body: ManifestBody, request: Request):
 
     expected_count = math.ceil(sess["total_size_bytes"] / CHECKPOINT_SIZE)
     if len(body.checkpoint_ledger) != expected_count:
-        return _err(f"ledger length {len(body.checkpoint_ledger)} != expected {expected_count}")
+        return _err(
+            f"ledger length {len(body.checkpoint_ledger)} != expected {expected_count}"
+        )
     for h in body.checkpoint_ledger:
         if not (0 <= h <= 0xFFFFFFFF):
             return _err("ledger contains out-of-range uint32 value")
 
     if sess["checkpoint_ledger"] is not None:
         return JSONResponse(
-            {"ok": True, "server_verified_bytes": sess["server_verified_bytes"]}, status_code=200
+            {"ok": True, "server_verified_bytes": sess["server_verified_bytes"]},
+            status_code=200,
         )
 
     db.set_session_manifest(_conn, session_id, json.dumps(body.checkpoint_ledger))
     log.info(
-        "manifest posted session=%s checkpoints=%d", session_id[:8], len(body.checkpoint_ledger)
+        "manifest posted session=%s checkpoints=%d",
+        session_id[:8],
+        len(body.checkpoint_ledger),
     )
     return {"ok": True, "server_verified_bytes": 0}
 
@@ -304,7 +326,10 @@ async def upload_window(session_id: str, offset: int, request: Request):
         return {"server_verified_bytes": svb}
     if offset > svb:
         return JSONResponse(
-            {"error": "offset ahead of server_verified_bytes", "server_verified_bytes": svb},
+            {
+                "error": "offset ahead of server_verified_bytes",
+                "server_verified_bytes": svb,
+            },
             status_code=409,
         )
     # offset == svb: normal path
@@ -576,7 +601,10 @@ def _backfill_outbound_for_device(conn, device_id: str, title_ids: list[str]) ->
                 )
             except Exception as exc:
                 log.warning(
-                    "backfill fork failed device=%s title=%s: %s", device_id, title_id[:8], exc
+                    "backfill fork failed device=%s title=%s: %s",
+                    device_id,
+                    title_id[:8],
+                    exc,
                 )
 
 
@@ -629,11 +657,16 @@ def device_config(body: DeviceConfigBody, request: Request):
     for p in body.known_profiles:
         if p.profile_id:
             db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
-            if _device_owner and db.get_profile_owner(_conn, device_id, p.profile_id) is None:
+            if (
+                _device_owner
+                and db.get_profile_owner(_conn, device_id, p.profile_id) is None
+            ):
                 db.upsert_device_profile(
                     _conn, device_id, p.profile_id, _device_owner, p.profile_name
                 )
-                db.backfill_owner_on_profile_claim(_conn, device_id, p.profile_id, _device_owner)
+                db.backfill_owner_on_profile_claim(
+                    _conn, device_id, p.profile_id, _device_owner
+                )
 
     # Catalog update: atomically replace installed-game inventory, then backfill outbounds.
     if body.installed_titles is not None:
