@@ -281,8 +281,6 @@ def _effective_sync_state(
     client_type: str,
     title_id: str,
     head_seq: int | None,
-    *,
-    romm_mapped: bool | None = None,
 ) -> dict:
     """UI view-layer sync state. Not for scheduling or retry decisions.
 
@@ -294,7 +292,6 @@ def _effective_sync_state(
       2. Base SYNCED → trust it (terminal, authoritative).
       3. _romm_head_was_synced → SYNCED (cross-device / rename recovery).
       4. Base DOWNLOADING → preserve in-flight delivery.
-      5. romm_mapped → OUT_OF_SYNC (pill visible) or base NO_DELIVERY (pill hidden).
     """
     state = _sync_state_for_device(conn, device_id, title_id, head_seq)
     if client_type != "romm":
@@ -303,20 +300,6 @@ def _effective_sync_state(
         return state
     if _romm_head_was_synced(conn, username, title_id, head_seq):
         return {"sync_state": "SYNCED", "local_sequence": head_seq, "cloud_head_sequence": head_seq}
-    if state["sync_state"] == "DOWNLOADING":
-        return state
-    mapped = (
-        romm_mapped
-        if romm_mapped is not None
-        else bool(
-            conn.execute(
-                "SELECT 1 FROM romm_title_map WHERE username=? AND title_id=?",
-                (username, title_id),
-            ).fetchone()
-        )
-    )
-    if mapped and head_seq is not None:
-        return {**state, "sync_state": "OUT_OF_SYNC"}
     return state
 
 
@@ -1059,13 +1042,6 @@ def game_detail(title_id: str, request: Request):
     ).fetchall():
         device_ids.add(row["device_id"])
 
-    romm_mapped = bool(
-        _conn.execute(
-            "SELECT 1 FROM romm_title_map WHERE username=? AND title_id=?",
-            (username, title_id),
-        ).fetchone()
-    )
-
     dev_last_seen = {
         r["device_id"]: r["last_seen"]
         for r in _conn.execute("SELECT device_id, last_seen FROM devices").fetchall()
@@ -1138,7 +1114,6 @@ def game_detail(title_id: str, request: Request):
             dev_client_type.get(did, ""),
             title_id,
             head_seq,
-            romm_mapped=romm_mapped,
         )
         return {
             "device_id": did,
@@ -1490,8 +1465,6 @@ def _device_games_inner(device_id: str, username: str):
     for r in rows:
         title_id = r["title_id"]
         head_seq = _head_sequence(_conn, title_id, owner_user_id=username)
-        # romm_mapped=True: all games listed here come from device_installed_games,
-        # which is populated from romm_title_map, so the game is always in the catalog.
         sync_info = _effective_sync_state(
             _conn,
             username,
@@ -1499,7 +1472,6 @@ def _device_games_inner(device_id: str, username: str):
             device_client_type,
             title_id,
             head_seq,
-            romm_mapped=True,
         )
         last_row = _conn.execute(
             "SELECT MAX(created_at) AS ts FROM sync_transactions"

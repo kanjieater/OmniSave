@@ -1577,8 +1577,11 @@ def test_device_games_romm_shows_catalog_entries(client, conn):
     assert "pending_delivery" in games[0]
 
 
-def test_device_games_romm_out_of_sync_when_head_exists(client, conn):
-    """RomM device game shows OUT_OF_SYNC when a HEAD save exists and was not yet delivered."""
+def test_device_games_romm_no_delivery_when_no_prior_outbound(client, conn):
+    """RomM device game shows NO_DELIVERY when HEAD exists but no delivery was ever attempted.
+
+    Games uploaded before RomM was registered should not appear as Needs Sync.
+    The user must opt in via Restore All; fanout only applies to future uploads."""
     import database as _db
     romm_id = "romm:admin"
     _db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc",
@@ -1595,7 +1598,7 @@ def test_device_games_romm_out_of_sync_when_head_exists(client, conn):
     token = _login(client)
     r = client.get(f"/api/v1/ui/devices/{romm_id}/games", headers=_hdr(token))
     assert r.status_code == 200
-    assert r.json()["games"][0]["sync_state"] == "OUT_OF_SYNC"
+    assert r.json()["games"][0]["sync_state"] == "NO_DELIVERY"
 
 
 def test_dashboard_romm_pull_source_not_counted_as_pending(client, conn):
