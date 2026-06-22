@@ -85,7 +85,8 @@ cmd_up() {
     # gets a unique alias. (Discovered 2026-06-20: caused token oscillation in prod.)
     CONTAINER_NAME=$(grep "^OMNISAVE_CONTAINER_NAME=" "${ENV_FILE}" | cut -d= -f2)
     CONTAINER_NAME="${CONTAINER_NAME:-omnisave}"
-    sed -i "s/^  omnisave:/  ${CONTAINER_NAME}:/" "${OMNISAVE_ROOT}/compose.yml"
+    SAFE_CONTAINER_NAME=$(printf '%s' "$CONTAINER_NAME" | sed 's/[&\\/]/\\&/g')
+    sed -i "s/^  omnisave:/  ${SAFE_CONTAINER_NAME}:/" "${OMNISAVE_ROOT}/compose.yml"
 
     GIT_SHA=$(git -C "$REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
     git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || GIT_SHA="${GIT_SHA}-dirty"
@@ -93,23 +94,30 @@ cmd_up() {
     compose up -d --build
 
     # Guard: fail loudly if another container on the same network shares our alias.
+    # Checks cross-container collisions only — Docker normally gives each container
+    # two identical aliases (service name + container name) which is not a collision.
     NETWORK=$(grep "^OMNISAVE_DOCKER_NETWORK=" "${ENV_FILE}" | cut -d= -f2)
     NETWORK="${NETWORK:-selfhost}"
-    CONFLICTS=$(docker network inspect "${NETWORK}" --format \
-        '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null \
-        | tr ' ' '\n' \
-        | sort | uniq -d | grep -v '^$' || true)
-    if [ -n "${CONFLICTS}" ]; then
-        echo ""
-        echo "WARNING: duplicate container names on network ${NETWORK}: ${CONFLICTS}"
-    fi
-    ALIAS_DUPS=$(docker inspect \
-        $(docker network inspect "${NETWORK}" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null) \
-        --format '{{range .NetworkSettings.Networks}}{{range .Aliases}}{{.}} {{end}}{{end}}' 2>/dev/null \
-        | tr ' ' '\n' | grep -v '^$' | sort | uniq -d || true)
+    ALIAS_DUPS=$(
+        CONTAINERS=$(docker network inspect "${NETWORK}" \
+            --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null)
+        [ -z "${CONTAINERS}" ] && exit 0
+        # shellcheck disable=SC2086
+        docker inspect ${CONTAINERS} \
+            --format '{{.Name}}|{{range .NetworkSettings.Networks}}{{range .Aliases}}{{.}} {{end}}{{end}}' \
+            2>/dev/null \
+        | awk -F'|' '{
+            container=$1; n=split($2,aliases," ")
+            for(i=1;i<=n;i++){
+                a=aliases[i]; if(a=="") continue
+                if(alias_owner[a] && alias_owner[a]!=container) dups[a]=1
+                else alias_owner[a]=container
+            }
+          } END { for(a in dups) print a }' | sort
+    )
     if [ -n "${ALIAS_DUPS}" ]; then
         echo ""
-        echo "ERROR: network alias collision detected on ${NETWORK}: ${ALIAS_DUPS}"
+        echo "ERROR: network alias collision on ${NETWORK}: ${ALIAS_DUPS}"
         echo "Two containers share the same alias — Docker DNS will round-robin between them."
         echo "Check compose.yml service names match their OMNISAVE_CONTAINER_NAME."
         exit 1

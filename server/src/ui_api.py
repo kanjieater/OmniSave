@@ -784,10 +784,7 @@ def dashboard(request: Request):
         " WHERE direction='inbound' AND owner_user_id=?",
         (username,),
     ).fetchone()[0]
-    total_devices = _conn.execute(
-        "SELECT COUNT(*) FROM device_profile_map WHERE user_id=?",
-        (username,),
-    ).fetchone()[0]
+    # total_devices computed below after device_rows is fetched via get_devices_for_user
     active_errors = _conn.execute(
         "SELECT COUNT(*) FROM sync_transactions st WHERE st.state='FAILED'"
         " AND NOT EXISTS (SELECT 1 FROM server_config sc"
@@ -795,12 +792,12 @@ def dashboard(request: Request):
         " AND st.owner_user_id=?",
         (username,),
     ).fetchone()[0]
-    pending_deliveries = _conn.execute(
+    pending_titles = _conn.execute(
         "SELECT COUNT(DISTINCT title_id) FROM sync_transactions"
         " WHERE direction='outbound' AND state='READY_FOR_RESTORE'"
         " AND target_device_id IN ("
         "   SELECT device_id FROM device_access WHERE user_id=?"
-        "   UNION SELECT device_id FROM devices WHERE owner_user_id=?)",
+        "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
         (username, username),
     ).fetchone()[0]
 
@@ -820,7 +817,7 @@ def dashboard(request: Request):
             " WHERE direction='outbound' AND state='READY_FOR_RESTORE'"
             " AND target_device_id IN ("
             "   SELECT device_id FROM device_access WHERE user_id=?"
-            "   UNION SELECT device_id FROM devices WHERE owner_user_id=?)"
+            "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)"
             " GROUP BY target_device_id",
             (username, username),
         ).fetchall()
@@ -832,7 +829,7 @@ def dashboard(request: Request):
             " WHERE f.direction='outbound' AND f.state='FAILED'"
             " AND f.target_device_id IN ("
             "   SELECT device_id FROM device_access WHERE user_id=?"
-            "   UNION SELECT device_id FROM devices WHERE owner_user_id=?)"
+            "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)"
             " AND NOT EXISTS ("
             "   SELECT 1 FROM sync_transactions c"
             "   WHERE c.title_id=f.title_id AND c.target_device_id=f.target_device_id"
@@ -846,13 +843,15 @@ def dashboard(request: Request):
     event_rows = _conn.execute(
         "SELECT id, event_type, message, title_id, device_id, occurred_at FROM events"
         " WHERE (owner_user_id=?"
-        " OR (owner_user_id IS NULL AND device_id IN"
-        "  (SELECT device_id FROM device_profile_map WHERE user_id=?)))"
+        " OR (owner_user_id IS NULL AND device_id IN ("
+        "  SELECT device_id FROM device_access WHERE user_id=?"
+        "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
         " ORDER BY id DESC LIMIT 20",
-        (username, username),
+        (username, username, username),
     ).fetchall()
 
     device_rows = list(db.get_devices_for_user(_conn, username))
+    total_devices = sum(1 for r in device_rows if not r.get("is_deleted"))
 
     return JSONResponse(
         {
@@ -860,7 +859,7 @@ def dashboard(request: Request):
                 "total_games": total_games,
                 "total_devices": total_devices,
                 "active_errors": active_errors,
-                "pending_deliveries": pending_deliveries,
+                "pending_titles": pending_titles,
             },
             "recent_games": [
                 {
@@ -991,6 +990,12 @@ def game_detail(title_id: str, request: Request):
             "SELECT device_id FROM device_profile_map WHERE user_id=?", (username,)
         ).fetchall()
     }
+    shared_devices = {
+        r["device_id"]
+        for r in _conn.execute(
+            "SELECT device_id FROM device_access WHERE user_id=?", (username,)
+        ).fetchall()
+    }
     # Also include devices owned by this user directly — graceful fallback when
     # profiles haven't been explicitly claimed in the UI yet.
     owned_devices = {
@@ -1000,15 +1005,16 @@ def game_detail(title_id: str, request: Request):
             (username,),
         ).fetchall()
     }
-    visible_devices = claimed_devices | owned_devices
+    visible_devices = claimed_devices | shared_devices | owned_devices
     device_ids = {s["source_device_id"] for s in snaps} & visible_devices
     for row in _conn.execute(
         "SELECT DISTINCT target_device_id FROM sync_transactions"
         " WHERE title_id=? AND direction='outbound'"
         " AND target_device_id IN ("
         "  SELECT device_id FROM device_profile_map WHERE user_id=?"
+        "  UNION SELECT device_id FROM device_access WHERE user_id=?"
         "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
-        (title_id, username, username),
+        (title_id, username, username, username),
     ).fetchall():
         device_ids.add(row["target_device_id"])
 
@@ -1171,10 +1177,11 @@ def list_events(request: Request, limit: int = 100):
     rows = _conn.execute(
         "SELECT id, event_type, message, title_id, device_id, occurred_at FROM events"
         " WHERE (owner_user_id=?"
-        " OR (owner_user_id IS NULL AND device_id IN"
-        "  (SELECT device_id FROM device_profile_map WHERE user_id=?)))"
+        " OR (owner_user_id IS NULL AND device_id IN ("
+        "  SELECT device_id FROM device_access WHERE user_id=?"
+        "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
         " ORDER BY id DESC LIMIT ?",
-        (username, username, limit),
+        (username, username, username, limit),
     ).fetchall()
     return JSONResponse(
         {
@@ -1210,10 +1217,11 @@ def list_errors(request: Request):
         " target_device_id, state, updated_at"
         " FROM sync_transactions WHERE state='FAILED'"
         " AND (owner_user_id=?"
-        "  OR (direction='outbound' AND target_device_id IN"
-        "   (SELECT device_id FROM device_profile_map WHERE user_id=?)))"
+        "  OR (direction='outbound' AND target_device_id IN ("
+        "   SELECT device_id FROM device_access WHERE user_id=?"
+        "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
         " ORDER BY updated_at DESC",
-        (username, username),
+        (username, username, username),
     ).fetchall()
     result = []
     for r in rows:
@@ -1336,7 +1344,7 @@ def list_devices(request: Request):
             "SELECT target_device_id, COUNT(DISTINCT title_id) AS n FROM sync_transactions"
             " WHERE direction='outbound' AND state='READY_FOR_RESTORE'"
             " AND target_device_id IN (SELECT device_id FROM device_access WHERE user_id=?"
-            "   UNION SELECT device_id FROM devices WHERE owner_user_id=?)"
+            "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)"
             " GROUP BY target_device_id",
             (username, username),
         ).fetchall()
@@ -1347,7 +1355,7 @@ def list_devices(request: Request):
             "SELECT f.target_device_id, COUNT(DISTINCT f.title_id) AS n FROM sync_transactions f"
             " WHERE f.direction='outbound' AND f.state='FAILED'"
             " AND f.target_device_id IN (SELECT device_id FROM device_access WHERE user_id=?"
-            "   UNION SELECT device_id FROM devices WHERE owner_user_id=?)"
+            "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)"
             " AND NOT EXISTS ("
             "   SELECT 1 FROM sync_transactions c"
             "   WHERE c.title_id=f.title_id AND c.target_device_id=f.target_device_id"

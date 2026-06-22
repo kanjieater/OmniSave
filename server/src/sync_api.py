@@ -79,8 +79,12 @@ def _require_device_auth(request: Request) -> "TrustedDevice | JSONResponse":
     token = auth[7:]
     row = db.get_device_auth_by_token(_conn, token)
     if not row or row["device_id"] != device_id:
-        log.warning("auth: token mismatch device=%s token_prefix=%.12s path=%s",
-                    device_id, token, request.url.path)
+        log.warning(
+            "auth: token mismatch device=%s token_prefix=%.12s path=%s",
+            device_id,
+            token,
+            request.url.path,
+        )
         return JSONResponse({"error": "invalid device token"}, status_code=401)
     # Reject soft-deleted devices even if their token somehow survived revocation
     deleted = _conn.execute(
@@ -224,7 +228,12 @@ def start_inbound(body: InboundBody, request: Request):
         transaction_id=txn_id,
         owner_user_id=owner_user_id,
     )
-    log.info("inbound started txn=%s device=%s title=%s", txn_id[:8], auth.device_id, body.title_id)
+    log.info(
+        "inbound started txn=%s device=%s title=%s",
+        txn_id[:8],
+        auth.device_id,
+        body.title_id,
+    )
     return {"transaction_id": txn_id, "session_id": session_id}
 
 
@@ -263,12 +272,15 @@ def post_manifest(session_id: str, body: ManifestBody, request: Request):
 
     if sess["checkpoint_ledger"] is not None:
         return JSONResponse(
-            {"ok": True, "server_verified_bytes": sess["server_verified_bytes"]}, status_code=200
+            {"ok": True, "server_verified_bytes": sess["server_verified_bytes"]},
+            status_code=200,
         )
 
     db.set_session_manifest(_conn, session_id, json.dumps(body.checkpoint_ledger))
     log.info(
-        "manifest posted session=%s checkpoints=%d", session_id[:8], len(body.checkpoint_ledger)
+        "manifest posted session=%s checkpoints=%d",
+        session_id[:8],
+        len(body.checkpoint_ledger),
     )
     return {"ok": True, "server_verified_bytes": 0}
 
@@ -304,7 +316,10 @@ async def upload_window(session_id: str, offset: int, request: Request):
         return {"server_verified_bytes": svb}
     if offset > svb:
         return JSONResponse(
-            {"error": "offset ahead of server_verified_bytes", "server_verified_bytes": svb},
+            {
+                "error": "offset ahead of server_verified_bytes",
+                "server_verified_bytes": svb,
+            },
             status_code=409,
         )
     # offset == svb: normal path
@@ -576,7 +591,10 @@ def _backfill_outbound_for_device(conn, device_id: str, title_ids: list[str]) ->
                 )
             except Exception as exc:
                 log.warning(
-                    "backfill fork failed device=%s title=%s: %s", device_id, title_id[:8], exc
+                    "backfill fork failed device=%s title=%s: %s",
+                    device_id,
+                    title_id[:8],
+                    exc,
                 )
 
 

@@ -64,8 +64,12 @@ def _require_device_auth(request: Request) -> "TrustedDevice | JSONResponse":
     token = auth[7:]
     row = db.get_device_auth_by_token(_conn, token)
     if not row or row["device_id"] != device_id:
-        log.warning("auth: token mismatch device=%s token_prefix=%.12s path=%s",
-                    device_id, token, request.url.path)
+        log.warning(
+            "auth: token mismatch device=%s token_prefix=%.12s path=%s",
+            device_id,
+            token,
+            request.url.path,
+        )
         return JSONResponse({"error": "invalid device token"}, status_code=401)
     deleted = _conn.execute(
         "SELECT deleted_at FROM devices WHERE device_id=?", (device_id,)
@@ -195,6 +199,9 @@ def delivery_fail(body: FailBody, request: Request):
         owner_user_id=txn.get("owner_user_id") if txn else None,
     )
     log.info(
-        "delivery fail txn=%s code=%s marked=%s", body.transaction_id[:8], body.error_code, failed
+        "delivery fail txn=%s code=%s marked=%s",
+        body.transaction_id[:8],
+        body.error_code,
+        failed,
     )
     return {"ok": True}

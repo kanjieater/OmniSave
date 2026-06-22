@@ -11,7 +11,7 @@ export const SYNC_STYLE: Record<DisplayState, { dot: string; tip: string; label?
   UPLOADING:        { dot: 'bg-[var(--color-info)] animate-pulse', tip: 'Uploading',       label: 'Uploading' },
   PENDING_DELIVERY: { dot: 'bg-[var(--color-warning)]',            tip: 'Delivery Queued', label: 'Pending' },
   DOWNLOADING:      { dot: 'bg-[var(--color-info)] animate-pulse', tip: 'Downloading',     label: 'Downloading' },
-  NO_DELIVERY:      { dot: 'bg-[var(--color-text-muted)]',         tip: 'Not Configured' },
+  NO_DELIVERY:      { dot: 'bg-[var(--color-text-muted)]',         tip: 'Not yet synced' },
   SYNC_DISABLED:    { dot: 'bg-[var(--color-text-muted)]',         tip: 'Sync Disabled' },
   DELIVERY_FAILED:  { dot: 'bg-[var(--color-error)]',              tip: 'Delivery Failed', label: 'Failed' },
 }
@@ -28,7 +28,7 @@ export function getDisplayState(
 }
 
 // Lower number = worse = sorts to top. Use with getDisplayState() for accurate ordering.
-export const SYNC_SORT_ORDER: Record<string, number> = {
+export const SYNC_SORT_ORDER: Record<DisplayState, number> = {
   DELIVERY_FAILED:  0,
   OUT_OF_SYNC:      1,
   PENDING_DELIVERY: 2,
@@ -42,9 +42,15 @@ export const SYNC_SORT_ORDER: Record<string, number> = {
 export function isPendingDelivery(game: {
   sync_state: SyncState
   pending_delivery: boolean
-  sync_enabled: boolean
 }): boolean {
-  return getDisplayState(game.sync_state, game.pending_delivery, game.sync_enabled) === 'PENDING_DELIVERY'
+  // Check pending_delivery directly — the queue endpoint has no sync_enabled filter,
+  // so a delivery executes even when sync is toggled off. sync_enabled is intentionally
+  // not a parameter here; adding it back and gating on it would silently break this.
+  return (
+    game.pending_delivery &&
+    game.sync_state !== 'UPLOADING' &&
+    game.sync_state !== 'DELIVERY_FAILED'
+  )
 }
 
 export const PENDING_LABEL = 'Pending'
