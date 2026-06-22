@@ -490,9 +490,12 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 " (keeping oldest per device+user)",
                 dup_count,
             )
-        # DELETE is inside executescript so it and the schema rebuild share the same
-        # implicit transaction boundary. A crash before the first DDL leaves no rows dropped.
+        # BEGIN IMMEDIATE makes the DELETE + schema rebuild one atomic transaction.
+        # needs_migration + DROP TABLE IF EXISTS device_profile_map_new also guard
+        # against partial runs on reboot, but the explicit transaction is the true
+        # crash-safety boundary.
         conn.executescript("""
+            BEGIN IMMEDIATE;
             DELETE FROM device_profile_map WHERE rowid NOT IN (
                 SELECT MIN(rowid) FROM device_profile_map GROUP BY device_id, user_id
             );
@@ -509,6 +512,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             INSERT INTO device_profile_map_new SELECT * FROM device_profile_map;
             DROP TABLE device_profile_map;
             ALTER TABLE device_profile_map_new RENAME TO device_profile_map;
+            COMMIT;
         """)
 
     # Create device_known_profiles if absent
