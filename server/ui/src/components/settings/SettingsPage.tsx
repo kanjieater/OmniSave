@@ -93,6 +93,9 @@ function RommServerSection() {
       setApiKey('')
       setConnectDirty(false)
     },
+    onError: () => {
+      qc.invalidateQueries({ queryKey: ['rommServerSettings'] })
+    },
   })
 
   const CONNECT_STATUS_LABELS: Record<string, string> = {
@@ -172,9 +175,17 @@ function RommServerSection() {
             <div className="py-3 flex justify-end">
               {(() => {
                 const isDisableMode = active && !connectDirty
+                const hasStoredCreds = !!data?.host && !!data?.has_api_key
+                // Disable when: pending, OR incomplete credentials require entry
                 const buttonDisabled =
                   mut.isPending ||
-                  (!active && !connectDirty && !data?.host && !data?.has_api_key)
+                  (!active && !connectDirty && (!data?.host || !data?.has_api_key)) ||
+                  (connectDirty && !host)
+                const label = isDisableMode
+                  ? 'Disable RomM'
+                  : (!active && !connectDirty && hasStoredCreds)
+                    ? 'Enable RomM'
+                    : 'Connect to RomM'
                 return (
                   <Button
                     size="sm"
@@ -184,7 +195,7 @@ function RommServerSection() {
                   >
                     {mut.isPending
                       ? (isDisableMode ? 'Disabling…' : 'Connecting…')
-                      : (isDisableMode ? 'Disable RomM' : 'Connect to RomM')}
+                      : label}
                   </Button>
                 )
               })()}

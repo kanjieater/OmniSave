@@ -2857,10 +2857,9 @@ def test_put_romm_settings_no_index_on_auth_failure(client, monkeypatch):
 
 
 def test_put_romm_settings_toggle_on_triggers_index(client, conn, monkeypatch):
-    """Toggling enabled=True without credentials triggers index refresh."""
+    """Toggle-on (no credentials in request) triggers index refresh when creds already stored."""
     import romm_index as _romm_index
     import database as _db
-    # Pre-seed host + api_key so the toggle-on path has valid creds already stored
     _db.set_user_config(conn, ADMIN_USER, "romm_host", "http://romm.local")
     _db.set_user_config(conn, ADMIN_USER, "romm_api_key", "goodkey")
     _db.set_user_config(conn, ADMIN_USER, "romm_enabled", "0")
@@ -2877,6 +2876,28 @@ def test_put_romm_settings_toggle_on_triggers_index(client, conn, monkeypatch):
     assert r.status_code == 200
     assert "refresh" in called
     assert "run" in called
+
+
+def test_put_romm_settings_toggle_off_does_not_trigger_index(client, conn, monkeypatch):
+    """Disabling RomM must NOT trigger an index refresh."""
+    import romm_index as _romm_index
+    import database as _db
+    _db.set_user_config(conn, ADMIN_USER, "romm_host", "http://romm.local")
+    _db.set_user_config(conn, ADMIN_USER, "romm_api_key", "goodkey")
+    _db.set_user_config(conn, ADMIN_USER, "romm_enabled", "1")
+    conn.commit()
+    called = []
+    monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: called.append("refresh"))
+    monkeypatch.setattr(_romm_index, "maybe_run_index", lambda: called.append("run"))
+    token = _login(client)
+    r = client.put(
+        "/api/v1/ui/settings/romm",
+        json={"enabled": False},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200
+    assert "refresh" not in called
+    assert "run" not in called
 
 
 def test_put_romm_settings_syncs_catalog_immediately(client, conn, monkeypatch):

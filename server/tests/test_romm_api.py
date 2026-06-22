@@ -547,3 +547,15 @@ def test_fetch_current_user_success(monkeypatch):
     assert user == {"id": 1, "username": "alice"}
     assert status == "ok"
     assert detail == ""
+
+
+def test_trigger_scan_fires_maybe_run_index(client, monkeypatch):
+    """POST /scan must call both request_index_refresh and maybe_run_index."""
+    import romm_index as _romm_index
+    called = []
+    monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: called.append("refresh"))
+    monkeypatch.setattr(_romm_index, "maybe_run_index", lambda: called.append("run"))
+    token = login_admin(client)
+    r = client.post("/api/v1/romm/scan", headers=_auth(token))
+    assert r.status_code == 202
+    assert called == ["refresh", "run"]

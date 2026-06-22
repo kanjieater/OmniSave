@@ -265,5 +265,6 @@ def trigger_scan(request: Request):
     import romm_index
 
     romm_index.request_index_refresh()
+    romm_index.maybe_run_index()
     log.info("romm_api: manual scan requested by %s", ui_api._current_username(request))
     return JSONResponse({"ok": True}, status_code=202)
