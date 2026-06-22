@@ -349,6 +349,7 @@ def test_pull_ingests_new_save(conn, tmp_path, tmp_dirs, monkeypatch):
     _setup_romm(monkeypatch, tmp_path, conn)
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
     db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    conn.execute("INSERT OR IGNORE INTO device_installed_games (device_id, title_id) VALUES (?, ?)", ("switch-real", TITLE))
     conn.commit()
     monkeypatch.setattr(romm_meta, "list_all_saves_for_rom", lambda rid: [{"id": 7, "file_extension": "zip", "file_name": "save.zip"}])
     monkeypatch.setattr(romm_meta, "download_save_content", lambda sid: SAVE_BYTES)
@@ -771,6 +772,7 @@ def test_pull_ingests_cross_instance_save(conn, tmp_path, tmp_dirs, monkeypatch)
     _setup_romm(monkeypatch, tmp_path, conn)
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
     db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    conn.execute("INSERT OR IGNORE INTO device_installed_games (device_id, title_id) VALUES (?, ?)", ("switch-real", TITLE))
     conn.commit()
     # Prod DB has never seen save_id=99 — simulates save uploaded by dev OmniSave
     assert not db.has_romm_sync(conn, USER, ROM_ID, 99, "inbound")
@@ -887,6 +889,7 @@ def test_pull_established_ingests_all_new_saves(conn, tmp_path, tmp_dirs, monkey
     _setup_romm(monkeypatch, tmp_path, conn)
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
     db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    conn.execute("INSERT OR IGNORE INTO device_installed_games (device_id, title_id) VALUES (?, ?)", ("switch-real", TITLE))
     conn.commit()
 
     monkeypatch.setattr(
@@ -917,6 +920,7 @@ def test_pull_established_ingests_new_save(conn, tmp_path, tmp_dirs, monkeypatch
     db.record_romm_sync(conn, USER, ROM_ID, 42, "inbound", None)  # save 42 already seen
     db.upsert_virtual_device(conn, "romm:admin", "RomM", "romm-vsc", client_type="romm", owner_user_id=USER)
     db.set_user_config(conn, USER, "romm_source_id", "romm:admin")
+    conn.execute("INSERT OR IGNORE INTO device_installed_games (device_id, title_id) VALUES (?, ?)", ("switch-real", TITLE))
     conn.commit()
 
     staging, archive = tmp_dirs
@@ -937,3 +941,27 @@ def test_pull_established_ingests_new_save(conn, tmp_path, tmp_dirs, monkeypatch
     ).fetchone()[0]
     assert txns == 1, "only the new save (id=99) must be ingested"
     assert db.has_romm_sync(conn, USER, ROM_ID, 99, "inbound"), "new save must be recorded"
+
+
+def test_pull_skips_when_no_real_switch_installed(conn, tmp_path, tmp_dirs, monkeypatch):
+    """Pull worker skips ingest if no real Switch has the title installed.
+
+    Without a non-romm device in device_installed_games, ingest fans the save back
+    to the romm virtual device only → push-back loop. Skip and re-evaluate next cycle."""
+    staging, archive = tmp_dirs
+    _setup_romm(monkeypatch, tmp_path, conn)
+    db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
+    db.mark_romm_pull_initialized(conn, USER, ROM_ID)
+    # No real Switch device_installed_games row for TITLE
+    conn.commit()
+
+    downloaded = []
+    monkeypatch.setattr(romm_meta, "list_all_saves_for_rom", lambda rid: [{"id": 55, "file_extension": "zip", "file_name": "save.zip"}])
+    monkeypatch.setattr(romm_meta, "download_save_content", lambda sid: downloaded.append(sid) or SAVE_BYTES)
+
+    romm_vsc._pull_for_user(staging, archive, USER)
+
+    assert not downloaded, "must not download when no Switch has the title installed"
+    assert not db.has_romm_sync(conn, USER, ROM_ID, 55, "inbound"), "must not record sync when skipped"
+    txns = conn.execute("SELECT COUNT(*) FROM sync_transactions WHERE direction='inbound'").fetchone()[0]
+    assert txns == 0

@@ -430,18 +430,19 @@ def test_queue_empty_user_key_when_not_provided(client):
     assert pending[0]["target_profile_uid"] == ""
 
 
-def test_multi_user_same_title_latest_supersedes(client):
-    """Two Nintendo accounts on the same OmniSave account share one outbound slot.
+def test_different_profiles_have_independent_delivery_slots(client):
+    """Uploads from two different device profiles create independent delivery slots.
 
-    Under owner_user_id scoping the second upload supersedes the first — only the
-    latest save is queued for delivery.
+    Each (device, title, profile) combination is its own delivery lane — the second
+    profile's save does not supersede the first profile's save.
     """
     do_upload(client, DEVICE_A, TITLE_1, b"alice-save" * 100, user_key="AAAAAAAAAAAAAAAA")
     do_upload(client, DEVICE_A, TITLE_1, b"bob-save--" * 100, user_key="BBBBBBBBBBBBBBBB")
 
     pending = poll_queue(client, DEVICE_B)
-    assert len(pending) == 1
-    assert pending[0]["snapshot_sequence"] == 2  # bob's upload (seq 2) wins
+    assert len(pending) == 2  # each profile's save occupies an independent slot
+    sequences = {p["snapshot_sequence"] for p in pending}
+    assert sequences == {1, 2}
 
 
 def test_supersede_replaces_older_save_same_owner(client):

@@ -48,13 +48,6 @@ def _seed_device(conn, device_id: str, display_name: str = "", user_id: str = AD
         " VALUES (?, ?, '', ?, ?, ?)",
         (device_id, display_name, now, now, user_id),
     )
-    # Also register a profile claim so dashboard total_devices counts work
-    conn.execute(
-        "INSERT OR IGNORE INTO device_profile_map"
-        " (device_id, profile_id, user_id, profile_name, created_at)"
-        " VALUES (?, ?, ?, '', ?)",
-        (device_id, f"seed-{device_id}", user_id, now),
-    )
 
 
 def _seed_txn(
@@ -758,6 +751,26 @@ def test_game_detail_sync_matrix_completed_not_at_head_is_out_of_sync(client, co
     matrix = {e["device_id"]: e for e in
               client.get(f"/api/v1/ui/games/{TITLE_1}", headers=_hdr(token)).json()["device_sync_matrix"]}
     assert matrix[DEVICE_B]["sync_state"] == "OUT_OF_SYNC"
+
+
+def test_game_detail_sync_matrix_completed_no_head_is_synced(client, conn):
+    """COMPLETED outbound with no READY_FOR_RESTORE (head_seq=None) → SYNCED.
+
+    Regression: startup.py can fail stale inbound transactions, leaving head_seq=None.
+    The old code required head_seq is not None, so COMPLETED fell through to OUT_OF_SYNC
+    even though the device had already received the last available save."""
+    token = _login(client)
+    _seed_device(conn, DEVICE_A)
+    _seed_device(conn, DEVICE_B)
+    # No READY_FOR_RESTORE inbound → head_seq=None
+    _seed_txn(
+        conn, direction="outbound", source_device_id=DEVICE_A,
+        target_device_id=DEVICE_B, state="COMPLETED", snapshot_sequence=1,
+    )
+
+    matrix = {e["device_id"]: e for e in
+              client.get(f"/api/v1/ui/games/{TITLE_1}", headers=_hdr(token)).json()["device_sync_matrix"]}
+    assert matrix[DEVICE_B]["sync_state"] == "SYNCED"
 
 
 def test_game_detail_sync_matrix_superseded_outbound_is_no_delivery(client, conn):
@@ -2341,7 +2354,12 @@ def test_admin_rename_cascades_owned_data(client, conn):
     token = _login(client)
     now = _now()
 
-    _seed_device(conn, DEVICE_A)  # covers devices.owner_user_id + device_profile_map.user_id
+    _seed_device(conn, DEVICE_A)  # covers devices.owner_user_id
+    conn.execute(
+        "INSERT OR IGNORE INTO device_profile_map (device_id, profile_id, user_id, profile_name, created_at)"
+        " VALUES (?,?,?,?,?)",
+        (DEVICE_A, "cascade-probe-profile", ADMIN_USER, "", _now()),
+    )
     conn.execute(
         "INSERT INTO user_config (username, key, value) VALUES (?,?,?)",
         (ADMIN_USER, "rename_cascade_probe", "1"),

@@ -8,6 +8,7 @@ Device profile mapping tests.
         POST /api/v1/ui/devices/{device_id}/token  (sets config_pending)
 """
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -141,14 +142,15 @@ def test_db_get_profile_owner_unknown(conn):
     assert db.get_profile_owner(conn, DEVICE_A, PROF_A) is None
 
 
-def test_db_upsert_device_profile_multiple_allowed(conn):
-    """One OmniSave user may claim multiple Nintendo profiles on the same device."""
+def test_db_upsert_device_profile_one_profile_per_user(conn):
+    """One OmniSave user may only claim ONE profile per device — claiming a second evicts the first."""
     _insert_device(conn)
     db.upsert_known_profile(conn, DEVICE_A, PROF_A, "Alice")
     db.upsert_known_profile(conn, DEVICE_A, PROF_B, "Bob")
     db.upsert_device_profile(conn, DEVICE_A, PROF_A, "alice_user")
-    db.upsert_device_profile(conn, DEVICE_A, PROF_B, "alice_user")  # no longer raises
     assert db.get_profile_owner(conn, DEVICE_A, PROF_A) == "alice_user"
+    db.upsert_device_profile(conn, DEVICE_A, PROF_B, "alice_user")  # evicts PROF_A claim
+    assert db.get_profile_owner(conn, DEVICE_A, PROF_A) is None
     assert db.get_profile_owner(conn, DEVICE_A, PROF_B) == "alice_user"
 
 
@@ -164,7 +166,7 @@ def test_db_delete_device_profile(conn):
     _insert_device(conn)
     db.upsert_known_profile(conn, DEVICE_A, PROF_A, "Alice")
     db.upsert_device_profile(conn, DEVICE_A, PROF_A, "alice_user")
-    db.delete_device_profile(conn, DEVICE_A, PROF_A)
+    db.delete_device_profile(conn, DEVICE_A, PROF_A, "alice_user")
     assert db.get_profile_owner(conn, DEVICE_A, PROF_A) is None
 
 
@@ -437,6 +439,15 @@ def test_admin_can_unclaim_any_profile(client):
     assert r.status_code == 204
 
 
+def test_unclaim_profile_unclaimed_non_admin_404(client):
+    """Non-admin deleting a known but fully unclaimed profile returns 404."""
+    _seed(client, user_key=PROF_A)  # registers profile as known; no claim inserted
+    admin_token = _login(client)
+    player_token = _create_user(client, admin_token, "player")
+    r = client.delete(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROF_A}", headers=_hdr(player_token))
+    assert r.status_code == 404
+
+
 # ── HTTP: pair_device sets config_pending ─────────────────────────────────────
 
 
@@ -464,8 +475,14 @@ def test_device_config_auto_claims_profile_when_device_has_owner(client, conn):
     assert owner == "admin", f"expected auto-claim to 'admin', got {owner!r}"
 
 
-def test_device_config_auto_claim_skips_already_claimed_profile(client, conn):
-    """Auto-claim does not overwrite a profile already claimed by another user."""
+def test_device_config_auto_claim_does_not_evict_existing_claimant(client, conn):
+    """Auto-claim adds the device owner's claim without removing another user's claim.
+
+    With the 3-col PK, multiple OmniSave users can share a Nintendo profile.
+    get_first_unclaimed_profile returns profiles not yet claimed BY THIS USER, so
+    admin auto-claims PROF_A even though otheruser already claimed it.
+    Both claims coexist — otheruser's claim is NOT removed.
+    """
     _create_user(client, _login(client), "otheruser")
     pair_device(client, DEVICE_A)
     db.upsert_known_profile(conn, DEVICE_A, PROF_A, "Alice")
@@ -476,7 +493,14 @@ def test_device_config_auto_claim_skips_already_claimed_profile(client, conn):
         json={"known_profiles": [{"profile_id": PROF_A, "profile_name": "Alice"}]},
         headers={"X-Device-ID": DEVICE_A},
     )
-    assert db.get_profile_owner(conn, DEVICE_A, PROF_A) == "otheruser"
+    # Both admin (auto-claim) and otheruser hold a claim on the same profile.
+    rows = conn.execute(
+        "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
+        (DEVICE_A, PROF_A),
+    ).fetchall()
+    claimants = {r["user_id"] for r in rows}
+    assert "otheruser" in claimants, "otheruser's claim must not be evicted"
+    assert "admin" in claimants, "device owner must have auto-claimed the profile"
 
 
 def test_device_config_auto_claim_skips_unpaired_device(client, conn):
@@ -558,3 +582,106 @@ def test_device_config_empty_catalog_triggers_refresh_if_previously_nonempty(cli
     )
     assert r2.status_code == 200
     assert len(calls) == 1
+
+
+# ── Schema migration coverage ─────────────────────────────────────────────────
+
+
+def test_migration_deduplicates_device_profile_map(tmp_path):
+    """Migration DELETE at database.py:460 fires when old 2-col PK schema is detected.
+
+    The old schema allowed one OmniSave user to claim multiple profiles on the same device.
+    The migration collapses duplicates to the oldest row per (device_id, user_id).
+    """
+    raw = sqlite3.connect(str(tmp_path / "old.db"))
+    raw.row_factory = sqlite3.Row
+    # Minimal stub required by _apply_migrations (preservation column check at db.py:355)
+    raw.execute("""
+        CREATE TABLE sync_transactions (
+            transaction_id TEXT PRIMARY KEY,
+            title_id TEXT NOT NULL,
+            source_device_id TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    raw.execute("""
+        CREATE TABLE device_profile_map (
+            device_id    TEXT NOT NULL,
+            profile_id   TEXT NOT NULL,
+            user_id      TEXT NOT NULL,
+            profile_name TEXT NOT NULL DEFAULT '',
+            created_at   TEXT NOT NULL,
+            PRIMARY KEY (device_id, profile_id)
+        )
+    """)
+    raw.execute(
+        "INSERT INTO device_profile_map VALUES ('DEV1','PROF_A','alice','Alice','2026-01-01T00:00:00Z')"
+    )
+    raw.execute(
+        "INSERT INTO device_profile_map VALUES ('DEV1','PROF_B','alice','Alice','2026-01-02T00:00:00Z')"
+    )
+    raw.commit()
+
+    db._apply_migrations(raw)
+
+    rows = raw.execute(
+        "SELECT profile_id FROM device_profile_map WHERE device_id='DEV1' AND user_id='alice'"
+    ).fetchall()
+    # Only the oldest row (MIN rowid = PROF_A) must survive
+    assert len(rows) == 1
+    assert rows[0]["profile_id"] == "PROF_A"
+    raw.close()
+
+
+def test_migration_crash_recovery_promotes_orphan_new_table(tmp_path):
+    """Crash-recovery: device_profile_map_new orphan is promoted when device_profile_map is absent.
+
+    Simulates a crash that happened after DROP TABLE device_profile_map but before the
+    RENAME — device_profile_map_new exists, device_profile_map does not.
+    _apply_migrations must rename the orphan rather than creating a fresh empty table.
+    """
+    raw = sqlite3.connect(str(tmp_path / "crashed.db"))
+    raw.row_factory = sqlite3.Row
+    raw.execute("""
+        CREATE TABLE sync_transactions (
+            transaction_id TEXT PRIMARY KEY,
+            title_id TEXT NOT NULL,
+            source_device_id TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    raw.execute("""
+        CREATE TABLE device_profile_map_new (
+            device_id    TEXT NOT NULL,
+            profile_id   TEXT NOT NULL,
+            user_id      TEXT NOT NULL,
+            profile_name TEXT NOT NULL DEFAULT '',
+            created_at   TEXT NOT NULL,
+            PRIMARY KEY (device_id, profile_id, user_id),
+            UNIQUE (device_id, user_id)
+        )
+    """)
+    raw.execute(
+        "INSERT INTO device_profile_map_new VALUES ('DEV1','PROF_A','alice','Alice','2026-01-01T00:00:00Z')"
+    )
+    raw.commit()
+
+    db._apply_migrations(raw)
+
+    # Orphan must be promoted; data must survive
+    row = raw.execute(
+        "SELECT user_id FROM device_profile_map WHERE device_id='DEV1' AND profile_id='PROF_A'"
+    ).fetchone()
+    assert row is not None and row["user_id"] == "alice"
+    # Orphan table must be gone
+    orphan = raw.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='device_profile_map_new'"
+    ).fetchone()
+    assert orphan is None
+    raw.close()

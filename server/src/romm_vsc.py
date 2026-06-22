@@ -217,6 +217,23 @@ def _pull_for_user(staging_dir, archive_dir, username: str) -> None:
                         continue
                     if db.has_romm_sync(conn, username, rom_id, save_id, "inbound"):
                         continue
+                    # Skip if no real (non-romm) Switch has this title installed.
+                    # Without this guard, ingest fans out only to romm:user → push-back loop.
+                    # Don't write a romm_save_sync record here — the check is re-evaluated
+                    # each cycle so it unblocks automatically when a Switch installs the game.
+                    has_real_device = conn.execute(
+                        "SELECT 1 FROM device_installed_games"
+                        " WHERE title_id=? AND device_id NOT LIKE 'romm:%' LIMIT 1",
+                        (title_id,),
+                    ).fetchone()
+                    if not has_real_device:
+                        log.info(
+                            "romm_vsc: skip inbound save_id=%d title=%s — no Switch installed, user=%s",
+                            save_id,
+                            title_id,
+                            username,
+                        )
+                        continue
                     content = romm_meta.download_save_content(save_id)
                     if content is None:
                         continue
