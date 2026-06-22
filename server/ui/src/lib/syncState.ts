@@ -42,10 +42,10 @@ export const SYNC_SORT_ORDER: Record<DisplayState, number> = {
 export function isPendingDelivery(game: {
   sync_state: SyncState
   pending_delivery: boolean
-  sync_enabled: boolean
 }): boolean {
   // Check pending_delivery directly — the queue endpoint has no sync_enabled filter,
-  // so a delivery executes even when sync is toggled off. We must count it.
+  // so a delivery executes even when sync is toggled off. sync_enabled is intentionally
+  // not a parameter here; adding it back and gating on it would silently break this.
   return (
     game.pending_delivery &&
     game.sync_state !== 'UPLOADING' &&

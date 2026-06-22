@@ -34,7 +34,7 @@ function SyncCard({ game, deviceId, queryKey }: { game: DeviceGame; deviceId: st
   React.useEffect(() => { setLocalEnabled(game.sync_enabled) }, [game.sync_enabled])
 
   const label = game.display_name ?? game.title_id
-  const dotState = getDisplayState(game.sync_state, game.pending_delivery, localEnabled)
+  const dotState = getDisplayState(game.sync_state, game.pending_delivery, game.sync_enabled)
 
   const handleToggle = async (next: boolean) => {
     setLocalEnabled(next)

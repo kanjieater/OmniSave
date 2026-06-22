@@ -843,15 +843,15 @@ def dashboard(request: Request):
     event_rows = _conn.execute(
         "SELECT id, event_type, message, title_id, device_id, occurred_at FROM events"
         " WHERE (owner_user_id=?"
-        " OR device_id IN ("
+        " OR (owner_user_id IS NULL AND device_id IN ("
         "  SELECT device_id FROM device_access WHERE user_id=?"
-        "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL))"
+        "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
         " ORDER BY id DESC LIMIT 20",
         (username, username, username),
     ).fetchall()
 
     device_rows = list(db.get_devices_for_user(_conn, username))
-    total_devices = len(device_rows)
+    total_devices = sum(1 for r in device_rows if not r.get("is_deleted"))
 
     return JSONResponse(
         {
@@ -1012,8 +1012,9 @@ def game_detail(title_id: str, request: Request):
         " WHERE title_id=? AND direction='outbound'"
         " AND target_device_id IN ("
         "  SELECT device_id FROM device_profile_map WHERE user_id=?"
+        "  UNION SELECT device_id FROM device_access WHERE user_id=?"
         "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
-        (title_id, username, username),
+        (title_id, username, username, username),
     ).fetchall():
         device_ids.add(row["target_device_id"])
 
@@ -1176,9 +1177,9 @@ def list_events(request: Request, limit: int = 100):
     rows = _conn.execute(
         "SELECT id, event_type, message, title_id, device_id, occurred_at FROM events"
         " WHERE (owner_user_id=?"
-        " OR device_id IN ("
+        " OR (owner_user_id IS NULL AND device_id IN ("
         "  SELECT device_id FROM device_access WHERE user_id=?"
-        "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL))"
+        "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
         " ORDER BY id DESC LIMIT ?",
         (username, username, username, limit),
     ).fetchall()

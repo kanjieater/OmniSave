@@ -197,7 +197,7 @@ def test_pending_titles_counts_owner_device_outbound(client, conn):
 
 
 def test_pending_titles_same_title_two_devices_counts_two(client, conn):
-    """One title pending on two devices → pending_titles counts each device separately."""
+    """One title pending on two devices → pending_titles deduplicates by title, not device (expected: 1)."""
     token = login_admin(client)
     _seed_device(conn, DEVICE_A)
     _seed_device(conn, DEVICE_B)
