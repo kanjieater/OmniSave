@@ -51,24 +51,25 @@
 
 ## 10. System Invariants (CI-Enforced)
 1. **Server coverage:** Every changed line in `server/src/` must be covered by tests — enforced by `diff-cover --fail-under=95` in CI (`docker compose run --rm test` from repo root).
-2. **Server test env:** The only valid full-suite environment is `docker compose run --rm test` (from repo root, runs diff-cover). Use `cd server && ./run_tests.sh` for fast local iteration without diff-cover.
+2. **Server test env:** The only valid test environment is Docker. Never run Python or pytest directly on the host.
 3. **CI is the gate:** Never add git hooks (pre-commit, pre-push, commit-msg) that block or delay `git commit` or `git push`.
 4. Tests should be considered early, but do not have to be written until the end.
 
-## 11. Test Tiers — 3-Speed Feedback Loop
+## 11. Test Tiers — 2-Speed Feedback Loop
+
+**Never run Python directly on the host. Always use Docker.**
 
 | Tier | Command | Time | When to use |
 |---|---|---|---|
-| **1 — Fast (default)** | `pytest --no-cov` from `server/` | ~10s | After every Python change; iterate until green |
-| **2 — Full Python** | `docker compose run --rm test pytest --no-cov` | ~77s | Before declaring a feature done |
-| **3 — CI gate** | `docker compose run --rm test` | ~3 min | Python changes to `server/src/`; required before merge |
+| **1 — Fast (default)** | `docker compose run --rm test pytest --no-cov` | ~27s | After every Python change; iterate until green |
+| **2 — CI gate** | `docker compose run --rm test` | ~30s | Python changes to `server/src/`; required before merge |
 
 **Rules for Claude:**
-* After editing `server/src/**` or `server/tests/**`: assume Tier 1 (`pytest --no-cov`) must pass. Fix failures before proceeding.
+* After editing `server/src/**` or `server/tests/**`: run Tier 1. Fix failures before proceeding.
 * Do NOT declare a task done until the appropriate tier passes.
 * Use `pytest -x --no-cov` during debugging — stops on first failure, fastest signal.
 * Use `pytest --lf --no-cov` to rerun only the last failing tests after a fix.
 
 **What each tier catches:**
-* Tier 1: syntax errors, broken imports, obvious logic failures (seconds)
-* Tier 2/3: integration issues, coverage gaps, schema drift (minutes)
+* Tier 1: syntax errors, broken imports, logic failures (~27s)
+* Tier 2: coverage gaps, schema drift, diff-cover gate (~30s)

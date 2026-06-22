@@ -12,7 +12,7 @@ COPY . .
 
 WORKDIR /app/server
 CMD ["bash", "-c", \
-  "python -m pytest --cov=src --cov-report=xml:/app/coverage.xml \
+  "python -m pytest -n auto --cov=src --cov-report=xml:/app/coverage.xml \
   && python -m pytest tests/test_contract.py \
        --cov=src --cov-config=.coveragerc --cov-report=xml:/app/coverage.xml --cov-append \
        --override-ini='addopts=' -p no:xdist \

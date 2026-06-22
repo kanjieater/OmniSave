@@ -165,8 +165,13 @@ def test_backfill_on_claim_makes_history_visible(client, conn):
     assert TITLE_1 in titles, "alice should see TITLE_1 after claiming profile"
 
 
-def test_unclaim_does_not_strip_ownership(client, conn):
-    """Unclaiming a profile does not remove owner_user_id from past transactions."""
+def test_unclaim_nulls_owner_user_id_for_delivery(client, conn):
+    """Unclaiming a profile nulls owner_user_id on past transactions.
+
+    This keeps delivery behavior consistent with the profile-switch path in claim_profile
+    and prevents stale outbound fanout to the unclaimer after they relinquish the profile.
+    Visibility is claim-table driven (unaffected by owner_user_id).
+    """
     _create_user(client, "alice")
     tok_a = _pair_to_user(client, DEVICE_A, "alice")
     do_upload(client, DEVICE_A, TITLE_1, SAVE_A, user_key=PROFILE_A, device_token=tok_a)
@@ -185,11 +190,11 @@ def test_unclaim_does_not_strip_ownership(client, conn):
         headers=auth_header(alice_tok),
     )
 
-    # owner_user_id must remain on past transactions
+    # owner_user_id must be nulled to stop delivery fanout to the unclaimer.
     row = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE user_key=?", (PROFILE_A,)
     ).fetchone()
-    assert row["owner_user_id"] == "alice", "unclaim must not strip historical ownership"
+    assert row["owner_user_id"] is None, "unclaim must null owner_user_id to stop delivery"
 
 
 # ── Device discoverability ─────────────────────────────────────────────────────

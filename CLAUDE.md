@@ -39,10 +39,10 @@ ruff check --fix server/src/      # lint with auto-fix
 ruff format server/src/           # format
 
 # Python tests (always run from repo root via Docker — matches CI exactly)
-docker compose run --rm test                                                       # full suite + diff-cover (CI gate)
-docker compose run --rm test pytest tests/test_upload.py                           # single file (no diff-cover)
-docker compose run --rm test pytest tests/test_upload.py::test_commit_assembles    # single test
-docker compose run --rm test pytest -k "upload"                                    # pattern match
+docker compose run --rm test                                                                       # full suite + diff-cover (CI gate)
+docker compose run --rm test pytest -n auto --no-cov tests/test_upload.py                         # single file
+docker compose run --rm test pytest -n auto --no-cov tests/test_upload.py::test_commit_assembles  # single test
+docker compose run --rm test pytest -n auto --no-cov -k "upload"                                  # pattern match
 
 # UI dev server (run inside server/ui/)
 npm run dev                       # Vite dev server (proxies API to localhost:8991)
