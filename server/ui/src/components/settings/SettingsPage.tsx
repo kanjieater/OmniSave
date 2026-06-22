@@ -70,25 +70,22 @@ function RommServerSection() {
     }
   }, [data])
 
-  // Toggle fires immediately — no Save button needed.
-  const toggleMut = useMutation({
-    mutationFn: (v: boolean) => api.setRommServerSettings({ enabled: v }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['rommServerSettings'] })
-      qc.invalidateQueries({ queryKey: ['devices'] })
-      qc.invalidateQueries({ queryKey: ['dashboard'] })
-    },
-    onError: () => {
-      qc.invalidateQueries({ queryKey: ['rommServerSettings'] })
-    },
-  })
+  const enabled = data?.enabled ?? true
+  const connectStatus = data?.romm_connect_status ?? ''
+  const hasError = !!connectStatus && connectStatus !== 'ok'
+  const active = enabled && !!data?.host && !!data?.has_api_key && !!data?.romm_username && !hasError
 
-  // Connect button saves host + API key only.
-  const connectMut = useMutation({
-    mutationFn: () => api.setRommServerSettings({
-      host: host || undefined,
-      api_key: apiKey || undefined,
-    }),
+  const mut = useMutation({
+    mutationFn: () => {
+      if (active && !connectDirty)
+        return api.setRommServerSettings({ enabled: false })
+      if (connectDirty)
+        return api.setRommServerSettings({
+          host: host || undefined,
+          api_key: apiKey || undefined,
+        })
+      return api.setRommServerSettings({ enabled: true })
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rommServerSettings'] })
       qc.invalidateQueries({ queryKey: ['devices'] })
@@ -97,8 +94,6 @@ function RommServerSection() {
       setConnectDirty(false)
     },
   })
-
-  const enabled = data?.enabled ?? true
 
   const CONNECT_STATUS_LABELS: Record<string, string> = {
     auth_failed: 'Auth failed',
@@ -109,9 +104,6 @@ function RommServerSection() {
 
   const statusDot = (() => {
     if (isLoading) return null
-    const connectStatus = data?.romm_connect_status ?? ''
-    const hasError = !!connectStatus && connectStatus !== 'ok'
-    const active = enabled && !!data?.host && !!data?.has_api_key && !!data?.romm_username && !hasError
     const partial = enabled && !!data?.host && !data?.has_api_key
     const color = hasError
       ? 'bg-[var(--color-error)]'
@@ -143,23 +135,7 @@ function RommServerSection() {
         {statusDot}
       </div>
 
-      {/* Toggle — immediate, no save button */}
-      <div className="rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-subtle)] px-[var(--spacing-4)]">
-        {isLoading ? (
-          <div className="py-3 flex items-center gap-3"><Skeleton className="h-4 flex-1" /><Skeleton className="h-5 w-9" /></div>
-        ) : (
-          <div className="py-3 flex items-center justify-between gap-3">
-            <label className="text-sm">Enable RomM sync</label>
-            <Switch
-              checked={enabled}
-              loading={toggleMut.isPending}
-              onCheckedChange={(v) => toggleMut.mutate(v)}
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Server config — requires Connect RomM */}
+      {/* Server config */}
       <div className="rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-bg-subtle)] px-[var(--spacing-4)] divide-y divide-[var(--color-border-subtle)]">
         {isLoading ? (
           <div className="py-3 flex flex-col gap-2">
@@ -194,27 +170,38 @@ function RommServerSection() {
               </div>
             )}
             <div className="py-3 flex justify-end">
-              <Button
-                size="sm"
-                disabled={!connectDirty || connectMut.isPending}
-                onClick={() => connectMut.mutate()}
-              >
-                {connectMut.isPending ? 'Connecting…' : 'Connect RomM'}
-              </Button>
+              {(() => {
+                const isDisableMode = active && !connectDirty
+                const buttonDisabled =
+                  mut.isPending ||
+                  (!active && !connectDirty && !data?.host && !data?.has_api_key)
+                return (
+                  <Button
+                    size="sm"
+                    variant={isDisableMode ? 'destructive' : 'default'}
+                    disabled={buttonDisabled}
+                    onClick={() => mut.mutate()}
+                  >
+                    {mut.isPending
+                      ? (isDisableMode ? 'Disabling…' : 'Connecting…')
+                      : (isDisableMode ? 'Disable RomM' : 'Connect to RomM')}
+                  </Button>
+                )
+              })()}
             </div>
           </>
         )}
       </div>
-      {connectMut.isError && (
-        <p className="text-xs text-[var(--color-error)]">{String(connectMut.error)}</p>
+      {mut.isError && (
+        <p className="text-xs text-[var(--color-error)]">{String(mut.error)}</p>
       )}
-      {!connectMut.isError && connectMut.data?.romm_connect_status && connectMut.data.romm_connect_status !== 'ok' && (
+      {!mut.isError && mut.data?.romm_connect_status && mut.data.romm_connect_status !== 'ok' && (
         <div className="flex items-center gap-2 text-xs text-[var(--color-error)]">
           <AlertCircle size={13} className="shrink-0" />
           <span>
-            {CONNECT_STATUS_LABELS[connectMut.data.romm_connect_status] ?? 'Connection error'}
-            {connectMut.data.romm_connect_detail ? ` — ${connectMut.data.romm_connect_detail}` : ''}
-            {connectMut.data.romm_connect_status === 'auth_failed' ? '. Check your API key.' : '. Check server URL.'}
+            {CONNECT_STATUS_LABELS[mut.data.romm_connect_status] ?? 'Connection error'}
+            {mut.data.romm_connect_detail ? ` — ${mut.data.romm_connect_detail}` : ''}
+            {mut.data.romm_connect_status === 'auth_failed' ? '. Check your API key.' : '. Check server URL.'}
           </span>
         </div>
       )}

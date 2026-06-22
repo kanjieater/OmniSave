@@ -2856,6 +2856,29 @@ def test_put_romm_settings_no_index_on_auth_failure(client, monkeypatch):
     assert "run" not in called
 
 
+def test_put_romm_settings_toggle_on_triggers_index(client, conn, monkeypatch):
+    """Toggling enabled=True without credentials triggers index refresh."""
+    import romm_index as _romm_index
+    import database as _db
+    # Pre-seed host + api_key so the toggle-on path has valid creds already stored
+    _db.set_user_config(conn, ADMIN_USER, "romm_host", "http://romm.local")
+    _db.set_user_config(conn, ADMIN_USER, "romm_api_key", "goodkey")
+    _db.set_user_config(conn, ADMIN_USER, "romm_enabled", "0")
+    conn.commit()
+    called = []
+    monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: called.append("refresh"))
+    monkeypatch.setattr(_romm_index, "maybe_run_index", lambda: called.append("run"))
+    token = _login(client)
+    r = client.put(
+        "/api/v1/ui/settings/romm",
+        json={"enabled": True},
+        headers=_hdr(token),
+    )
+    assert r.status_code == 200
+    assert "refresh" in called
+    assert "run" in called
+
+
 def test_put_romm_settings_syncs_catalog_immediately(client, conn, monkeypatch):
     """Games already in romm_title_map must appear in device_installed_games immediately
     on a successful connect — without waiting for the background index to complete."""

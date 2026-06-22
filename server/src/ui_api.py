@@ -1870,6 +1870,14 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
                 (romm_device_id,),
             )
             db.sync_romm_catalog_to_device(_conn, username, romm_device_id)
+            # Only trigger index here when this is a pure toggle-on (no credentials
+            # being updated). If host/api_key are also in the request, the credential
+            # verification path (below) handles the index trigger after auth succeeds.
+            if body.host is None and body.api_key is None:
+                import romm_index as _romm_index
+
+                _romm_index.request_index_refresh()
+                _romm_index.maybe_run_index()
         else:
             _conn.execute(
                 "UPDATE devices SET deleted_at=? WHERE device_id=? AND client_type='romm'",
