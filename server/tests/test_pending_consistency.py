@@ -196,7 +196,7 @@ def test_pending_titles_counts_owner_device_outbound(client, conn):
     assert r.json()["stats"]["pending_titles"] == 1
 
 
-def test_pending_titles_same_title_two_devices_counts_two(client, conn):
+def test_pending_titles_same_title_two_devices_deduplicates(client, conn):
     """One title pending on two devices → pending_titles deduplicates by title, not device (expected: 1)."""
     token = login_admin(client)
     _seed_device(conn, DEVICE_A)

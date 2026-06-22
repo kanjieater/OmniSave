@@ -34,7 +34,7 @@ function SyncCard({ game, deviceId, queryKey }: { game: DeviceGame; deviceId: st
   React.useEffect(() => { setLocalEnabled(game.sync_enabled) }, [game.sync_enabled])
 
   const label = game.display_name ?? game.title_id
-  const dotState = getDisplayState(game.sync_state, game.pending_delivery, game.sync_enabled)
+  const dotState = getDisplayState(game.sync_state, game.pending_delivery, localEnabled)
 
   const handleToggle = async (next: boolean) => {
     setLocalEnabled(next)
@@ -242,7 +242,7 @@ export default function DeviceDetailPage() {
         if (prevDash) {
           qc.setQueryData<DashboardData>(['dashboard'], {
             ...prevDash,
-            stats: { ...prevDash.stats, pending_titles: prevDash.stats.pending_titles + result.queued },
+            stats: prevDash.stats, // pending_titles can't be safely derived optimistically (deduplicates across devices)
             devices: prevDash.devices.map((d) =>
               d.device_id === device_id
                 ? { ...d, pending_count: d.pending_count + result.queued }
