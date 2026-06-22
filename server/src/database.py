@@ -476,13 +476,26 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         or "PRIMARY KEY (device_id, profile_id, user_id)" not in tbl["sql"]
     )
     if needs_migration:
-        # Keep the oldest claim per (device_id, user_id) to satisfy new UNIQUE constraint.
-        conn.execute(
-            "DELETE FROM device_profile_map WHERE rowid NOT IN ("
+        # Log before deleting so the drop is auditable if migration is interrupted.
+        dup_count = conn.execute(
+            "SELECT COUNT(*) FROM device_profile_map WHERE rowid NOT IN ("
             "  SELECT MIN(rowid) FROM device_profile_map GROUP BY device_id, user_id"
             ")"
-        )
+        ).fetchone()[0]
+        if dup_count:
+            import logging as _logging
+
+            _logging.getLogger("database").warning(
+                "device_profile_map migration: dropping %d duplicate claim(s)"
+                " (keeping oldest per device+user)",
+                dup_count,
+            )
+        # DELETE is inside executescript so it and the schema rebuild share the same
+        # implicit transaction boundary. A crash before the first DDL leaves no rows dropped.
         conn.executescript("""
+            DELETE FROM device_profile_map WHERE rowid NOT IN (
+                SELECT MIN(rowid) FROM device_profile_map GROUP BY device_id, user_id
+            );
             DROP TABLE IF EXISTS device_profile_map_new;
             CREATE TABLE device_profile_map_new (
                 device_id    TEXT NOT NULL,
@@ -2192,7 +2205,7 @@ def get_first_unclaimed_profile(conn, device_id: str, user_id: str) -> str | Non
         "  SELECT 1 FROM device_profile_map m"
         "  WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id AND m.user_id=?"
         " )"
-        " ORDER BY k.last_seen ASC LIMIT 1",
+        " ORDER BY k.last_seen ASC, k.profile_id ASC LIMIT 1",
         (device_id, user_id),
     ).fetchone()
     return row["profile_id"] if row else None
