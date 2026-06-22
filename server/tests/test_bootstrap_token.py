@@ -302,4 +302,4 @@ def test_golden_path_bootstrap_and_ownership(client, conn):
 
     assert _owner(PROFILE_A) == "alice"
     assert _owner(PROFILE_B) == "bob"
-    assert _owner("UNKNOWN000000000") == "admin"  # unknown key → fallback to device owner
+    assert _owner("UNKNOWN000000000") is None  # unknown key → NULL (T6), not device owner

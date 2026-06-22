@@ -16,6 +16,7 @@ from main import app
 
 TITLE_A = "0100F2C0115B6000"
 TITLE_A_LOWER = "0100f2c0115b6000"
+TITLE_B = "01007EF00011E000"
 ROM_ID = 42
 
 
@@ -559,3 +560,36 @@ def test_trigger_scan_fires_maybe_run_index(client, monkeypatch):
     r = client.post("/api/v1/romm/scan", headers=_auth(token))
     assert r.status_code == 202
     assert called == ["refresh", "run"]
+
+
+def test_put_mapping_remaps_rom_id_atomically(client, conn, monkeypatch):
+    """Re-mapping the same rom_id to a different title_id replaces the old mapping.
+
+    Regression: romm_title_map has UNIQUE(username,rom_id). Before the fix, upserting
+    rom_id=X for title_B while title_A→rom_id=X already existed raised IntegrityError
+    (silently dropped by INSERT OR REPLACE on the title_id key), leaving the old mapping
+    intact and the new one never written."""
+    monkeypatch.setattr(romm_meta, "fetch_and_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(romm_vsc, "push_head_async", lambda *a: None)
+
+    token = login_admin(client)
+    # Map TITLE_A → ROM_ID
+    r = client.put(
+        f"/api/v1/romm/titles/{TITLE_A}/mapping",
+        json={"rom_id": ROM_ID},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200
+
+    # Re-map same ROM_ID to TITLE_B — must succeed and move the mapping
+    r = client.put(
+        f"/api/v1/romm/titles/{TITLE_B}/mapping",
+        json={"rom_id": ROM_ID},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200
+
+    mappings = db.get_romm_title_map(conn, "admin")
+    mapped_titles = {m["title_id"] for m in mappings}
+    assert TITLE_B.upper() in mapped_titles, "new title must be mapped"
+    assert TITLE_A.upper() not in mapped_titles, "old title must be unmapped"

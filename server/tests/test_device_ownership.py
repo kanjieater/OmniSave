@@ -299,6 +299,45 @@ def test_accept_share_invalid_code_400(client):
     assert r.status_code == 400
 
 
+def test_accept_share_auto_claims_first_unclaimed_profile(client, conn):
+    """Accepting a share auto-claims the first unclaimed known profile for the shared user."""
+    _PROFILE_A = "AAAA000011112222"
+    _PROFILE_B = "BBBB000011112222"
+
+    _create_user(client, "alice")
+    _create_user(client, "bob")
+    _register_device(client, DEVICE_A)
+    device_id = db.normalize_device_id(DEVICE_A)
+
+    # alice pairs the device
+    r = client.post("/api/v1/sync/device-config", json={}, headers={"X-Device-ID": DEVICE_A})
+    alice_tok = _login(client, "alice")
+    client.post("/api/v1/ui/devices/pair", json={"code": r.json()["pairing_code"]}, headers=auth_header(alice_tok))
+
+    # device reports two known profiles; alice auto-claims PROFILE_A (first unclaimed)
+    client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": [
+            {"profile_id": _PROFILE_A, "profile_name": "Alice"},
+            {"profile_id": _PROFILE_B, "profile_name": "Bob"},
+        ]},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert db.get_profile_owner(conn, device_id, _PROFILE_A) == "alice"
+    assert db.get_profile_owner(conn, device_id, _PROFILE_B) is None  # still unclaimed
+
+    # alice generates share code; bob (no existing claim) accepts it
+    r = client.post(f"/api/v1/ui/devices/{device_id}/share", headers=auth_header(alice_tok))
+    share_code = r.json()["code"]
+
+    bob_tok = _login(client, "bob")
+    r = client.post("/api/v1/ui/devices/accept-share", json={"code": share_code}, headers=auth_header(bob_tok))
+    assert r.status_code == 200
+
+    # bob should have been auto-claimed to PROFILE_B (the first unclaimed profile)
+    assert db.get_profile_owner(conn, device_id, _PROFILE_B) == "bob"
+
+
 # ── Device visibility ─────────────────────────────────────────────────────────
 
 def test_device_visible_to_owner(client, conn):

@@ -122,11 +122,17 @@ def _game_icon_url(conn, title_id: str, username: str) -> str | None:
 
 def _head_sequence(conn, title_id: str, owner_user_id: str | None = None) -> int | None:
     if owner_user_id:
+        # Scope HEAD to saves from device profiles claimed by this user (T1).
+        # Legacy saves (no user_key) fall back to owner_user_id for backward compat.
         row = conn.execute(
             "SELECT MAX(snapshot_sequence) FROM sync_transactions"
             " WHERE title_id=? AND direction='inbound' AND has_conflict=0 AND preservation=0"
-            " AND state='READY_FOR_RESTORE' AND owner_user_id=?",
-            (title_id, owner_user_id),
+            " AND state='READY_FOR_RESTORE'"
+            " AND ("
+            "  (COALESCE(user_key,'') != '' AND (source_device_id, user_key) IN ("
+            "   SELECT device_id, profile_id FROM device_profile_map WHERE user_id=?))"
+            "  OR (COALESCE(user_key,'') = '' AND owner_user_id = ?))",
+            (title_id, owner_user_id, owner_user_id),
         ).fetchone()
     else:
         row = conn.execute(
@@ -230,7 +236,7 @@ def _sync_state_for_device(conn, device_id: str, title_id: str, head_seq: int | 
             "local_sequence": device_last_seq,
             "cloud_head_sequence": head_seq,
         }
-    if state == "COMPLETED" and head_seq is not None and seq == head_seq:
+    if state == "COMPLETED" and (head_seq is None or seq == head_seq):
         # Fallback for devices that ACKed before device_title_head was tracked
         return {
             "sync_state": "SYNCED",
@@ -534,6 +540,21 @@ def accept_share(body: AcceptShareBody, request: Request):
         return JSONResponse({"error": "cannot accept your own share code"}, status_code=400)
 
     db.grant_device_access(_conn, device_id, username, granted_by)
+
+    # Auto-claim the first unclaimed device profile for the new shared user (T5).
+    # Only runs if they have no existing claim on this device.
+    if not db.get_user_has_claim_on_device(_conn, device_id, username):
+        first = db.get_first_unclaimed_profile(_conn, device_id)
+        if first:
+            name_row = _conn.execute(
+                "SELECT profile_name FROM device_known_profiles WHERE device_id=? AND profile_id=?",
+                (device_id, first),
+            ).fetchone()
+            db.upsert_device_profile(
+                _conn, device_id, first, username, name_row["profile_name"] if name_row else ""
+            )
+            db.backfill_owner_on_profile_claim(_conn, device_id, first, username)
+
     device = db.get_device(_conn, device_id)
     log.info("accept-share: device=%s user=%s granted_by=%s", device_id, username, granted_by)
     return {
@@ -744,8 +765,23 @@ def claim_profile(
         (p["display_hint"] or p["profile_name"] for p in known if p["profile_id"] == profile_id),
         "",
     )
+    # When admin explicitly assigns this profile to another user, remove admin's own
+    # auto-claim on that profile so ownership is unambiguous (admin was a placeholder).
+    assigner = _current_username(request) or ""
+    if _is_admin(request) and user_id != assigner:
+        if _conn.execute(
+            "SELECT 1 FROM device_profile_map WHERE device_id=? AND profile_id=? AND user_id=?",
+            (device_id, profile_id, assigner),
+        ).fetchone():
+            db.backfill_owner_off_profile_unclaim(_conn, device_id, profile_id, assigner)
+            db.delete_device_profile(_conn, device_id, profile_id, assigner)
+    # If user is switching from a different profile on this device, null out delivery
+    # ownership on the old profile's transactions (T3 — one profile per user per device).
+    old_profile = db.get_user_profile_on_device(_conn, device_id, user_id)
     db.upsert_device_profile(_conn, device_id, profile_id, user_id, profile_name)
     db.backfill_owner_on_profile_claim(_conn, device_id, profile_id, user_id)
+    if old_profile and old_profile != profile_id:
+        db.backfill_owner_off_profile_unclaim(_conn, device_id, old_profile, user_id)
     log.info("profile claimed: device=%s profile=%s user=%s", device_id, profile_id[:8], user_id)
     return {"ok": True}
 
@@ -755,16 +791,36 @@ def unclaim_profile(device_id: str, profile_id: str, request: Request):
     err = _auth_err(request)
     if err:
         return err
+    username = _current_username(request) or ""
+    # With multi-claim schema, filter by user_id so only this user's claim is checked.
     row = _conn.execute(
-        "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
-        (device_id, profile_id),
+        "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=? AND user_id=?",
+        (device_id, profile_id, username),
     ).fetchone()
     if not row:
-        return JSONResponse({"error": "profile not claimed"}, status_code=404)
-    if not _is_admin(request) and row["user_id"] != _current_username(request):
-        return JSONResponse({"error": "not your profile"}, status_code=403)
-    db.delete_device_profile(_conn, device_id, profile_id)
-    log.info("profile unclaimed: device=%s profile=%s", device_id, profile_id[:8])
+        if _is_admin(request):
+            # Admins may unclaim any user's row — find it without user filter.
+            row = _conn.execute(
+                "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
+                (device_id, profile_id),
+            ).fetchone()
+            if not row:
+                return JSONResponse({"error": "profile not claimed"}, status_code=404)
+        else:
+            # Return 403 if the profile is claimed but by a different user.
+            other = _conn.execute(
+                "SELECT 1 FROM device_profile_map WHERE device_id=? AND profile_id=?",
+                (device_id, profile_id),
+            ).fetchone()
+            if other:
+                return JSONResponse({"error": "profile not claimed by you"}, status_code=403)
+            return JSONResponse({"error": "profile not claimed"}, status_code=404)
+    target_user = row["user_id"]
+    db.delete_device_profile(_conn, device_id, profile_id, target_user)
+    # owner_user_id on past transactions is preserved — the claim table controls visibility.
+    log.info(
+        "profile unclaimed: device=%s profile=%s user=%s", device_id, profile_id[:8], target_user
+    )
     return Response(status_code=204)
 
 
@@ -781,16 +837,23 @@ def dashboard(request: Request):
 
     total_games = _conn.execute(
         "SELECT COUNT(DISTINCT title_id) FROM sync_transactions"
-        " WHERE direction='inbound' AND owner_user_id=?",
-        (username,),
+        " WHERE direction='inbound'"
+        " AND ("
+        "  (COALESCE(user_key,'') != '' AND (source_device_id, user_key) IN ("
+        "   SELECT device_id, profile_id FROM device_profile_map WHERE user_id=?))"
+        "  OR (COALESCE(user_key,'') = '' AND owner_user_id = ?))",
+        (username, username),
     ).fetchone()[0]
     # total_devices computed below after device_rows is fetched via get_devices_for_user
     active_errors = _conn.execute(
         "SELECT COUNT(*) FROM sync_transactions st WHERE st.state='FAILED'"
         " AND NOT EXISTS (SELECT 1 FROM server_config sc"
         " WHERE sc.key = 'ack:' || st.transaction_id)"
-        " AND st.owner_user_id=?",
-        (username,),
+        " AND ("
+        "  (COALESCE(st.user_key,'') != '' AND (st.source_device_id, st.user_key) IN ("
+        "   SELECT device_id, profile_id FROM device_profile_map WHERE user_id=?))"
+        "  OR (COALESCE(st.user_key,'') = '' AND st.owner_user_id = ?))",
+        (username, username),
     ).fetchone()[0]
     pending_titles = _conn.execute(
         "SELECT COUNT(DISTINCT title_id) FROM sync_transactions"
@@ -805,9 +868,12 @@ def dashboard(request: Request):
         "SELECT title_id, MAX(updated_at) AS last_activity,"
         " SUM(CASE WHEN direction='inbound' THEN 1 ELSE 0 END) AS snapshot_count"
         " FROM sync_transactions"
-        " WHERE owner_user_id=?"
+        " WHERE ("
+        "  (COALESCE(user_key,'') != '' AND (source_device_id, user_key) IN ("
+        "   SELECT device_id, profile_id FROM device_profile_map WHERE user_id=?))"
+        "  OR (COALESCE(user_key,'') = '' AND owner_user_id = ?))"
         " GROUP BY title_id ORDER BY last_activity DESC LIMIT 10",
-        (username,),
+        (username, username),
     ).fetchall()
 
     pending_by_dev = {
@@ -842,12 +908,9 @@ def dashboard(request: Request):
 
     event_rows = _conn.execute(
         "SELECT id, event_type, message, title_id, device_id, occurred_at FROM events"
-        " WHERE (owner_user_id=?"
-        " OR (owner_user_id IS NULL AND device_id IN ("
-        "  SELECT device_id FROM device_access WHERE user_id=?"
-        "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
+        " WHERE owner_user_id=?"
         " ORDER BY id DESC LIMIT 20",
-        (username, username, username),
+        (username,),
     ).fetchall()
 
     device_rows = list(db.get_devices_for_user(_conn, username))
@@ -967,16 +1030,23 @@ def game_detail(title_id: str, request: Request):
         return JSONResponse({"error": "invalid title_id"}, status_code=400)
 
     username = _current_username(request) or ""
+    # Visibility is purely claim-based (T1): saves are visible only when the user has
+    # claimed the device profile that created them. owner_user_id drives delivery; the
+    # claim table drives UI visibility. No owned_devices fallback (T2).
     snaps = _conn.execute(
         "SELECT transaction_id, snapshot_sequence, source_device_id, sha256,"
-        " parent_sequence_num, has_conflict, state, created_at, owner_user_id"
+        " parent_sequence_num, has_conflict, state, created_at, owner_user_id,"
+        " user_key, user_display"
         " FROM sync_transactions"
         " WHERE title_id=? AND direction='inbound'"
         " AND state NOT IN ('FAILED', 'DEDUPED', 'UPLOADING')"
         " AND NOT (state='COMPLETED' AND sha256 IS NULL)"
-        " AND owner_user_id=?"
+        " AND ("
+        "  (COALESCE(user_key,'') != '' AND (source_device_id, user_key) IN ("
+        "   SELECT device_id, profile_id FROM device_profile_map WHERE user_id=?))"
+        "  OR (COALESCE(user_key,'') = '' AND owner_user_id = ?))"
         " ORDER BY created_at DESC, snapshot_sequence DESC NULLS LAST",
-        (title_id, username),
+        (title_id, username, username),
     ).fetchall()
 
     all_dev_rows = list(db.get_all_devices(_conn))
@@ -996,8 +1066,6 @@ def game_detail(title_id: str, request: Request):
             "SELECT device_id FROM device_access WHERE user_id=?", (username,)
         ).fetchall()
     }
-    # Also include devices owned by this user directly — graceful fallback when
-    # profiles haven't been explicitly claimed in the UI yet.
     owned_devices = {
         r["device_id"]
         for r in _conn.execute(
@@ -1043,8 +1111,9 @@ def game_detail(title_id: str, request: Request):
         "SELECT device_id FROM device_installed_games"
         " WHERE title_id=? AND device_id IN ("
         "  SELECT device_id FROM device_profile_map WHERE user_id=?"
+        "  UNION SELECT device_id FROM device_access WHERE user_id=?"
         "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
-        (title_id, username, username),
+        (title_id, username, username, username),
     ).fetchall():
         device_ids.add(row["device_id"])
 
@@ -1156,6 +1225,8 @@ def game_detail(title_id: str, request: Request):
                     and s["snapshot_sequence"] == head_seq,
                     "archive_size_bytes": _archive_size(s["transaction_id"]),
                     "owner_user_id": s["owner_user_id"],
+                    "device_user_key": s["user_key"] or "",
+                    "device_user_display": s["user_display"] or "",
                 }
                 for s in snaps
             ],

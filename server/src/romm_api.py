@@ -180,6 +180,10 @@ def put_mapping(title_id: str, body: MappingBody, request: Request):
         return _err("rom_id must be a positive integer")
 
     username = ui_api._current_username(request)
+    # Atomically remove any existing mapping for this rom_id before upserting.
+    # romm_title_map has UNIQUE(username,rom_id), so without this delete,
+    # re-mapping rom_id=X to a different title_id raises IntegrityError and silently drops.
+    db.delete_romm_title_map_by_rom_id(_conn, username, body.rom_id)
     db.upsert_romm_title_map(_conn, username, tid, body.rom_id)
     _sync_romm_catalog(username)
     romm_meta.fetch_and_cache(body.rom_id, _conn, username)

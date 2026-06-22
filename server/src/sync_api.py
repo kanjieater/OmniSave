@@ -175,11 +175,14 @@ def start_inbound(body: InboundBody, request: Request):
     if not _storage_ok():
         return _err("insufficient storage", 507)
 
-    # 2. Stamp owner_user_id — profile map takes priority, device owner is the fallback
+    # 2. Stamp owner_user_id from the device profile claim map.
+    # Modern client (user_key present): use claim map; NULL if unclaimed (T6) — save is
+    # archived but invisible/un-deliverable until someone claims that device profile.
+    # Legacy client (user_key absent): fall back to device auth user for backward compat.
     owner_user_id = None
     if body.user_key:
         owner_user_id = db.get_profile_owner(_conn, auth.device_id, body.user_key)
-    if not owner_user_id:
+    else:
         owner_user_id = auth.user_id
 
     # 3. Idempotent open: same slot already UPLOADING → reuse its session.
@@ -640,18 +643,21 @@ def device_config(body: DeviceConfigBody, request: Request):
     )
 
     # Update known profiles regardless of token state.
-    # Auto-claim: if the device already has an owner and this profile hasn't been
-    # claimed by anyone yet, claim it automatically so UI badges work without a
-    # manual claim step in the web interface.
+    # Auto-claim: if the device owner has no claim on this device yet, claim the first
+    # unclaimed profile for them (T5). Never claim additional profiles — one per user.
     _device_owner = db.get_device_owner(_conn, device_id)
     for p in body.known_profiles:
         if p.profile_id:
             db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
-            if _device_owner and db.get_profile_owner(_conn, device_id, p.profile_id) is None:
-                db.upsert_device_profile(
-                    _conn, device_id, p.profile_id, _device_owner, p.profile_name
-                )
-                db.backfill_owner_on_profile_claim(_conn, device_id, p.profile_id, _device_owner)
+
+    if _device_owner and not db.get_user_has_claim_on_device(_conn, device_id, _device_owner):
+        _first = db.get_first_unclaimed_profile(_conn, device_id)
+        if _first:
+            _name = next(
+                (p.profile_name for p in body.known_profiles if p.profile_id == _first), ""
+            )
+            db.upsert_device_profile(_conn, device_id, _first, _device_owner, _name)
+            db.backfill_owner_on_profile_claim(_conn, device_id, _first, _device_owner)
 
     # Catalog update: atomically replace installed-game inventory, then backfill outbounds.
     if body.installed_titles is not None:

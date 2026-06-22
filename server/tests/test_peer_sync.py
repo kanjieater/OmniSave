@@ -454,33 +454,21 @@ def test_divergence_is_logged_not_blocked(client, conn):
     assert Path(row["snapshot_path"]).exists()
 
 
-def test_newer_upload_different_user_key_supersedes_older_outbound(client, conn):
-    """Same OmniSave user uploading with different Nintendo account UIDs (user_key)
-    must still supersede the older outbound — user_key is provenance only.
+def test_different_profile_saves_are_independent_delivery_slots(client, conn):
+    """Uploads from two different device profiles on DEVICE_A create independent
+    delivery slots on DEVICE_B — they do not supersede each other.
 
-    Both uploads come from DEVICE_A (same device_token → same owner_user_id).
-    DEVICE_B's queue must only see seq=2.
+    Each device profile is its own delivery lane. DEVICE_B's queue must see both saves.
     """
     report_catalog(client, DEVICE_B, [TITLE_1])
 
     do_upload(client, DEVICE_A, TITLE_1, SAVE, user_key="AABBCCDDEEFF0011")
-    first_outbound = conn.execute(
-        "SELECT transaction_id FROM sync_transactions "
-        "WHERE direction='outbound' AND target_device_id=? AND title_id=?",
-        (DEVICE_B, TITLE_1.upper()),
-    ).fetchone()["transaction_id"]
-
     do_upload(client, DEVICE_A, TITLE_1, b"newer-save-" * 200, user_key="1122334455667788")
 
     pending = poll_queue(client, DEVICE_B)
-    assert len(pending) == 1, f"expected 1 pending, got {len(pending)}"
-    assert pending[0]["snapshot_sequence"] == 2
-
-    old = conn.execute(
-        "SELECT state FROM sync_transactions WHERE transaction_id=?",
-        (first_outbound,),
-    ).fetchone()
-    assert old["state"] == "SUPERSEDED"
+    assert len(pending) == 2, f"expected 2 independent slots, got {len(pending)}"
+    sequences = {p["snapshot_sequence"] for p in pending}
+    assert sequences == {1, 2}
 
 
 def test_different_owner_user_ids_coexist_in_queue(client, conn):

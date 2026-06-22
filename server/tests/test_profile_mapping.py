@@ -77,13 +77,14 @@ def test_db_get_profile_owner_unknown_returns_none(conn):
     assert db.get_profile_owner(conn, DEVICE_A, PROFILE_C) is None
 
 
-def test_db_user_can_claim_multiple_profiles_on_same_device(conn):
-    """One OmniSave account may claim multiple Nintendo profiles on the same device."""
+def test_db_user_can_claim_only_one_profile_per_device(conn):
+    """One OmniSave account may only claim ONE profile per device — second claim evicts first."""
     db.upsert_known_profile(conn, DEVICE_A, PROFILE_A, "")
     db.upsert_known_profile(conn, DEVICE_A, PROFILE_B, "")
     db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "user_alice")
-    db.upsert_device_profile(conn, DEVICE_A, PROFILE_B, "user_alice")  # no longer raises
     assert db.get_profile_owner(conn, DEVICE_A, PROFILE_A) == "user_alice"
+    db.upsert_device_profile(conn, DEVICE_A, PROFILE_B, "user_alice")  # evicts PROFILE_A
+    assert db.get_profile_owner(conn, DEVICE_A, PROFILE_A) is None
     assert db.get_profile_owner(conn, DEVICE_A, PROFILE_B) == "user_alice"
 
 
@@ -101,7 +102,7 @@ def test_db_list_device_profiles_merges_known_and_claimed(conn):
 def test_db_delete_profile_leaves_known_profile(conn):
     db.upsert_known_profile(conn, DEVICE_A, PROFILE_A, "Alice")
     db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "user_alice")
-    db.delete_device_profile(conn, DEVICE_A, PROFILE_A)
+    db.delete_device_profile(conn, DEVICE_A, PROFILE_A, "user_alice")
     assert db.get_profile_owner(conn, DEVICE_A, PROFILE_A) is None
     row = conn.execute(
         "SELECT * FROM device_known_profiles WHERE device_id=? AND profile_id=?",
@@ -135,8 +136,8 @@ def test_ownership_claimed_profile_stamps_owner(client, conn, device_token):
     assert owner == "alice"
 
 
-def test_ownership_unclaimed_profile_falls_back_to_device_owner(client, conn, device_token):
-    """user_key present but not mapped → falls back to the paired device owner (auth.user_id)."""
+def test_ownership_unclaimed_profile_is_null(client, conn, device_token):
+    """user_key present but profile not claimed → owner_user_id is NULL (T6)."""
     _seed(client, user_key=PROFILE_A)
     r = client.post(
         "/api/v1/sync/transactions/inbound",
@@ -148,11 +149,11 @@ def test_ownership_unclaimed_profile_falls_back_to_device_owner(client, conn, de
     owner = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()["owner_user_id"]
-    assert owner == "admin"  # fallback to device's paired user
+    assert owner is None  # unclaimed profile → NULL, not device owner
 
 
-def test_ownership_unknown_profile_key_falls_back_to_device_owner(client, conn, device_token):
-    """Unknown user_key → falls back to the paired device owner (auth.user_id)."""
+def test_ownership_unknown_profile_key_is_null(client, conn, device_token):
+    """Unknown user_key → owner_user_id is NULL (T6); no fallback to device owner."""
     _seed(client)
     r = client.post(
         "/api/v1/sync/transactions/inbound",
@@ -164,7 +165,7 @@ def test_ownership_unknown_profile_key_falls_back_to_device_owner(client, conn, 
     owner = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()["owner_user_id"]
-    assert owner == "admin"  # fallback to device's paired user
+    assert owner is None  # unknown profile → NULL, not device owner
 
 
 def test_ownership_no_user_key_stamps_device_owner(client, conn, device_token):
@@ -331,4 +332,4 @@ def test_golden_path_ownership_model(client, conn, device_token):
 
     assert _owner(PROFILE_A) == "alice"
     assert _owner(PROFILE_B) == "bob"
-    assert _owner(PROFILE_C) == "admin"  # unknown key → fallback to device owner
+    assert _owner(PROFILE_C) is None  # unknown key → NULL (T6), not device owner
