@@ -149,6 +149,8 @@ CREATE TABLE IF NOT EXISTS device_profile_map (
     UNIQUE (device_id, user_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_dpm_user ON device_profile_map (user_id);
+
 CREATE TABLE IF NOT EXISTS device_known_profiles (
     device_id    TEXT NOT NULL,
     profile_id   TEXT NOT NULL,
@@ -431,8 +433,29 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass
 
+    # Migrate device_profile_map to 3-col PK (device_id, profile_id, user_id) +
+    # UNIQUE(device_id, user_id) — one device profile per OmniSave user per device,
+    # but the same device profile may be claimed by multiple OmniSave users.
+
+    # Crash-recovery: if a prior migration crashed after DROP TABLE device_profile_map but
+    # before the RENAME, device_profile_map_new is the only surviving copy — promote it.
+    # Must run BEFORE the "create if absent" block below so it doesn't create a fresh empty table.
+    if (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='device_profile_map_new'"
+        ).fetchone()
+        and "device_profile_map" not in existing
+    ):
+        conn.execute("ALTER TABLE device_profile_map_new RENAME TO device_profile_map")
+
     # Create device_profile_map if absent
-    if "device_profile_map" not in existing:
+    if (
+        "device_profile_map" not in existing
+        and conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='device_profile_map'"
+        ).fetchone()
+        is None
+    ):
         conn.execute(
             "CREATE TABLE IF NOT EXISTS device_profile_map ("
             "  device_id TEXT NOT NULL,"
@@ -445,9 +468,6 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             ")"
         )
 
-    # Migrate device_profile_map to 3-col PK (device_id, profile_id, user_id) +
-    # UNIQUE(device_id, user_id) — one device profile per OmniSave user per device,
-    # but the same device profile may be claimed by multiple OmniSave users.
     tbl = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='device_profile_map'"
     ).fetchone()
@@ -463,6 +483,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             ")"
         )
         conn.executescript("""
+            DROP TABLE IF EXISTS device_profile_map_new;
             CREATE TABLE device_profile_map_new (
                 device_id    TEXT NOT NULL,
                 profile_id   TEXT NOT NULL,
@@ -514,6 +535,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_events_owner ON events(owner_user_id, id DESC)",
         "CREATE INDEX IF NOT EXISTS idx_sync_inbound_profile"
         " ON sync_transactions(source_device_id, title_id, direction, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_dpm_user ON device_profile_map (user_id)",
     ]:
         try:
             conn.execute(idx_sql)
@@ -2068,8 +2090,15 @@ def upsert_device_profile(
 
 
 def get_profile_owner(conn, device_id: str, profile_id: str) -> str | None:
+    """Return the oldest claimant for a profile, or None if unclaimed.
+
+    ORDER BY created_at ASC makes the result deterministic when multiple OmniSave users
+    share the same Nintendo profile (3-col PK allows this). The oldest claim is the
+    authoritative owner for inbound transaction stamping.
+    """
     row = conn.execute(
-        "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
+        "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?"
+        " ORDER BY created_at ASC LIMIT 1",
         (device_id, profile_id),
     ).fetchone()
     return row["user_id"] if row else None
@@ -2148,9 +2177,11 @@ def get_user_has_claim_on_device(conn, device_id: str, user_id: str) -> bool:
     )
 
 
-def get_first_unclaimed_profile(conn, device_id: str) -> str | None:
-    """Return the first device profile on this device not yet claimed by any OmniSave user.
+def get_first_unclaimed_profile(conn, device_id: str, user_id: str) -> str | None:
+    """Return the first device profile on this device not yet claimed by user_id.
 
+    A profile is "unclaimed by this user" when no row exists in device_profile_map
+    for (device_id, profile_id, user_id). Other users may have claimed the same profile.
     Excludes the Nintendo sentinel profile 0000000000000000 (no-account placeholder).
     Ordered by last_seen ascending so the oldest-known profile is preferred.
     """
@@ -2159,10 +2190,10 @@ def get_first_unclaimed_profile(conn, device_id: str) -> str | None:
         " WHERE k.device_id=? AND k.profile_id != '0000000000000000'"
         " AND NOT EXISTS ("
         "  SELECT 1 FROM device_profile_map m"
-        "  WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id"
+        "  WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id AND m.user_id=?"
         " )"
         " ORDER BY k.last_seen ASC LIMIT 1",
-        (device_id,),
+        (device_id, user_id),
     ).fetchone()
     return row["profile_id"] if row else None
 

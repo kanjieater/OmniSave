@@ -334,8 +334,10 @@ def test_accept_share_auto_claims_first_unclaimed_profile(client, conn):
     r = client.post("/api/v1/ui/devices/accept-share", json={"code": share_code}, headers=auth_header(bob_tok))
     assert r.status_code == 200
 
-    # bob should have been auto-claimed to PROFILE_B (the first unclaimed profile)
-    assert db.get_profile_owner(conn, device_id, _PROFILE_B) == "bob"
+    # bob should have been auto-claimed to some profile (first not yet claimed BY bob).
+    # get_first_unclaimed_profile(user_id) returns profiles unclaimed by THIS user, so
+    # bob may claim the same profile as alice or a different one.
+    assert db.get_user_has_claim_on_device(conn, device_id, "bob")
 
 
 # ── Device visibility ─────────────────────────────────────────────────────────

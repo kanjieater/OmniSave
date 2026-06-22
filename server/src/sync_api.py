@@ -651,7 +651,7 @@ def device_config(body: DeviceConfigBody, request: Request):
             db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
 
     if _device_owner and not db.get_user_has_claim_on_device(_conn, device_id, _device_owner):
-        _first = db.get_first_unclaimed_profile(_conn, device_id)
+        _first = db.get_first_unclaimed_profile(_conn, device_id, _device_owner)
         if _first:
             _name = next(
                 (p.profile_name for p in body.known_profiles if p.profile_id == _first), ""

@@ -333,3 +333,49 @@ def test_golden_path_ownership_model(client, conn, device_token):
     assert _owner(PROFILE_A) == "alice"
     assert _owner(PROFILE_B) == "bob"
     assert _owner(PROFILE_C) is None  # unknown key → NULL (T6), not device owner
+
+
+# ── Admin unclaim multi-claim disambiguation ──────────────────────────────────
+
+
+def test_admin_unclaim_target_user_id_removes_specific_claimant(client, conn):
+    """Admin DELETE with ?target_user_id= removes only that user's claim."""
+    _create_user(client, "alice")
+    _seed(client, user_key=PROFILE_A)
+    admin = login_admin(client)
+    # Insert two claims directly — the claim_profile API auto-evicts the assigner's own claim
+    # when assigning to another user, so we bypass it to create a genuine multi-claim state.
+    db.upsert_known_profile(conn, DEVICE_A, PROFILE_A, "Profile A")
+    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "admin", "Profile A")
+    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "alice", "Profile A")
+    r = client.delete(
+        f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}?target_user_id=alice",
+        headers=_hdr(admin),
+    )
+    assert r.status_code == 204
+    # alice's claim is gone; admin's claim remains
+    rows = conn.execute(
+        "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
+        (DEVICE_A, PROFILE_A),
+    ).fetchall()
+    claimants = {r["user_id"] for r in rows}
+    assert "alice" not in claimants
+    assert "admin" in claimants
+
+
+def test_admin_unclaim_multiple_claimants_no_target_returns_409(client, conn):
+    """Admin DELETE without ?target_user_id= returns 409 when multiple users share a profile."""
+    _create_user(client, "alice")
+    _create_user(client, "bob")
+    _seed(client, user_key=PROFILE_A)
+    admin = login_admin(client)
+    # Insert alice and bob claims directly so admin has no own claim on PROFILE_A —
+    # only then does the 409 multi-claimant path trigger (admin's own claim bypasses it).
+    db.upsert_known_profile(conn, DEVICE_A, PROFILE_A, "Profile A")
+    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "alice", "Profile A")
+    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "bob", "Profile A")
+    r = client.delete(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", headers=_hdr(admin))
+    assert r.status_code == 409
+    body = r.json()
+    assert "claimants" in body
+    assert set(body["claimants"]) == {"alice", "bob"}

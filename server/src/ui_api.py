@@ -544,7 +544,7 @@ def accept_share(body: AcceptShareBody, request: Request):
     # Auto-claim the first unclaimed device profile for the new shared user (T5).
     # Only runs if they have no existing claim on this device.
     if not db.get_user_has_claim_on_device(_conn, device_id, username):
-        first = db.get_first_unclaimed_profile(_conn, device_id)
+        first = db.get_first_unclaimed_profile(_conn, device_id, username)
         if first:
             name_row = _conn.execute(
                 "SELECT profile_name FROM device_known_profiles WHERE device_id=? AND profile_id=?",
@@ -787,37 +787,63 @@ def claim_profile(
 
 
 @router.delete("/devices/{device_id}/profiles/{profile_id}")
-def unclaim_profile(device_id: str, profile_id: str, request: Request):
+def unclaim_profile(
+    device_id: str,
+    profile_id: str,
+    request: Request,
+    target_user_id: str | None = None,
+):
     err = _auth_err(request)
     if err:
         return err
     username = _current_username(request) or ""
-    # With multi-claim schema, filter by user_id so only this user's claim is checked.
-    row = _conn.execute(
-        "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=? AND user_id=?",
-        (device_id, profile_id, username),
-    ).fetchone()
-    if not row:
-        if _is_admin(request):
-            # Admins may unclaim any user's row — find it without user filter.
-            row = _conn.execute(
-                "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
-                (device_id, profile_id),
-            ).fetchone()
-            if not row:
-                return JSONResponse({"error": "profile not claimed"}, status_code=404)
-        else:
-            # Return 403 if the profile is claimed but by a different user.
-            other = _conn.execute(
-                "SELECT 1 FROM device_profile_map WHERE device_id=? AND profile_id=?",
-                (device_id, profile_id),
-            ).fetchone()
-            if other:
-                return JSONResponse({"error": "profile not claimed by you"}, status_code=403)
+    # Admin with explicit target_user_id: target that user directly, even if admin also has a claim.
+    if _is_admin(request) and target_user_id:
+        row = _conn.execute(
+            "SELECT user_id FROM device_profile_map"
+            " WHERE device_id=? AND profile_id=? AND user_id=?",
+            (device_id, profile_id, target_user_id),
+        ).fetchone()
+        if not row:
             return JSONResponse({"error": "profile not claimed"}, status_code=404)
+    else:
+        # With multi-claim schema, filter by user_id so only this user's claim is checked.
+        row = _conn.execute(
+            "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=? AND user_id=?",
+            (device_id, profile_id, username),
+        ).fetchone()
+        if not row:
+            if _is_admin(request):
+                # No own claim — may unclaim any single claimant; 409 if ambiguous.
+                claimants = _conn.execute(
+                    "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
+                    (device_id, profile_id),
+                ).fetchall()
+                if len(claimants) > 1:
+                    return JSONResponse(
+                        {
+                            "error": "multiple claimants; specify ?target_user_id=",
+                            "claimants": [r["user_id"] for r in claimants],
+                        },
+                        status_code=409,
+                    )
+                row = claimants[0] if claimants else None
+                if not row:
+                    return JSONResponse({"error": "profile not claimed"}, status_code=404)
+            else:
+                # Return 403 if the profile is claimed but by a different user.
+                other = _conn.execute(
+                    "SELECT 1 FROM device_profile_map WHERE device_id=? AND profile_id=?",
+                    (device_id, profile_id),
+                ).fetchone()
+                if other:
+                    return JSONResponse({"error": "profile not claimed by you"}, status_code=403)
+                return JSONResponse({"error": "profile not claimed"}, status_code=404)
     target_user = row["user_id"]
+    # Null out delivery ownership before removing the claim — keeps delivery and visibility
+    # consistent with the profile-switch path in claim_profile.
+    db.backfill_owner_off_profile_unclaim(_conn, device_id, profile_id, target_user)
     db.delete_device_profile(_conn, device_id, profile_id, target_user)
-    # owner_user_id on past transactions is preserved — the claim table controls visibility.
     log.info(
         "profile unclaimed: device=%s profile=%s user=%s", device_id, profile_id[:8], target_user
     )
@@ -908,9 +934,12 @@ def dashboard(request: Request):
 
     event_rows = _conn.execute(
         "SELECT id, event_type, message, title_id, device_id, occurred_at FROM events"
-        " WHERE owner_user_id=?"
+        " WHERE (owner_user_id=?"
+        "  OR (owner_user_id IS NULL AND device_id IN ("
+        "   SELECT device_id FROM device_access WHERE user_id=?"
+        "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
         " ORDER BY id DESC LIMIT 20",
-        (username,),
+        (username, username, username),
     ).fetchall()
 
     device_rows = list(db.get_devices_for_user(_conn, username))
