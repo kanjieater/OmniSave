@@ -159,6 +159,11 @@ function ProfilesInCard({ device }: { device: Device }) {
     queryKey: profilesKey,
     queryFn: () => api.deviceProfiles(deviceId),
     staleTime: 30_000,
+    // Poll every 3 s while profiles list is empty — stops once the Switch sends device-config
+    refetchInterval: (query) =>
+      ((query.state.data as { profiles?: unknown[] } | undefined)?.profiles?.length ?? 0) === 0
+        ? 3000
+        : false,
   })
   const profiles: DeviceProfile[] = data?.profiles ?? []
 
