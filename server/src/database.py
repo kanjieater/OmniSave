@@ -2488,12 +2488,14 @@ def list_device_profiles(conn, device_id: str, user_id: str = "") -> list[dict]:
     for r in rows:
         is_mine = r["my_user_id"] is not None
         display_user_id = r["my_user_id"] if is_mine else r["other_user_id"]
-        profile_name = (r["my_claimed_name"] or r["other_claimed_name"] or r["known_name"] or "")
-        result.append({
-            "profile_id": r["profile_id"],
-            "profile_name": profile_name,
-            "display_hint": r["known_name"] or "",
-            "user_id": display_user_id,
-            "is_mine": is_mine,
-        })
+        profile_name = r["my_claimed_name"] or r["other_claimed_name"] or r["known_name"] or ""
+        result.append(
+            {
+                "profile_id": r["profile_id"],
+                "profile_name": profile_name,
+                "display_hint": r["known_name"] or "",
+                "user_id": display_user_id,
+                "is_mine": is_mine,
+            }
+        )
     return result

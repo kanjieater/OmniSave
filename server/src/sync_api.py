@@ -644,7 +644,7 @@ def device_config(body: DeviceConfigBody, request: Request):
 
     # Update known profiles regardless of token state.
     _device_owner = db.get_device_owner(_conn, device_id)
-    for p in (body.known_profiles or []):
+    for p in body.known_profiles or []:
         if p.profile_id and p.profile_id != db.NULL_PROFILE_ID:
             db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
 
