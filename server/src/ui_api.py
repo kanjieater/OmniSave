@@ -544,16 +544,11 @@ def accept_share(body: AcceptShareBody, request: Request):
     # Auto-claim only when exactly one real profile exists — unambiguous mapping.
     # Multi-profile devices require explicit "This is me" selection.
     if not db.get_user_has_claim_on_device(_conn, device_id, username):
-        _real = _conn.execute(
-            "SELECT profile_id, profile_name FROM device_known_profiles"
-            " WHERE device_id=? AND profile_id != '0000000000000000'",
-            (device_id,),
-        ).fetchall()
-        if len(_real) == 1:
-            db.upsert_device_profile(
-                _conn, device_id, _real[0]["profile_id"], username, _real[0]["profile_name"] or ""
-            )
-            db.backfill_owner_on_profile_claim(_conn, device_id, _real[0]["profile_id"], username)
+        _sole = db.get_unclaimed_profile_if_sole(_conn, device_id)
+        if _sole:
+            _profile_id, _profile_name = _sole
+            db.upsert_device_profile(_conn, device_id, _profile_id, username, _profile_name)
+            db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, username)
 
     device = db.get_device(_conn, device_id)
     log.info("accept-share: device=%s user=%s granted_by=%s", device_id, username, granted_by)

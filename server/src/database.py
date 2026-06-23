@@ -8,6 +8,10 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+# Nintendo sentinel profile: present when a save slot has no associated account (no-account placeholder).
+# Never a real user; must be excluded from all profile-claim and auto-claim logic.
+NULL_PROFILE_ID = "0000000000000000"
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 
@@ -2191,6 +2195,23 @@ def get_user_has_claim_on_device(conn, device_id: str, user_id: str) -> bool:
     )
 
 
+def get_unclaimed_profile_if_sole(conn, device_id: str) -> tuple[str, str] | None:
+    """Return (profile_id, profile_name) when exactly one real profile exists for the device.
+
+    Uses a single GROUP BY … HAVING COUNT(*) = 1 query to atomically check the count and
+    retrieve the profile — no TOCTOU between a separate COUNT and a subsequent lookup.
+    Callers must already have verified the user has no existing claim (get_user_has_claim_on_device).
+    Returns None when zero or ≥2 real profiles exist.
+    """
+    row = conn.execute(
+        "SELECT profile_id, profile_name FROM device_known_profiles"
+        " WHERE device_id=? AND profile_id != ?"
+        " GROUP BY device_id HAVING COUNT(*) = 1",
+        (device_id, NULL_PROFILE_ID),
+    ).fetchone()
+    return (row["profile_id"], row["profile_name"] or "") if row else None
+
+
 def get_first_unclaimed_profile(conn, device_id: str, user_id: str) -> str | None:
     """Return the first device profile on this device not yet claimed by user_id.
 
@@ -2201,13 +2222,13 @@ def get_first_unclaimed_profile(conn, device_id: str, user_id: str) -> str | Non
     """
     row = conn.execute(
         "SELECT k.profile_id FROM device_known_profiles k"
-        " WHERE k.device_id=? AND k.profile_id != '0000000000000000'"
+        " WHERE k.device_id=? AND k.profile_id != ?"
         " AND NOT EXISTS ("
         "  SELECT 1 FROM device_profile_map m"
         "  WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id AND m.user_id=?"
         " )"
         " ORDER BY k.last_seen ASC, k.profile_id ASC LIMIT 1",
-        (device_id, user_id),
+        (device_id, NULL_PROFILE_ID, user_id),
     ).fetchone()
     return row["profile_id"] if row else None
 

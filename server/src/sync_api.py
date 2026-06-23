@@ -208,8 +208,8 @@ def start_inbound(body: InboundBody, request: Request):
 
     # 4. Insert transaction with ownership already resolved
     db.upsert_device(_conn, auth.device_id, body.hardware_type)
-    # Update known profiles cache whenever a user_key is seen
-    if body.user_key:
+    # Update known profiles cache whenever a real user_key is seen
+    if body.user_key and body.user_key != db.NULL_PROFILE_ID:
         db.upsert_known_profile(_conn, auth.device_id, body.user_key, body.user_display or "")
     txn_id, session_id = db.create_inbound_transaction(
         _conn,
@@ -645,29 +645,21 @@ def device_config(body: DeviceConfigBody, request: Request):
     # Update known profiles regardless of token state.
     _device_owner = db.get_device_owner(_conn, device_id)
     for p in (body.known_profiles or []):
-        if p.profile_id and p.profile_id != "0000000000000000":
+        if p.profile_id and p.profile_id != db.NULL_PROFILE_ID:
             db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
 
     # Auto-claim only when exactly one real profile exists in the DB — unambiguous mapping.
     # Multi-profile devices require explicit "This is me" selection; auto-claim there always
     # grabs the wrong profile (oldest by last_seen = the primary/admin user's profile).
-    # Count from DB (not the current request) because start_inbound also registers profiles
-    # via upsert_known_profile when it first sees a user_key on a fresh upload.
+    # DB count is used (not the current request list) because start_inbound also registers
+    # profiles via upsert_known_profile when it first sees a user_key on a fresh upload.
+    # get_unclaimed_profile_if_sole is a single atomic query — no TOCTOU between COUNT and lookup.
     if _device_owner and not db.get_user_has_claim_on_device(_conn, device_id, _device_owner):
-        _known_count = _conn.execute(
-            "SELECT COUNT(*) FROM device_known_profiles"
-            " WHERE device_id=? AND profile_id != '0000000000000000'",
-            (device_id,),
-        ).fetchone()[0]
-        if _known_count == 1:
-            _first = db.get_first_unclaimed_profile(_conn, device_id, _device_owner)
-            if _first:
-                _name = next(
-                    (p.profile_name for p in (body.known_profiles or []) if p.profile_id == _first),
-                    "",
-                )
-                db.upsert_device_profile(_conn, device_id, _first, _device_owner, _name)
-                db.backfill_owner_on_profile_claim(_conn, device_id, _first, _device_owner)
+        _sole = db.get_unclaimed_profile_if_sole(_conn, device_id)
+        if _sole:
+            _profile_id, _profile_name = _sole
+            db.upsert_device_profile(_conn, device_id, _profile_id, _device_owner, _profile_name)
+            db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, _device_owner)
 
     # Catalog update: atomically replace installed-game inventory, then backfill outbounds.
     if body.installed_titles is not None:
