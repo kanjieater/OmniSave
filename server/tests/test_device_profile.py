@@ -479,7 +479,8 @@ def test_device_config_auto_claim_does_not_evict_existing_claimant(client, conn)
     """Auto-claim co-claims the first profile without evicting existing claimants.
 
     When all profiles are taken, get_auto_claim_profile falls back to co-claiming the
-    first profile so the device owner always has a default selected. Both claims coexist.
+    first profile so the device owner always has a default selected (family-trust model).
+    Both claims coexist; co-claiming grants shared save visibility by design.
     """
     _create_user(client, _login(client), "otheruser")
     pair_device(client, DEVICE_A)

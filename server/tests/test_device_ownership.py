@@ -388,7 +388,11 @@ def test_accept_share_auto_claims_next_unclaimed_on_multi_profile_device(client,
 
 
 def test_accept_share_auto_claims_on_single_profile_device(client, conn):
-    """accept-share auto-claims and backfills when exactly one profile exists."""
+    """accept-share co-claims the sole profile when all profiles are already claimed.
+
+    Design decision: every user must always land with a default profile (family-trust model).
+    Co-claiming grants visibility into that profile's save history.
+    """
     _PROFILE_SOLO = "AAAA000011112222"
     _create_user(client, "alice")
     _create_user(client, "bob")
