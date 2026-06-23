@@ -541,12 +541,12 @@ def accept_share(body: AcceptShareBody, request: Request):
 
     db.grant_device_access(_conn, device_id, username, granted_by)
 
-    # Auto-claim only when exactly one real profile exists — unambiguous mapping.
-    # Multi-profile devices require explicit "This is me" selection.
+    # Auto-claim the first globally-unclaimed profile so the new user always lands with
+    # a default profile set. If all profiles are already claimed, no auto-claim fires.
     if not db.get_user_has_claim_on_device(_conn, device_id, username):
-        _sole = db.get_unclaimed_profile_if_sole(_conn, device_id)
-        if _sole:
-            _profile_id, _profile_name = _sole
+        _first = db.get_auto_claim_profile(_conn, device_id)
+        if _first:
+            _profile_id, _profile_name = _first
             db.upsert_device_profile(_conn, device_id, _profile_id, username, _profile_name)
             db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, username)
 
@@ -1072,6 +1072,30 @@ def game_detail(title_id: str, request: Request):
         " ORDER BY created_at DESC, snapshot_sequence DESC NULLS LAST",
         (title_id, username, username),
     ).fetchall()
+
+    if not snaps:
+        # Only 404 when the game exists somewhere in the system but not for this user.
+        # If the title_id is completely unknown, return the empty 200 shell (NO_DATA).
+        game_exists_globally = _conn.execute(
+            "SELECT 1 FROM sync_transactions WHERE title_id=? LIMIT 1",
+            (title_id,),
+        ).fetchone()
+        if game_exists_globally:
+            has_access = _conn.execute(
+                "SELECT 1 FROM sync_transactions WHERE title_id=? AND owner_user_id=?"
+                " UNION "
+                "SELECT 1 FROM ("
+                "  SELECT device_id FROM device_installed_games WHERE title_id=?"
+                "  UNION SELECT source_device_id FROM sync_transactions WHERE title_id=?"
+                "  UNION SELECT target_device_id FROM sync_transactions WHERE title_id=?"
+                ") AS t WHERE t.device_id IN ("
+                "  SELECT device_id FROM device_profile_map WHERE user_id=?"
+                "  UNION SELECT device_id FROM device_access WHERE user_id=?"
+                "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
+                (title_id, username, title_id, title_id, title_id, username, username, username),
+            ).fetchone()
+            if not has_access:
+                return JSONResponse({"error": "not found"}, status_code=404)
 
     all_dev_rows = list(db.get_all_devices(_conn))
     dev_names = {r["device_id"]: (r["display_name"] or None) for r in all_dev_rows}

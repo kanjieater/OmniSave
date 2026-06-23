@@ -648,16 +648,14 @@ def device_config(body: DeviceConfigBody, request: Request):
         if p.profile_id and p.profile_id != db.NULL_PROFILE_ID:
             db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
 
-    # Auto-claim only when exactly one real profile exists in the DB — unambiguous mapping.
-    # Multi-profile devices require explicit "This is me" selection; auto-claim there always
-    # grabs the wrong profile (oldest by last_seen = the primary/admin user's profile).
+    # Auto-claim: device owner always gets the first globally-unclaimed profile.
+    # Subsequent shared users get the next unclaimed one when they accept the share.
     # DB count is used (not the current request list) because start_inbound also registers
     # profiles via upsert_known_profile when it first sees a user_key on a fresh upload.
-    # get_unclaimed_profile_if_sole is a single atomic query — no TOCTOU between COUNT and lookup.
     if _device_owner and not db.get_user_has_claim_on_device(_conn, device_id, _device_owner):
-        _sole = db.get_unclaimed_profile_if_sole(_conn, device_id)
-        if _sole:
-            _profile_id, _profile_name = _sole
+        _first = db.get_auto_claim_profile(_conn, device_id)
+        if _first:
+            _profile_id, _profile_name = _first
             db.upsert_device_profile(_conn, device_id, _profile_id, _device_owner, _profile_name)
             db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, _device_owner)
 

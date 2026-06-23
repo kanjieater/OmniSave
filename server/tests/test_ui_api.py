@@ -606,6 +606,16 @@ def test_archive_size_none_when_no_archive_dir(monkeypatch):
     assert _ui_api._archive_size("any-txn-id") is None
 
 
+def test_game_detail_unknown_game_other_user_returns_404(client, conn):
+    """Game that exists for another user returns 404 for the requesting user."""
+    # Seed a transaction owned by a different user
+    _seed_txn(conn, owner_user_id="otheruser", state="READY_FOR_RESTORE", snapshot_sequence=1)
+
+    token = _login(client)  # logs in as admin
+    r = client.get(f"/api/v1/ui/games/{TITLE_1}", headers=_hdr(token))
+    assert r.status_code == 404
+
+
 def test_game_detail_uploading_excluded(client, conn):
     """UPLOADING (in-progress) transactions must not appear in the snapshots list."""
     token = _login(client)

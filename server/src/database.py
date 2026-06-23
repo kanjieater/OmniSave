@@ -2195,18 +2195,31 @@ def get_user_has_claim_on_device(conn, device_id: str, user_id: str) -> bool:
     )
 
 
-def get_unclaimed_profile_if_sole(conn, device_id: str) -> tuple[str, str] | None:
-    """Return (profile_id, profile_name) when exactly one real profile exists for the device.
+def get_auto_claim_profile(conn, device_id: str) -> tuple[str, str] | None:
+    """Return (profile_id, profile_name) for auto-claim.
 
-    Uses a single GROUP BY … HAVING COUNT(*) = 1 query to atomically check the count and
-    retrieve the profile — no TOCTOU between a separate COUNT and a subsequent lookup.
+    Prefers the first globally-unclaimed profile (avoids cross-user save visibility).
+    Falls back to the first profile overall when all are already claimed, so every
+    user always lands with a default selection they can change via 'This is me'.
+    Ordered by last_seen ASC, profile_id ASC for determinism.
     Callers must already have verified the user has no existing claim (get_user_has_claim_on_device).
-    Returns None when zero or ≥2 real profiles exist.
     """
+    row = conn.execute(
+        "SELECT k.profile_id, k.profile_name FROM device_known_profiles k"
+        " WHERE k.device_id=? AND k.profile_id != ?"
+        " AND NOT EXISTS ("
+        "  SELECT 1 FROM device_profile_map m"
+        "  WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id)"
+        " ORDER BY k.last_seen ASC, k.profile_id ASC LIMIT 1",
+        (device_id, NULL_PROFILE_ID),
+    ).fetchone()
+    if row:
+        return (row["profile_id"], row["profile_name"] or "")
+    # All profiles claimed — co-claim the first one so the user always has a default
     row = conn.execute(
         "SELECT profile_id, profile_name FROM device_known_profiles"
         " WHERE device_id=? AND profile_id != ?"
-        " GROUP BY device_id HAVING COUNT(*) = 1",
+        " ORDER BY last_seen ASC, profile_id ASC LIMIT 1",
         (device_id, NULL_PROFILE_ID),
     ).fetchone()
     return (row["profile_id"], row["profile_name"] or "") if row else None
