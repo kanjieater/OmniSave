@@ -389,6 +389,11 @@ def test_accept_share_auto_claims_on_single_profile_device(client, conn):
     # bob also auto-claimed to the sole profile (T4: same profile, multiple claimers OK)
     assert db.get_user_has_claim_on_device(conn, device_id, "bob")
     assert db.get_profile_owner(conn, device_id, _PROFILE_SOLO) == "alice"  # alice's claim unchanged
+    bob_claim = conn.execute(
+        "SELECT profile_id FROM device_profile_map WHERE device_id=? AND user_id='bob'",
+        (device_id,),
+    ).fetchone()
+    assert bob_claim is not None and bob_claim["profile_id"] == _PROFILE_SOLO
 
 
 # ── Device visibility ─────────────────────────────────────────────────────────
