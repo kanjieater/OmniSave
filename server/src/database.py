@@ -2199,8 +2199,9 @@ def get_auto_claim_profile(conn, device_id: str) -> tuple[str, str] | None:
     """Return (profile_id, profile_name) for auto-claim.
 
     Prefers the first globally-unclaimed profile (avoids cross-user save visibility).
-    Falls back to the first profile overall when all are already claimed, so every
-    user always lands with a default selection they can change via 'This is me'.
+    Falls back to co-claiming the first profile overall when all are already claimed —
+    this is intentional: every user must always land with a default profile selected
+    (family-trust model; users sharing a device implicitly share save visibility).
     Ordered by last_seen ASC, profile_id ASC for determinism.
     Callers must already have verified the user has no existing claim (get_user_has_claim_on_device).
     """
@@ -2215,7 +2216,8 @@ def get_auto_claim_profile(conn, device_id: str) -> tuple[str, str] | None:
     ).fetchone()
     if row:
         return (row["profile_id"], row["profile_name"] or "")
-    # All profiles claimed — co-claim the first one so the user always has a default
+    # All profiles claimed — co-claim the first so the user always has a default.
+    # Design decision: co-claiming grants visibility into that profile's save history.
     row = conn.execute(
         "SELECT profile_id, profile_name FROM device_known_profiles"
         " WHERE device_id=? AND profile_id != ?"

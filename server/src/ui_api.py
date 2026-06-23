@@ -541,8 +541,8 @@ def accept_share(body: AcceptShareBody, request: Request):
 
     db.grant_device_access(_conn, device_id, username, granted_by)
 
-    # Auto-claim the first globally-unclaimed profile so the new user always lands with
-    # a default profile set. If all profiles are already claimed, no auto-claim fires.
+    # Auto-claim first globally-unclaimed profile; co-claims first profile when all taken
+    # so the user always lands with a default (family-trust model — shared save visibility).
     if not db.get_user_has_claim_on_device(_conn, device_id, username):
         _first = db.get_auto_claim_profile(_conn, device_id)
         if _first:
