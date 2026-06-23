@@ -191,6 +191,32 @@ def test_db_list_device_profiles_claimed(conn):
     result = db.list_device_profiles(conn, DEVICE_A)
     assert result[0]["user_id"] == "alice_user"
     assert result[0]["profile_name"] == "Alice"
+    assert result[0]["is_mine"] is False  # no user_id passed → never mine
+
+
+def test_db_list_device_profiles_is_mine(conn):
+    """is_mine reflects the requesting user's own claim; one row per profile even when co-claimed."""
+    _insert_device(conn)
+    db.upsert_known_profile(conn, DEVICE_A, PROF_A, "Alice")
+    db.upsert_device_profile(conn, DEVICE_A, PROF_A, "alice_user", "Alice")
+    db.upsert_device_profile(conn, DEVICE_A, PROF_A, "bob_user", "Alice")
+
+    # Alice sees profile as hers
+    result = db.list_device_profiles(conn, DEVICE_A, "alice_user")
+    assert len(result) == 1, "co-claimed profile must appear only once"
+    assert result[0]["is_mine"] is True
+    assert result[0]["user_id"] == "alice_user"
+
+    # Bob sees it as his too
+    result = db.list_device_profiles(conn, DEVICE_A, "bob_user")
+    assert len(result) == 1
+    assert result[0]["is_mine"] is True
+
+    # Carol (no claim) sees it as claimed by someone else, not mine
+    result = db.list_device_profiles(conn, DEVICE_A, "carol_user")
+    assert len(result) == 1
+    assert result[0]["is_mine"] is False
+    assert result[0]["user_id"] is not None  # some other claimant visible
 
 
 # ── HTTP: POST /sync/device-config ────────────────────────────────────────────

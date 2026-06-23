@@ -185,4 +185,5 @@ export interface DeviceProfile {
   profile_name: string;
   display_hint: string;
   user_id: string | null;
+  is_mine: boolean;
 }

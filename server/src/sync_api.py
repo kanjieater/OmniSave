@@ -658,6 +658,7 @@ def device_config(body: DeviceConfigBody, request: Request):
             _profile_id, _profile_name = _first
             db.upsert_device_profile(_conn, device_id, _profile_id, _device_owner, _profile_name)
             db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, _device_owner)
+            db.set_user_device_default_profile(_conn, device_id, _device_owner, _profile_id)
 
     # Catalog update: atomically replace installed-game inventory, then backfill outbounds.
     if body.installed_titles is not None:
