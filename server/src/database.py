@@ -2462,31 +2462,38 @@ def sync_romm_catalog_to_device(conn, username: str, romm_device_id: str) -> Non
         raise
 
 
-def list_device_profiles(conn, device_id: str) -> list[dict]:
-    """
-    Returns profiles known for this device merged with claim status.
+def list_device_profiles(conn, device_id: str, user_id: str = "") -> list[dict]:
+    """Return one row per known profile with per-user claim status.
+
+    user_id: the requesting user; drives is_mine and preferred user_id in the result.
     Source of truth: device_known_profiles (not transaction history).
+    One row per profile — safe for co-claimed profiles (multiple users per profile).
     """
     rows = conn.execute(
-        "SELECT k.profile_id, k.profile_name AS known_name, k.last_seen,"
-        "       m.user_id, m.profile_name AS claimed_name"
+        "SELECT k.profile_id, k.profile_name AS known_name,"
+        "  (SELECT m.user_id FROM device_profile_map m"
+        "   WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id AND m.user_id=? LIMIT 1) AS my_user_id,"
+        "  (SELECT m.profile_name FROM device_profile_map m"
+        "   WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id AND m.user_id=? LIMIT 1) AS my_claimed_name,"
+        "  (SELECT m.user_id FROM device_profile_map m"
+        "   WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id AND m.user_id!=? LIMIT 1) AS other_user_id,"
+        "  (SELECT m.profile_name FROM device_profile_map m"
+        "   WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id AND m.user_id!=? LIMIT 1) AS other_claimed_name"
         " FROM device_known_profiles k"
-        " LEFT JOIN device_profile_map m"
-        "   ON k.device_id=m.device_id AND k.profile_id=m.profile_id"
         " WHERE k.device_id=?"
         " ORDER BY k.last_seen DESC",
-        (device_id,),
+        (user_id, user_id, user_id, user_id, device_id),
     ).fetchall()
     result = []
     for r in rows:
-        profile_name = r["claimed_name"] if r["claimed_name"] else r["known_name"] or ""
-        display_hint = r["known_name"] or ""
-        result.append(
-            {
-                "profile_id": r["profile_id"],
-                "profile_name": profile_name,
-                "display_hint": display_hint,
-                "user_id": r["user_id"],
-            }
-        )
+        is_mine = r["my_user_id"] is not None
+        display_user_id = r["my_user_id"] if is_mine else r["other_user_id"]
+        profile_name = (r["my_claimed_name"] or r["other_claimed_name"] or r["known_name"] or "")
+        result.append({
+            "profile_id": r["profile_id"],
+            "profile_name": profile_name,
+            "display_hint": r["known_name"] or "",
+            "user_id": display_user_id,
+            "is_mine": is_mine,
+        })
     return result

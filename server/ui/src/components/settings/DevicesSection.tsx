@@ -150,7 +150,7 @@ function RommProfileRow() {
 
 function ProfilesInCard({ device }: { device: Device }) {
   const deviceId = device.device_id
-  const { isAdmin, username } = useAuth()
+  const { isAdmin } = useAuth()
   const qc = useQueryClient()
   const profilesKey = ['deviceProfiles', deviceId]
   const devicesKey = ['devices']
@@ -196,7 +196,7 @@ function ProfilesInCard({ device }: { device: Device }) {
         <div className="divide-y divide-[var(--color-border-subtle)]">
           {profiles.map((p) => {
             const displayName = p.profile_name || p.display_hint || p.profile_id.slice(0, 8)
-            const isMine = p.user_id === username
+            const isMine = p.is_mine
             const isClaimed = p.user_id !== null
             const isDefault = p.profile_id === device.default_profile_uid
             return (
@@ -218,21 +218,22 @@ function ProfilesInCard({ device }: { device: Device }) {
                   <Button size="sm" variant="ghost" onClick={() => unclaim.mutate(p.profile_id)} disabled={unclaim.isPending} className="shrink-0 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]">
                     Not me
                   </Button>
-                ) : isClaimed ? (
+                ) : (
                   <>
-                    <span className="text-xs text-[var(--color-text-muted)] shrink-0">
-                      {isAdmin && p.user_id !== '__claimed__' ? p.user_id : 'Claimed'}
-                    </span>
-                    {isAdmin && (
+                    {isClaimed && (
+                      <span className="text-xs text-[var(--color-text-muted)] shrink-0">
+                        {isAdmin && p.user_id !== '__claimed__' ? p.user_id : 'Claimed'}
+                      </span>
+                    )}
+                    {isAdmin && isClaimed && (
                       <Button size="sm" variant="ghost" onClick={() => unclaim.mutate(p.profile_id)} disabled={unclaim.isPending} className="shrink-0 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]">
                         Unclaim
                       </Button>
                     )}
+                    <Button size="sm" onClick={() => claim.mutate(p.profile_id)} disabled={claim.isPending} className="shrink-0">
+                      This is me
+                    </Button>
                   </>
-                ) : (
-                  <Button size="sm" onClick={() => claim.mutate(p.profile_id)} disabled={claim.isPending} className="shrink-0">
-                    This is me
-                  </Button>
                 )}
               </div>
             )

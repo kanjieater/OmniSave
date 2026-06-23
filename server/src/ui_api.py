@@ -549,6 +549,7 @@ def accept_share(body: AcceptShareBody, request: Request):
             _profile_id, _profile_name = _first
             db.upsert_device_profile(_conn, device_id, _profile_id, username, _profile_name)
             db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, username)
+            db.set_user_device_default_profile(_conn, device_id, username, _profile_id)
 
     device = db.get_device(_conn, device_id)
     log.info("accept-share: device=%s user=%s granted_by=%s", device_id, username, granted_by)
@@ -705,15 +706,15 @@ def list_device_profiles(device_id: str, request: Request):
         return err
     if not db.get_device(_conn, device_id):
         return JSONResponse({"error": "device not found"}, status_code=404)
-    profiles = db.list_device_profiles(_conn, device_id)
-    current_user = _current_username(request)
+    current_user = _current_username(request) or ""
+    profiles = db.list_device_profiles(_conn, device_id, current_user)
     result = []
     for p in profiles:
         if p["profile_id"] == "0000000000000000":
             continue  # Nintendo sentinel for "no account" — not a real profile
         user_id = p["user_id"]
         # Non-admin: mask other users' user_id (just show "claimed")
-        if user_id and user_id != current_user and not _is_admin(request):
+        if user_id and not p["is_mine"] and not _is_admin(request):
             user_id = "__claimed__"
         result.append(
             {
@@ -721,6 +722,7 @@ def list_device_profiles(device_id: str, request: Request):
                 "profile_name": p["profile_name"],
                 "display_hint": p["display_hint"],
                 "user_id": user_id,
+                "is_mine": p["is_mine"],
             }
         )
     return {"profiles": result}
