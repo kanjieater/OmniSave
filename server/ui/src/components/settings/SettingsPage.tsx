@@ -453,7 +453,7 @@ function AboutSection() {
   return (
     <section className="flex flex-col items-center gap-[var(--spacing-1)] py-[var(--spacing-2)] text-center">
       <p className="text-xs text-[var(--color-text-muted)]">
-        OmniSave {data?.version ? `v${data.version}` : ''}
+        OmniSave {data?.version ?? ''}
       </p>
       <a
         href="https://github.com/kanjieater/OmniSave"
