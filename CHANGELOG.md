@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/kanjieater/OmniSave/compare/v1.3.0...v1.3.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* use GH_PAT in release-please so tag push triggers server-publish ([593237a](https://github.com/kanjieater/OmniSave/commit/593237a88133510b30d6434cf312fa4f1f5491c6))
+
 ## [1.3.0](https://github.com/kanjieater/OmniSave/compare/v1.2.0...v1.3.0) (2026-06-23)
 
 
