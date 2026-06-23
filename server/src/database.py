@@ -1,9 +1,12 @@
+import logging
 import secrets
 import sqlite3
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -476,30 +479,18 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         or "PRIMARY KEY (device_id, profile_id, user_id)" not in tbl["sql"]
     )
     if needs_migration:
-        # Log before deleting so the drop is auditable if migration is interrupted.
-        dup_count = conn.execute(
-            "SELECT COUNT(*) FROM device_profile_map WHERE rowid NOT IN ("
+        # Single atomic transaction: DELETE + schema rebuild commit together or not at all.
+        # needs_migration re-evaluates on every boot and DROP TABLE IF EXISTS
+        # device_profile_map_new handle a partial prior run as belt-and-suspenders.
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM device_profile_map WHERE rowid NOT IN ("
             "  SELECT MIN(rowid) FROM device_profile_map GROUP BY device_id, user_id"
             ")"
-        ).fetchone()[0]
-        if dup_count:
-            import logging as _logging
-
-            _logging.getLogger("database").warning(
-                "device_profile_map migration: dropping %d duplicate claim(s)"
-                " (keeping oldest per device+user)",
-                dup_count,
-            )
-        # BEGIN IMMEDIATE makes the DELETE + schema rebuild one atomic transaction.
-        # needs_migration + DROP TABLE IF EXISTS device_profile_map_new also guard
-        # against partial runs on reboot, but the explicit transaction is the true
-        # crash-safety boundary.
-        conn.executescript("""
-            BEGIN IMMEDIATE;
-            DELETE FROM device_profile_map WHERE rowid NOT IN (
-                SELECT MIN(rowid) FROM device_profile_map GROUP BY device_id, user_id
-            );
-            DROP TABLE IF EXISTS device_profile_map_new;
+        )
+        dup_count = conn.execute("SELECT changes()").fetchone()[0]
+        conn.execute("DROP TABLE IF EXISTS device_profile_map_new")
+        conn.execute("""
             CREATE TABLE device_profile_map_new (
                 device_id    TEXT NOT NULL,
                 profile_id   TEXT NOT NULL,
@@ -508,12 +499,18 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 created_at   TEXT NOT NULL,
                 PRIMARY KEY (device_id, profile_id, user_id),
                 UNIQUE (device_id, user_id)
-            );
-            INSERT INTO device_profile_map_new SELECT * FROM device_profile_map;
-            DROP TABLE device_profile_map;
-            ALTER TABLE device_profile_map_new RENAME TO device_profile_map;
-            COMMIT;
+            )
         """)
+        conn.execute("INSERT INTO device_profile_map_new SELECT * FROM device_profile_map")
+        conn.execute("DROP TABLE device_profile_map")
+        conn.execute("ALTER TABLE device_profile_map_new RENAME TO device_profile_map")
+        conn.execute("COMMIT")
+        if dup_count:
+            log.info(
+                "device_profile_map migration: dropped %d duplicate claim(s)"
+                " (kept oldest per device+user)",
+                dup_count,
+            )
 
     # Create device_known_profiles if absent
     if "device_known_profiles" not in existing:
