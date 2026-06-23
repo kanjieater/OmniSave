@@ -1,9 +1,12 @@
+import logging
 import secrets
 import sqlite3
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -476,14 +479,18 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         or "PRIMARY KEY (device_id, profile_id, user_id)" not in tbl["sql"]
     )
     if needs_migration:
-        # Keep the oldest claim per (device_id, user_id) to satisfy new UNIQUE constraint.
+        # Single atomic transaction: DELETE + schema rebuild commit together or not at all.
+        # needs_migration re-evaluates on every boot and DROP TABLE IF EXISTS
+        # device_profile_map_new handle a partial prior run as belt-and-suspenders.
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "DELETE FROM device_profile_map WHERE rowid NOT IN ("
             "  SELECT MIN(rowid) FROM device_profile_map GROUP BY device_id, user_id"
             ")"
         )
-        conn.executescript("""
-            DROP TABLE IF EXISTS device_profile_map_new;
+        dup_count = conn.execute("SELECT changes()").fetchone()[0]
+        conn.execute("DROP TABLE IF EXISTS device_profile_map_new")
+        conn.execute("""
             CREATE TABLE device_profile_map_new (
                 device_id    TEXT NOT NULL,
                 profile_id   TEXT NOT NULL,
@@ -492,11 +499,18 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 created_at   TEXT NOT NULL,
                 PRIMARY KEY (device_id, profile_id, user_id),
                 UNIQUE (device_id, user_id)
-            );
-            INSERT INTO device_profile_map_new SELECT * FROM device_profile_map;
-            DROP TABLE device_profile_map;
-            ALTER TABLE device_profile_map_new RENAME TO device_profile_map;
+            )
         """)
+        conn.execute("INSERT INTO device_profile_map_new SELECT * FROM device_profile_map")
+        conn.execute("DROP TABLE device_profile_map")
+        conn.execute("ALTER TABLE device_profile_map_new RENAME TO device_profile_map")
+        conn.execute("COMMIT")
+        if dup_count:
+            log.info(
+                "device_profile_map migration: dropped %d duplicate claim(s)"
+                " (kept oldest per device+user)",
+                dup_count,
+            )
 
     # Create device_known_profiles if absent
     if "device_known_profiles" not in existing:
@@ -2192,7 +2206,7 @@ def get_first_unclaimed_profile(conn, device_id: str, user_id: str) -> str | Non
         "  SELECT 1 FROM device_profile_map m"
         "  WHERE m.device_id=k.device_id AND m.profile_id=k.profile_id AND m.user_id=?"
         " )"
-        " ORDER BY k.last_seen ASC LIMIT 1",
+        " ORDER BY k.last_seen ASC, k.profile_id ASC LIMIT 1",
         (device_id, user_id),
     ).fetchone()
     return row["profile_id"] if row else None

@@ -636,6 +636,24 @@ def test_migration_deduplicates_device_profile_map(tmp_path):
     raw.close()
 
 
+def test_first_unclaimed_profile_stable_under_last_seen_tie(conn):
+    """profile_id ASC tiebreaker: when two profiles share the same last_seen, the
+    lexicographically smaller profile_id is returned deterministically."""
+    now = datetime.now(UTC).isoformat()
+    conn.execute(
+        "INSERT INTO device_known_profiles (device_id, profile_id, profile_name, last_seen)"
+        " VALUES ('DEV_TIE', 'bbbb', '', ?)",
+        (now,),
+    )
+    conn.execute(
+        "INSERT INTO device_known_profiles (device_id, profile_id, profile_name, last_seen)"
+        " VALUES ('DEV_TIE', 'aaaa', '', ?)",
+        (now,),
+    )
+    result = db.get_first_unclaimed_profile(conn, "DEV_TIE", "user1")
+    assert result == "aaaa"
+
+
 def test_migration_crash_recovery_promotes_orphan_new_table(tmp_path):
     """Crash-recovery: device_profile_map_new orphan is promoted when device_profile_map is absent.
 
