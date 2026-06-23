@@ -476,12 +476,10 @@ def test_device_config_auto_claims_profile_when_device_has_owner(client, conn):
 
 
 def test_device_config_auto_claim_does_not_evict_existing_claimant(client, conn):
-    """Auto-claim adds the device owner's claim without removing another user's claim.
+    """Auto-claim co-claims the first profile without evicting existing claimants.
 
-    With the 3-col PK, multiple OmniSave users can share a Nintendo profile.
-    get_first_unclaimed_profile returns profiles not yet claimed BY THIS USER, so
-    admin auto-claims PROF_A even though otheruser already claimed it.
-    Both claims coexist — otheruser's claim is NOT removed.
+    When all profiles are taken, get_auto_claim_profile falls back to co-claiming the
+    first profile so the device owner always has a default selected. Both claims coexist.
     """
     _create_user(client, _login(client), "otheruser")
     pair_device(client, DEVICE_A)
@@ -493,14 +491,14 @@ def test_device_config_auto_claim_does_not_evict_existing_claimant(client, conn)
         json={"known_profiles": [{"profile_id": PROF_A, "profile_name": "Alice"}]},
         headers={"X-Device-ID": DEVICE_A},
     )
-    # Both admin (auto-claim) and otheruser hold a claim on the same profile.
+    # Both admin (co-claim fallback) and otheruser hold a claim on the same profile.
     rows = conn.execute(
         "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
         (DEVICE_A, PROF_A),
     ).fetchall()
     claimants = {r["user_id"] for r in rows}
     assert "otheruser" in claimants, "otheruser's claim must not be evicted"
-    assert "admin" in claimants, "device owner must have auto-claimed the profile"
+    assert "admin" in claimants, "device owner must have been co-claimed as default"
 
 
 def test_device_config_auto_claim_skips_unpaired_device(client, conn):

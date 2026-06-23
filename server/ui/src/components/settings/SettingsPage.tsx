@@ -75,6 +75,9 @@ function RommServerSection() {
   const hasError = !!connectStatus && connectStatus !== 'ok'
   const active = enabled && !!data?.host && !!data?.has_api_key && !!data?.romm_username && !hasError
 
+  const isDisableMode = active && !connectDirty
+  const hasStoredCreds = !!data?.host && !!data?.has_api_key
+
   const mut = useMutation({
     mutationFn: () => {
       if (active && !connectDirty)
@@ -152,6 +155,7 @@ function RommServerSection() {
                 placeholder="https://romm.example.com"
                 value={host}
                 onChange={(e) => { setHost(e.target.value); setConnectDirty(true) }}
+                onKeyDown={(e) => e.key === 'Enter' && !isDisableMode && !mut.isPending && host && void mut.mutate()}
               />
             </div>
             <div className="py-3 flex flex-col gap-1.5">
@@ -164,6 +168,7 @@ function RommServerSection() {
                 value={apiKey}
                 onChange={(e) => { setApiKey(e.target.value); setConnectDirty(true) }}
                 autoComplete="new-password"
+                onKeyDown={(e) => e.key === 'Enter' && !isDisableMode && !mut.isPending && host && void mut.mutate()}
               />
             </div>
             {data?.romm_username && (
@@ -174,9 +179,6 @@ function RommServerSection() {
             )}
             <div className="py-3 flex justify-end">
               {(() => {
-                const isDisableMode = active && !connectDirty
-                const hasStoredCreds = !!data?.host && !!data?.has_api_key
-                // Disable when: pending, OR incomplete credentials require entry
                 const buttonDisabled =
                   mut.isPending ||
                   (!active && !connectDirty && (!data?.host || !data?.has_api_key)) ||

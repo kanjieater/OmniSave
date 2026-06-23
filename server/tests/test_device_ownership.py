@@ -319,8 +319,34 @@ def test_auto_claim_fires_for_single_profile_device(client, conn):
     assert db.get_profile_owner(conn, device_id, _PROFILE_SOLO) == "alice"
 
 
-def test_auto_claim_suppressed_for_multi_profile_device(client, conn):
-    """Auto-claim is suppressed when multiple profiles exist — require explicit 'This is me'."""
+def test_auto_claim_fires_for_multi_profile_device_owner(client, conn):
+    """Device owner always gets the first globally-unclaimed profile, even on multi-profile devices."""
+    _PROFILE_A = "AAAA000011112222"
+    _PROFILE_B = "BBBB000011112222"
+
+    _create_user(client, "alice")
+    _register_device(client, DEVICE_A)
+    device_id = db.normalize_device_id(DEVICE_A)
+
+    r = client.post("/api/v1/sync/device-config", json={}, headers={"X-Device-ID": DEVICE_A})
+    alice_tok = _login(client, "alice")
+    client.post("/api/v1/ui/devices/pair", json={"code": r.json()["pairing_code"]}, headers=auth_header(alice_tok))
+
+    # Device reports two profiles — owner (alice) gets first unclaimed (A); B stays unclaimed
+    client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": [
+            {"profile_id": _PROFILE_A, "profile_name": "Alice"},
+            {"profile_id": _PROFILE_B, "profile_name": "Bob"},
+        ]},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert db.get_profile_owner(conn, device_id, _PROFILE_A) == "alice"
+    assert db.get_profile_owner(conn, device_id, _PROFILE_B) is None
+
+
+def test_accept_share_auto_claims_next_unclaimed_on_multi_profile_device(client, conn):
+    """accept-share gives the shared user the next globally-unclaimed profile."""
     _PROFILE_A = "AAAA000011112222"
     _PROFILE_B = "BBBB000011112222"
 
@@ -333,7 +359,7 @@ def test_auto_claim_suppressed_for_multi_profile_device(client, conn):
     alice_tok = _login(client, "alice")
     client.post("/api/v1/ui/devices/pair", json={"code": r.json()["pairing_code"]}, headers=auth_header(alice_tok))
 
-    # Device reports two profiles — neither should be auto-claimed
+    # Alice (device owner) auto-claims first profile (A)
     client.post(
         "/api/v1/sync/device-config",
         json={"known_profiles": [
@@ -342,10 +368,9 @@ def test_auto_claim_suppressed_for_multi_profile_device(client, conn):
         ]},
         headers={"X-Device-ID": DEVICE_A},
     )
-    assert db.get_profile_owner(conn, device_id, _PROFILE_A) is None
-    assert db.get_profile_owner(conn, device_id, _PROFILE_B) is None
+    assert db.get_profile_owner(conn, device_id, _PROFILE_A) == "alice"
 
-    # accept-share also suppressed for multi-profile — bob must select "This is me"
+    # Bob accepts share → auto-claims next unclaimed profile (B)
     r = client.post(f"/api/v1/ui/devices/{device_id}/share", headers=auth_header(alice_tok))
     bob_tok = _login(client, "bob")
     r = client.post(
@@ -354,7 +379,12 @@ def test_auto_claim_suppressed_for_multi_profile_device(client, conn):
         headers=auth_header(bob_tok),
     )
     assert r.status_code == 200
-    assert not db.get_user_has_claim_on_device(conn, device_id, "bob")
+    assert db.get_user_has_claim_on_device(conn, device_id, "bob")
+    bob_claim = conn.execute(
+        "SELECT profile_id FROM device_profile_map WHERE device_id=? AND user_id='bob'",
+        (device_id,),
+    ).fetchone()
+    assert bob_claim is not None and bob_claim["profile_id"] == _PROFILE_B
 
 
 def test_accept_share_auto_claims_on_single_profile_device(client, conn):
@@ -369,13 +399,12 @@ def test_accept_share_auto_claims_on_single_profile_device(client, conn):
     alice_tok = _login(client, "alice")
     client.post("/api/v1/ui/devices/pair", json={"code": r.json()["pairing_code"]}, headers=auth_header(alice_tok))
 
-    # Register exactly one profile
+    # Register exactly one profile — alice auto-claims it
     client.post(
         "/api/v1/sync/device-config",
         json={"known_profiles": [{"profile_id": _PROFILE_SOLO, "profile_name": "Solo"}]},
         headers={"X-Device-ID": DEVICE_A},
     )
-    # alice gets auto-claimed to the single profile
     assert db.get_profile_owner(conn, device_id, _PROFILE_SOLO) == "alice"
 
     r = client.post(f"/api/v1/ui/devices/{device_id}/share", headers=auth_header(alice_tok))
@@ -386,9 +415,8 @@ def test_accept_share_auto_claims_on_single_profile_device(client, conn):
         headers=auth_header(bob_tok),
     )
     assert r.status_code == 200
-    # bob also auto-claimed to the sole profile (T4: same profile, multiple claimers OK)
+    # All profiles claimed — bob co-claims the sole profile so user always has a default
     assert db.get_user_has_claim_on_device(conn, device_id, "bob")
-    assert db.get_profile_owner(conn, device_id, _PROFILE_SOLO) == "alice"  # alice's claim unchanged
     bob_claim = conn.execute(
         "SELECT profile_id FROM device_profile_map WHERE device_id=? AND user_id='bob'",
         (device_id,),
