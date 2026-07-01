@@ -211,7 +211,6 @@ export function DayHeatmap({ data, iconUrls }: Props) {
                   <Tooltip
                     key={activity.date}
                     open={openDate === activity.date}
-                    onOpenChange={(open) => { if (!open) setOpenDate(null) }}
                   >
                     <TooltipTrigger asChild>{enriched}</TooltipTrigger>
                     <TooltipContent
