@@ -1324,6 +1324,19 @@ def list_events(request: Request, limit: int = 100):
     )
 
 
+# ── Playtime ───────────────────────────────────────────────────────────────────
+
+
+@router.get("/playtime/daily")
+def get_daily_playtime(request: Request, title_id: str | None = None):
+    err = _auth_err(request)
+    if err:
+        return err
+    username = _current_username(request) or ""
+    rows = db.get_daily_playtime(_conn, username, application_id=title_id)
+    return {"days": rows}
+
+
 # ── Errors ────────────────────────────────────────────────────────────────────
 
 

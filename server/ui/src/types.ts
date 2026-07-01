@@ -187,3 +187,8 @@ export interface DeviceProfile {
   user_id: string | null;
   is_mine: boolean;
 }
+
+export interface PlaytimeDay {
+  date: string;    // "YYYY-MM-DD"
+  minutes: number;
+}

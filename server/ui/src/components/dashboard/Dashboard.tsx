@@ -11,6 +11,7 @@ import { GameCard } from '@/components/ui/game-card'
 import { HardwareIcon } from '@/components/ui/hardware-icon'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ActivityList } from '@/components/events/ActivityList'
+import { DayHeatmap } from '@/components/ui/day-heatmap'
 import { useAuth } from '@/contexts/AuthContext'
 import { useBackground } from '@/components/layout/AppShellV2'
 
@@ -125,6 +126,12 @@ export default function Dashboard() {
     return m
   }, [devicesData])
 
+  const { data: playtimeData, isLoading: playtimeLoading } = useQuery({
+    queryKey: ['playtime-daily'],
+    queryFn: () => api.dailyPlaytime(),
+    staleTime: 60_000,
+  })
+
   return (
     <div className="flex flex-col gap-[var(--spacing-8)] p-[var(--spacing-4)] md:p-[var(--spacing-6)] max-w-5xl mx-auto">
 
@@ -212,6 +219,18 @@ export default function Dashboard() {
           loading={isLoading}
           grouped={false}
         />
+      </section>
+
+      {/* Play History */}
+      <section className="flex flex-col gap-[var(--spacing-2)]">
+        <div className="flex min-h-8 items-center">
+          <h2 className="text-sm font-[var(--font-weight-semibold)] text-[var(--color-text-primary)] uppercase tracking-[var(--tracking-wide)]">Play History</h2>
+        </div>
+        {playtimeLoading ? (
+          <Skeleton className="h-24 w-full rounded-[var(--radius-md)]" />
+        ) : (
+          <DayHeatmap data={playtimeData?.days ?? []} />
+        )}
       </section>
 
     </div>

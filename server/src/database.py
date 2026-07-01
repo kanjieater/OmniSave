@@ -2545,6 +2545,45 @@ def get_play_events(
     return [dict(r) for r in rows]
 
 
+def get_daily_playtime(
+    conn,
+    owner_user_id: str,
+    application_id: str | None = None,
+) -> list[dict]:
+    """Return daily playtime totals in minutes derived from APPLICATION_STARTED/EXITED pairs.
+
+    Pairs each STARTED with the nearest EXITED on the same (device_id, application_id,
+    profile_id) using monotonic_timestamp. Assumes a well-formed event stream; see
+    test_daily_playtime.py for documented edge-case behaviour.
+    """
+    sql = """
+        WITH sessions AS (
+          SELECT
+            date(s.event_timestamp, 'unixepoch') AS play_date,
+            MIN(e.monotonic_timestamp) - s.monotonic_timestamp AS duration_sec
+          FROM device_play_events s
+          JOIN device_play_events e ON
+            e.device_id = s.device_id
+            AND e.application_id IS s.application_id
+            AND e.profile_id IS s.profile_id
+            AND e.event_type = 'APPLICATION_EXITED'
+            AND e.monotonic_timestamp > s.monotonic_timestamp
+            AND e.monotonic_timestamp - s.monotonic_timestamp <= 86400
+          WHERE s.event_type = 'APPLICATION_STARTED'
+            AND s.owner_user_id = ?
+            AND (? IS NULL OR s.application_id = ?)
+          GROUP BY s.device_id, s.application_id, s.event_timestamp, s.monotonic_timestamp
+        )
+        SELECT play_date AS date, CAST(SUM(duration_sec) / 60 AS INTEGER) AS minutes
+        FROM sessions
+        WHERE duration_sec > 0
+        GROUP BY play_date
+        ORDER BY play_date
+    """
+    rows = conn.execute(sql, (owner_user_id, application_id, application_id)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_device_profiles(conn, device_id: str, user_id: str = "") -> list[dict]:
     """Return one row per known profile with per-user claim status.
 
