@@ -2560,6 +2560,7 @@ def get_daily_playtime(
         WITH sessions AS (
           SELECT
             date(s.event_timestamp, 'unixepoch') AS play_date,
+            s.application_id AS title_id,
             MIN(e.monotonic_timestamp) - s.monotonic_timestamp AS duration_sec
           FROM device_play_events s
           JOIN device_play_events e ON
@@ -2574,14 +2575,30 @@ def get_daily_playtime(
             AND (? IS NULL OR s.application_id = ?)
           GROUP BY s.device_id, s.application_id, s.event_timestamp, s.monotonic_timestamp
         )
-        SELECT play_date AS date, CAST(SUM(duration_sec) / 60 AS INTEGER) AS minutes
+        SELECT
+          play_date AS date,
+          title_id,
+          COALESCE(l.label, title_id) AS display_name,
+          CAST(SUM(duration_sec) / 60 AS INTEGER) AS minutes
         FROM sessions
+        LEFT JOIN labels l ON l.entity_type = 'game' AND l.entity_id = title_id
         WHERE duration_sec > 0
-        GROUP BY play_date
-        ORDER BY play_date
+        GROUP BY play_date, title_id
+        ORDER BY play_date, minutes DESC
     """
     rows = conn.execute(sql, (owner_user_id, application_id, application_id)).fetchall()
-    return [dict(r) for r in rows]
+    days: dict[str, dict] = {}
+    for r in rows:
+        date = r["date"]
+        if date not in days:
+            days[date] = {"date": date, "minutes": 0, "games": []}
+        days[date]["minutes"] += r["minutes"]
+        days[date]["games"].append({
+            "title_id": r["title_id"],
+            "display_name": r["display_name"],
+            "minutes": r["minutes"],
+        })
+    return list(days.values())
 
 
 def list_device_profiles(conn, device_id: str, user_id: str = "") -> list[dict]:

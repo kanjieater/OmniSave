@@ -83,6 +83,19 @@ export default function GamePage() {
         onRommSearch={() => setRommOpen(true)}
         rommEnabled={rommEnabled}
         rommHost={rommHost}
+        middleSlot={
+          <section className="flex flex-col gap-[var(--spacing-2)]">
+            <h2 className="text-sm font-[var(--font-weight-semibold)] text-[var(--color-text-primary)] uppercase tracking-[var(--tracking-wide)]">Play History</h2>
+            {playtimeLoading ? (
+              <Skeleton className="h-24 w-full rounded-[var(--radius-md)]" />
+            ) : (
+              <DayHeatmap
+                data={playtimeData?.days ?? []}
+                iconUrls={title_id && data.icon_url ? { [title_id]: data.icon_url } : undefined}
+              />
+            )}
+          </section>
+        }
       />
 
       <RommSearchSheet
@@ -92,15 +105,6 @@ export default function GamePage() {
         initialQuery={gameName}
         rommHost={rommHost}
       />
-
-      <section className="flex flex-col gap-[var(--spacing-2)]">
-        <h2 className="text-sm font-[var(--font-weight-semibold)] text-[var(--color-text-primary)] uppercase tracking-[var(--tracking-wide)]">Play History</h2>
-        {playtimeLoading ? (
-          <Skeleton className="h-24 w-full rounded-[var(--radius-md)]" />
-        ) : (
-          <DayHeatmap data={playtimeData?.days ?? []} />
-        )}
-      </section>
     </div>
   )
 }

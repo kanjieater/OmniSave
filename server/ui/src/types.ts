@@ -188,7 +188,14 @@ export interface DeviceProfile {
   is_mine: boolean;
 }
 
+export interface PlaytimeGame {
+  title_id: string;
+  display_name: string;
+  minutes: number;
+}
+
 export interface PlaytimeDay {
   date: string;    // "YYYY-MM-DD"
   minutes: number;
+  games: PlaytimeGame[];
 }

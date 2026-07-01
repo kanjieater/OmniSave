@@ -1,17 +1,19 @@
 import * as React from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { ActivityCalendar } from 'react-activity-calendar'
-import 'react-activity-calendar/tooltips.css'
-import type { PlaytimeDay } from '@/types'
+import type { PlaytimeDay, PlaytimeGame } from '@/types'
+import { GameIcon } from '@/components/ui/game-icon'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 type Activity = { date: string; count: number; level: number }
 
 const THEME = {
   dark: [
-    '#191C23', // level 0 — bg-elevated (no play)
-    '#1E3A5F', // level 1 — accent-subtle  (1–30 min)
-    '#1D4ED8', // level 2 — blue-700       (31–90 min)
-    '#2563EB', // level 3 — blue-600       (91–180 min)
-    '#3B82F6', // level 4 — accent         (180+ min)
+    '#111318', // L0 — bg-subtle        (no play)
+    '#0F2A1A', // L1 — success-subtle   (1–30 min)
+    '#166534', // L2 — success-border   (31–90 min)
+    '#22C55E', // L3 — success          (91–180 min)
+    '#4ADE80', // L4 — success-text     (180+ min)
   ],
 }
 
@@ -23,11 +25,7 @@ function minutesToLevel(m: number): number {
   return 4
 }
 
-function toISO(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
-
-function formatDuration(minutes: number): string {
+function fmt(minutes: number): string {
   const h = Math.floor(minutes / 60)
   const m = minutes % 60
   if (h > 0 && m > 0) return `${h}h ${m}m`
@@ -35,68 +33,226 @@ function formatDuration(minutes: number): string {
   return `${m}m`
 }
 
-function toCalendarData(days: PlaytimeDay[]): Activity[] {
-  const map = new Map(days.map(d => [d.date, d.minutes]))
+function toISO(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
 
-  const today = new Date()
-  const start = new Date(today)
-  start.setFullYear(start.getFullYear() - 1)
-  start.setDate(start.getDate() + 1) // exactly 365 days ago
-
-  const startStr = toISO(start)
-  const endStr = toISO(today)
-
-  // Anchors define the visible range; activity days fill in between
-  const dates = new Set([startStr, ...days.map(d => d.date).filter(d => d >= startStr && d <= endStr), endStr])
-
+function toCalendarData(days: PlaytimeDay[], year: number): Activity[] {
+  const startStr = `${year}-01-01`
+  const endStr = `${year}-12-31`
+  const map = new Map(
+    days.filter(d => d.date >= startStr && d.date <= endStr).map(d => [d.date, d.minutes])
+  )
+  const dates = new Set([startStr, ...map.keys(), endStr])
   return [...dates].sort().map(date => {
     const minutes = map.get(date) ?? 0
     return { date, count: minutes, level: minutesToLevel(minutes) }
   })
 }
 
-interface Props {
-  data: PlaytimeDay[]
+interface Stats {
+  todayMinutes: number
+  last7Avg: number
+  longestStreak: number
+  currentStreak: number
 }
 
-export function DayHeatmap({ data }: Props) {
-  const calData = React.useMemo(() => toCalendarData(data), [data])
-  const totalMinutes = React.useMemo(() => data.reduce((s, d) => s + d.minutes, 0), [data])
+function computeStats(data: PlaytimeDay[]): Stats {
+  const today = toISO(new Date())
+  const sevenDaysAgo = toISO(new Date(Date.now() - 6 * 86400_000))
+
+  const todayMinutes = data.find(d => d.date === today)?.minutes ?? 0
+  const last7Total = data
+    .filter(d => d.date >= sevenDaysAgo && d.date <= today)
+    .reduce((s, d) => s + d.minutes, 0)
+  const last7Avg = Math.round(last7Total / 7)
+
+  const playDates = new Set(data.filter(d => d.minutes > 0).map(d => d.date))
+  const sorted = [...playDates].sort()
+
+  let longestStreak = 0
+  let run = 0
+  let prev: string | null = null
+  for (const date of sorted) {
+    if (prev) {
+      const gap = (new Date(date + 'T12:00:00').getTime() - new Date(prev + 'T12:00:00').getTime()) / 86400_000
+      run = gap === 1 ? run + 1 : 1
+    } else {
+      run = 1
+    }
+    if (run > longestStreak) longestStreak = run
+    prev = date
+  }
+
+  function countBack(from: string): number {
+    let count = 0
+    let d = new Date(from + 'T12:00:00')
+    while (playDates.has(toISO(d))) {
+      count++
+      d = new Date(d.getTime() - 86400_000)
+    }
+    return count
+  }
+  const yesterday = toISO(new Date(Date.now() - 86400_000))
+  const currentStreak = playDates.has(today)
+    ? countBack(today)
+    : playDates.has(yesterday)
+      ? countBack(yesterday)
+      : 0
+
+  return { todayMinutes, last7Avg, longestStreak, currentStreak }
+}
+
+interface Props {
+  data: PlaytimeDay[]
+  iconUrls?: Record<string, string | null>
+}
+
+export function DayHeatmap({ data, iconUrls }: Props) {
+  const currentYear = new Date().getFullYear()
+  const [year, setYear] = React.useState(currentYear)
+
+  const earliestYear = React.useMemo(() => {
+    if (data.length === 0) return currentYear
+    return Math.min(...data.map(d => parseInt(d.date.slice(0, 4), 10)))
+  }, [data, currentYear])
+
+  const calData = React.useMemo(() => toCalendarData(data, year), [data, year])
+
+  const gameMap = React.useMemo(() => {
+    const m = new Map<string, PlaytimeGame[]>()
+    for (const d of data) m.set(d.date, d.games ?? [])
+    return m
+  }, [data])
+
+  const yearMinutes = React.useMemo(
+    () => data.filter(d => d.date.startsWith(`${year}-`)).reduce((s, d) => s + d.minutes, 0),
+    [data, year]
+  )
+
+  const stats = React.useMemo(() => computeStats(data), [data])
 
   return (
-    <div className="flex flex-col gap-[var(--spacing-2)]">
-      <div className="overflow-x-auto">
-        <ActivityCalendar
-          data={calData}
-          colorScheme="dark"
-          theme={THEME}
-          blockSize={10}
-          blockMargin={2}
-          blockRadius={2}
-          fontSize={11}
-          weekStart={1}
-          showWeekdayLabels={['mon', 'wed', 'fri']}
-          showMonthLabels
-          showColorLegend={false}
-          showTotalCount={false}
-          tooltips={{
-            activity: {
-              text: (a: Activity) => {
-                if (a.count === 0) return 'No playtime'
-                const d = new Date(a.date + 'T12:00:00')
-                const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                return `${formatDuration(a.count)} — ${label}`
-              },
-            },
-          }}
-          style={{ color: 'var(--color-text-muted)', fontFamily: 'var(--font-sans)' }}
-        />
+    <div className="flex flex-col items-center gap-[var(--spacing-3)]">
+      {/* Year navigation */}
+      <div className="flex items-center gap-[var(--spacing-4)]">
+        <button
+          onClick={() => setYear(y => y - 1)}
+          disabled={year <= earliestYear}
+          className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors duration-[var(--motion-duration-fast)]"
+          aria-label="Previous year"
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <span className="text-sm font-[var(--font-weight-semibold)] text-[var(--color-text-primary)] tabular-nums w-10 text-center select-none">
+          {year}
+        </span>
+        <button
+          onClick={() => setYear(y => y + 1)}
+          disabled={year >= currentYear}
+          className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors duration-[var(--motion-duration-fast)]"
+          aria-label="Next year"
+        >
+          <ChevronRight size={16} />
+        </button>
       </div>
-      {totalMinutes > 0 && (
-        <p className="text-xs text-[var(--color-text-muted)] tabular-nums">
-          {formatDuration(totalMinutes)} total this year
-        </p>
-      )}
+
+      {/* Heatmap */}
+      <div className="w-full overflow-x-auto">
+        <div className="flex justify-center min-w-fit">
+          <TooltipProvider delayDuration={100}>
+            <ActivityCalendar
+              data={calData}
+              colorScheme="dark"
+              theme={THEME}
+              blockSize={14}
+              blockMargin={3}
+              blockRadius={3}
+              fontSize={13}
+              weekStart={1}
+              showWeekdayLabels={false}
+              showMonthLabels={false}
+              showColorLegend={false}
+              showTotalCount={false}
+              renderBlock={(block, activity) => {
+                const games = gameMap.get(activity.date) ?? []
+                const d = new Date(activity.date + 'T12:00:00')
+                const dateLabel = d.toLocaleDateString('en-US', {
+                  weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+                })
+                return (
+                  <Tooltip key={activity.date}>
+                    <TooltipTrigger asChild>{block}</TooltipTrigger>
+                    <TooltipContent
+                      side="top"
+                      className="p-[var(--spacing-2)] min-w-36 max-w-64"
+                    >
+                      <p className="text-[var(--color-text-muted)] mb-[var(--spacing-1)]">
+                        {dateLabel}
+                      </p>
+                      {activity.count === 0 ? (
+                        <p className="text-[var(--color-text-muted)]">No playtime</p>
+                      ) : (
+                        <div className="flex flex-col gap-[var(--spacing-1)]">
+                          {games.map(g => (
+                            <div key={g.title_id} className="flex items-center gap-[var(--spacing-2)]">
+                              <GameIcon
+                                iconUrl={iconUrls?.[g.title_id] ?? null}
+                                name={g.display_name}
+                                size={20}
+                              />
+                              <span className="flex-1 min-w-0 truncate text-[var(--color-text-primary)]">
+                                {g.display_name}
+                              </span>
+                              <span className="text-[var(--color-text-muted)] tabular-nums shrink-0 pl-[var(--spacing-2)]">
+                                {fmt(g.minutes)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                )
+              }}
+              style={{ color: 'var(--color-text-muted)', fontFamily: 'var(--font-sans)' }}
+            />
+          </TooltipProvider>
+        </div>
+      </div>
+
+      {/* Year total — always visible so height stays stable across year changes */}
+      <p className="text-xs text-[var(--color-text-muted)] tabular-nums">
+        {yearMinutes > 0 ? `${fmt(yearMinutes)} in ${year}` : `No playtime in ${year}`}
+      </p>
+
+      {/* Static stats bar — computed from all data, not filtered by year */}
+      <div className="flex flex-wrap justify-center gap-x-[var(--spacing-6)] gap-y-[var(--spacing-1)] text-xs text-[var(--color-text-muted)]">
+        <span>
+          Last 7d avg:{' '}
+          <span className="font-[var(--font-weight-semibold)] text-[var(--color-success-text)]">
+            {fmt(stats.last7Avg)}
+          </span>
+        </span>
+        <span>
+          Today:{' '}
+          <span className="font-[var(--font-weight-semibold)] text-[var(--color-success-text)]">
+            {stats.todayMinutes > 0 ? fmt(stats.todayMinutes) : '—'}
+          </span>
+        </span>
+        <span>
+          Longest streak:{' '}
+          <span className="font-[var(--font-weight-semibold)] text-[var(--color-info-text)]">
+            {stats.longestStreak} {stats.longestStreak === 1 ? 'day' : 'days'}
+          </span>
+        </span>
+        <span>
+          Current streak:{' '}
+          <span className="font-[var(--font-weight-semibold)] text-[var(--color-info-text)]">
+            {stats.currentStreak} {stats.currentStreak === 1 ? 'day' : 'days'}
+          </span>
+        </span>
+      </div>
     </div>
   )
 }
