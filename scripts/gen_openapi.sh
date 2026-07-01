@@ -5,7 +5,8 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 docker compose run --rm test python - << 'PYEOF'
-import json, tempfile
+import sys, json, tempfile
+sys.path.insert(0, "/app/server/src")
 from pathlib import Path
 
 tmp = Path(tempfile.mkdtemp())
