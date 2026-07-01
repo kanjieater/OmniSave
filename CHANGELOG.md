@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.4.0](https://github.com/kanjieater/OmniSave/compare/v1.3.1...v1.4.0) (2026-07-01)
+
+
+### Features
+
+* add platform-agnostic activity event ingestion ([1dba36c](https://github.com/kanjieater/OmniSave/commit/1dba36c90f7f2a4437e2eca14893ec3f70d08469))
+* auto-generate openapi.json in CI ([8d3ec54](https://github.com/kanjieater/OmniSave/commit/8d3ec543943808bcfdca31ef1ac259b4c4903ecb))
+* auto-generate openapi.json in CI + restore gen_openapi.sh ([2766311](https://github.com/kanjieater/OmniSave/commit/2766311954919c98153a239acbedb5083e1bad4d))
+* platform-agnostic activity event ingestion ([5fdb97c](https://github.com/kanjieater/OmniSave/commit/5fdb97c75a2d312c9212a755c816dd9207831c79))
+
+
+### Bug Fixes
+
+* add sys.path so import works when python runs outside pytest ([d305b3f](https://github.com/kanjieater/OmniSave/commit/d305b3f214db6c6b7239ecb14b8fe640083de0f4))
+* address PR [#30](https://github.com/kanjieater/OmniSave/issues/30) review — atomicity, auth dedup, sql style ([979f9d3](https://github.com/kanjieater/OmniSave/commit/979f9d3d147f5d1b360aca53030c0d57e2270866))
+* resolve test regressions from UUID path param annotations ([0fab526](https://github.com/kanjieater/OmniSave/commit/0fab526fd630e02ec03665e5e101fd8b1b509844))
+
 ## [1.3.1](https://github.com/kanjieater/OmniSave/compare/v1.3.0...v1.3.1) (2026-06-23)
 
 
