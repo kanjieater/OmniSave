@@ -1,9 +1,9 @@
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { ActivityCalendar } from 'react-activity-calendar'
 import type { PlaytimeDay, PlaytimeGame } from '@/types'
 import { GameIcon } from '@/components/ui/game-icon'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 type Activity = { date: string; count: number; level: number }
 
@@ -103,6 +103,11 @@ function computeStats(data: PlaytimeDay[]): Stats {
   return { todayMinutes, last7Avg, longestStreak, currentStreak }
 }
 
+interface TooltipState {
+  date: string
+  rect: DOMRect
+}
+
 interface Props {
   data: PlaytimeDay[]
   iconUrls?: Record<string, string | null>
@@ -111,18 +116,17 @@ interface Props {
 export function DayHeatmap({ data, iconUrls }: Props) {
   const currentYear = new Date().getFullYear()
   const [year, setYear] = React.useState(currentYear)
-  const [openDate, setOpenDate] = React.useState<string | null>(null)
+  const [tooltip, setTooltip] = React.useState<TooltipState | null>(null)
   const calendarWrapperRef = React.useRef<HTMLDivElement>(null)
 
-  // Close tooltip when tapping outside the calendar on touch devices
   React.useEffect(() => {
-    if (!openDate) return
+    if (!tooltip) return
     const onDown = (e: PointerEvent) => {
-      if (!calendarWrapperRef.current?.contains(e.target as Node)) setOpenDate(null)
+      if (!calendarWrapperRef.current?.contains(e.target as Node)) setTooltip(null)
     }
     document.addEventListener('pointerdown', onDown)
     return () => document.removeEventListener('pointerdown', onDown)
-  }, [openDate])
+  }, [tooltip])
 
   const earliestYear = React.useMemo(() => {
     if (data.length === 0) return currentYear
@@ -143,6 +147,14 @@ export function DayHeatmap({ data, iconUrls }: Props) {
   )
 
   const stats = React.useMemo(() => computeStats(data), [data])
+
+  const tooltipGames = tooltip ? (gameMap.get(tooltip.date) ?? []) : []
+  const tooltipMinutes = tooltip ? (data.find(d => d.date === tooltip.date)?.minutes ?? 0) : 0
+  const tooltipDateLabel = tooltip
+    ? new Date(tooltip.date + 'T12:00:00').toLocaleDateString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+      })
+    : ''
 
   return (
     <div className="flex flex-col items-center gap-[var(--spacing-3)]">
@@ -172,87 +184,92 @@ export function DayHeatmap({ data, iconUrls }: Props) {
       {/* Heatmap */}
       <div className="w-full overflow-x-auto">
         <div ref={calendarWrapperRef} className="flex justify-center min-w-fit">
-          <TooltipProvider delayDuration={100}>
-            <ActivityCalendar
-              data={calData}
-              colorScheme="dark"
-              theme={THEME}
-              blockSize={14}
-              blockMargin={3}
-              blockRadius={3}
-              fontSize={13}
-              weekStart={1}
-              showWeekdayLabels={false}
-              showMonthLabels={false}
-              showColorLegend={false}
-              showTotalCount={false}
-              renderBlock={(block, activity) => {
-                const games = gameMap.get(activity.date) ?? []
-                const d = new Date(activity.date + 'T12:00:00')
-                const dateLabel = d.toLocaleDateString('en-US', {
-                  weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
-                })
-                const enriched = React.cloneElement(
-                  block as React.ReactElement<React.SVGProps<SVGRectElement>>,
-                  {
-                    onPointerEnter: () => setOpenDate(activity.date),
-                    onPointerLeave: (e: React.PointerEvent) => {
-                      if (e.pointerType === 'mouse') setOpenDate(null)
-                    },
-                    onPointerDown: (e: React.PointerEvent) => {
-                      if (e.pointerType !== 'mouse') {
-                        e.preventDefault()
-                        setOpenDate(prev => prev === activity.date ? null : activity.date)
-                      }
-                    },
-                  }
-                )
-                return (
-                  <Tooltip
-                    key={activity.date}
-                    open={openDate === activity.date}
-                  >
-                    <TooltipTrigger asChild>{enriched}</TooltipTrigger>
-                    <TooltipContent
-                      side="top"
-                      className="p-0 overflow-hidden min-w-52 max-w-[min(340px,_calc(100vw-2rem))]"
-                    >
-                      <p className="text-[var(--color-text-muted)] text-xs px-[var(--spacing-3)] pt-[var(--spacing-2)] pb-[var(--spacing-1)]">
-                        {dateLabel}
-                      </p>
-                      {activity.count === 0 ? (
-                        <p className="text-sm text-[var(--color-text-muted)] px-[var(--spacing-3)] pb-[var(--spacing-2)]">No playtime</p>
-                      ) : (
-                        <div>
-                          {games.map(g => (
-                            <div
-                              key={g.title_id}
-                              className="flex items-center gap-[var(--spacing-3)] py-[var(--spacing-2)] px-[var(--spacing-3)] border-t border-[var(--color-border-subtle)]"
-                            >
-                              <GameIcon
-                                iconUrl={iconUrls?.[g.title_id] ?? null}
-                                name={g.display_name}
-                                size={40}
-                              />
-                              <span className="flex-1 min-w-0 truncate text-sm text-[var(--color-text-primary)]">
-                                {g.display_name}
-                              </span>
-                              <span className="text-sm text-[var(--color-text-muted)] tabular-nums shrink-0 pl-[var(--spacing-3)]">
-                                {fmt(g.minutes)}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </TooltipContent>
-                  </Tooltip>
-                )
-              }}
-              style={{ color: 'var(--color-text-muted)', fontFamily: 'var(--font-sans)' }}
-            />
-          </TooltipProvider>
+          <ActivityCalendar
+            data={calData}
+            colorScheme="dark"
+            theme={THEME}
+            blockSize={14}
+            blockMargin={3}
+            blockRadius={3}
+            fontSize={13}
+            weekStart={1}
+            showWeekdayLabels={false}
+            showMonthLabels={false}
+            showColorLegend={false}
+            showTotalCount={false}
+            renderBlock={(block, activity) => {
+              const enriched = React.cloneElement(
+                block as React.ReactElement<React.SVGProps<SVGRectElement>>,
+                {
+                  style: { cursor: 'pointer' },
+                  onPointerEnter: (e: React.PointerEvent<SVGRectElement>) => {
+                    if (e.pointerType === 'mouse') {
+                      setTooltip({ date: activity.date, rect: e.currentTarget.getBoundingClientRect() })
+                    }
+                  },
+                  onPointerLeave: (e: React.PointerEvent) => {
+                    if (e.pointerType === 'mouse') setTooltip(null)
+                  },
+                  onPointerDown: (e: React.PointerEvent<SVGRectElement>) => {
+                    if (e.pointerType !== 'mouse') {
+                      e.preventDefault()
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      setTooltip(prev => prev?.date === activity.date ? null : { date: activity.date, rect })
+                    }
+                  },
+                }
+              )
+              return <React.Fragment key={activity.date}>{enriched}</React.Fragment>
+            }}
+            style={{ color: 'var(--color-text-muted)', fontFamily: 'var(--font-sans)' }}
+          />
         </div>
       </div>
+
+      {/* Tooltip portal — custom, no Radix, works on both mouse and touch */}
+      {tooltip && createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            top: tooltip.rect.top - 8,
+            left: Math.max(8, Math.min(
+              tooltip.rect.left + tooltip.rect.width / 2,
+              window.innerWidth - 8
+            )),
+            transform: 'translate(-50%, -100%)',
+            zIndex: 9999,
+            minWidth: '13rem',
+            maxWidth: `min(340px, calc(100vw - 2rem))`,
+            pointerEvents: 'none',
+          }}
+          className="rounded-[var(--radius-md)] border border-[var(--color-border-base)] bg-[var(--color-bg-elevated)] shadow-[var(--shadow-lg)]"
+        >
+          <p className="text-[var(--color-text-muted)] text-xs px-[var(--spacing-3)] pt-[var(--spacing-2)] pb-[var(--spacing-1)]">
+            {tooltipDateLabel}
+          </p>
+          {tooltipMinutes === 0 ? (
+            <p className="text-sm text-[var(--color-text-muted)] px-[var(--spacing-3)] pb-[var(--spacing-2)]">No playtime</p>
+          ) : (
+            <div>
+              {tooltipGames.map(g => (
+                <div
+                  key={g.title_id}
+                  className="flex items-center gap-[var(--spacing-3)] py-[var(--spacing-2)] px-[var(--spacing-3)] border-t border-[var(--color-border-subtle)]"
+                >
+                  <GameIcon iconUrl={iconUrls?.[g.title_id] ?? null} name={g.display_name} size={40} />
+                  <span className="flex-1 min-w-0 truncate text-sm text-[var(--color-text-primary)]">
+                    {g.display_name}
+                  </span>
+                  <span className="text-sm text-[var(--color-text-muted)] tabular-nums shrink-0 pl-[var(--spacing-3)]">
+                    {fmt(g.minutes)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
 
       {/* Year total — always visible so height stays stable across year changes */}
       <p className="text-xs text-[var(--color-text-muted)] tabular-nums">
