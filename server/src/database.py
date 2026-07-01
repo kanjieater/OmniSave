@@ -2550,11 +2550,13 @@ def get_daily_playtime(
     owner_user_id: str,
     application_id: str | None = None,
 ) -> list[dict]:
-    """Return daily playtime totals in minutes derived from APPLICATION_STARTED/EXITED pairs.
+    """Return daily playtime totals in minutes derived from active-interval event pairs.
 
-    Pairs each STARTED with the nearest EXITED on the same (device_id, application_id,
-    profile_id) using monotonic_timestamp. Assumes a well-formed event stream; see
-    test_daily_playtime.py for documented edge-case behaviour.
+    Pairs each APPLICATION_FOCUSED with the nearest APPLICATION_UNFOCUSED on the same
+    (device_id, application_id, profile_id) using monotonic_timestamp. These events mark
+    when an application is actively in use (foreground/screen-on). Clients are expected to
+    emit FOCUSED/UNFOCUSED to represent active time; STARTED/EXITED bracket the full
+    lifecycle and may include background suspension.
     """
     sql = """
         WITH sessions AS (
@@ -2567,10 +2569,10 @@ def get_daily_playtime(
             e.device_id = s.device_id
             AND e.application_id IS s.application_id
             AND e.profile_id IS s.profile_id
-            AND e.event_type = 'APPLICATION_EXITED'
+            AND e.event_type = 'APPLICATION_UNFOCUSED'
             AND e.monotonic_timestamp > s.monotonic_timestamp
             AND e.monotonic_timestamp - s.monotonic_timestamp <= 86400
-          WHERE s.event_type = 'APPLICATION_STARTED'
+          WHERE s.event_type = 'APPLICATION_FOCUSED'
             AND s.owner_user_id = ?
             AND (? IS NULL OR s.application_id = ?)
           GROUP BY s.device_id, s.application_id, s.event_timestamp, s.monotonic_timestamp
@@ -2579,26 +2581,31 @@ def get_daily_playtime(
           play_date AS date,
           title_id,
           COALESCE(l.label, title_id) AS display_name,
-          CAST(SUM(duration_sec) / 60 AS INTEGER) AS minutes
+          SUM(duration_sec) AS total_sec
         FROM sessions
         LEFT JOIN labels l ON l.entity_type = 'game' AND l.entity_id = title_id
         WHERE duration_sec > 0
         GROUP BY play_date, title_id
-        ORDER BY play_date, minutes DESC
+        ORDER BY play_date, total_sec DESC
     """
     rows = conn.execute(sql, (owner_user_id, application_id, application_id)).fetchall()
     days: dict[str, dict] = {}
     for r in rows:
         date = r["date"]
         if date not in days:
-            days[date] = {"date": date, "minutes": 0, "games": []}
-        days[date]["minutes"] += r["minutes"]
-        days[date]["games"].append({
-            "title_id": r["title_id"],
-            "display_name": r["display_name"],
-            "minutes": r["minutes"],
-        })
-    return list(days.values())
+            days[date] = {"date": date, "total_sec": 0, "games": []}
+        days[date]["total_sec"] += r["total_sec"]
+        days[date]["games"].append(
+            {
+                "title_id": r["title_id"],
+                "display_name": r["display_name"],
+                "minutes": r["total_sec"] // 60,
+            }
+        )
+    return [
+        {"date": d["date"], "minutes": d["total_sec"] // 60, "games": d["games"]}
+        for d in days.values()
+    ]
 
 
 def list_device_profiles(conn, device_id: str, user_id: str = "") -> list[dict]:

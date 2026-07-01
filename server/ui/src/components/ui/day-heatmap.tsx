@@ -75,7 +75,7 @@ function computeStats(data: PlaytimeDay[]): Stats {
   let prev: string | null = null
   for (const date of sorted) {
     if (prev) {
-      const gap = (new Date(date + 'T12:00:00').getTime() - new Date(prev + 'T12:00:00').getTime()) / 86400_000
+      const gap = (new Date(date + 'T00:00:00Z').getTime() - new Date(prev + 'T00:00:00Z').getTime()) / 86400_000
       run = gap === 1 ? run + 1 : 1
     } else {
       run = 1
@@ -86,7 +86,7 @@ function computeStats(data: PlaytimeDay[]): Stats {
 
   function countBack(from: string): number {
     let count = 0
-    let d = new Date(from + 'T12:00:00')
+    let d = new Date(from + 'T12:00:00Z')
     while (playDates.has(toISO(d))) {
       count++
       d = new Date(d.getTime() - 86400_000)
