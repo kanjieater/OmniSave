@@ -111,6 +111,18 @@ interface Props {
 export function DayHeatmap({ data, iconUrls }: Props) {
   const currentYear = new Date().getFullYear()
   const [year, setYear] = React.useState(currentYear)
+  const [openDate, setOpenDate] = React.useState<string | null>(null)
+  const calendarWrapperRef = React.useRef<HTMLDivElement>(null)
+
+  // Close tooltip when tapping outside the calendar on touch devices
+  React.useEffect(() => {
+    if (!openDate) return
+    const onDown = (e: PointerEvent) => {
+      if (!calendarWrapperRef.current?.contains(e.target as Node)) setOpenDate(null)
+    }
+    document.addEventListener('pointerdown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
+  }, [openDate])
 
   const earliestYear = React.useMemo(() => {
     if (data.length === 0) return currentYear
@@ -159,7 +171,7 @@ export function DayHeatmap({ data, iconUrls }: Props) {
 
       {/* Heatmap */}
       <div className="w-full overflow-x-auto">
-        <div className="flex justify-center min-w-fit">
+        <div ref={calendarWrapperRef} className="flex justify-center min-w-fit">
           <TooltipProvider delayDuration={100}>
             <ActivityCalendar
               data={calData}
@@ -180,9 +192,28 @@ export function DayHeatmap({ data, iconUrls }: Props) {
                 const dateLabel = d.toLocaleDateString('en-US', {
                   weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
                 })
+                const enriched = React.cloneElement(
+                  block as React.ReactElement<React.SVGProps<SVGRectElement>>,
+                  {
+                    onPointerEnter: () => setOpenDate(activity.date),
+                    onPointerLeave: (e: React.PointerEvent) => {
+                      if (e.pointerType === 'mouse') setOpenDate(null)
+                    },
+                    onPointerDown: (e: React.PointerEvent) => {
+                      if (e.pointerType !== 'mouse') {
+                        e.preventDefault()
+                        setOpenDate(prev => prev === activity.date ? null : activity.date)
+                      }
+                    },
+                  }
+                )
                 return (
-                  <Tooltip key={activity.date}>
-                    <TooltipTrigger asChild>{block}</TooltipTrigger>
+                  <Tooltip
+                    key={activity.date}
+                    open={openDate === activity.date}
+                    onOpenChange={(open) => { if (!open) setOpenDate(null) }}
+                  >
+                    <TooltipTrigger asChild>{enriched}</TooltipTrigger>
                     <TooltipContent
                       side="top"
                       className="p-0 overflow-hidden min-w-52 max-w-[min(340px,_calc(100vw-2rem))]"
