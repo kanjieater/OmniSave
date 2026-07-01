@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
 from pathlib import Path
 
 import xxhash
@@ -19,6 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import database as db
+import device_auth as _auth
 import processing
 import titledb
 
@@ -30,13 +30,13 @@ _conn = None
 _staging_dir: Path | None = None
 _archive_dir: Path | None = None
 
-_DEVICE_RE = re.compile(r"^[A-Za-z0-9:_-]{4,64}$")
-_MAC_COLON_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 _TITLE_RE = re.compile(r"^[A-Fa-f0-9]{16}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 CHECKPOINT_SIZE = 4 * 1024 * 1024  # 4 MB — xxHash32 granularity
 WINDOW_SIZE = 64 * 1024 * 1024  # 64 MB — HTTP transport granularity
+
+TrustedDevice = _auth.TrustedDevice
 
 
 def init(conn, staging_dir: Path, archive_dir: Path) -> None:
@@ -46,57 +46,8 @@ def init(conn, staging_dir: Path, archive_dir: Path) -> None:
     _archive_dir = archive_dir
 
 
-def _device(request: Request) -> str | None:
-    did = request.headers.get("X-Device-ID", "").strip()
-    if _MAC_COLON_RE.match(did):
-        did = did.replace(":", "").upper()
-    return did if _DEVICE_RE.match(did) else None
-
-
-@dataclass
-class TrustedDevice:
-    device_id: str
-    user_id: str  # resolved from device_auth; never empty in this branch
-
-
-def _require_device_auth(request: Request) -> "TrustedDevice | JSONResponse":
-    """
-    Returns TrustedDevice on valid token. Returns 401 for everything else.
-    No anonymous fallback — unpaired devices are rejected.
-    """
-    device_id = _device(request)
-    if not device_id:
-        log.warning("auth: missing/invalid X-Device-ID from %s", request.client)
-        return JSONResponse({"error": "X-Device-ID header required or invalid"}, status_code=401)
-
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer sk_device_"):
-        log.warning("auth: no valid Bearer device=%s path=%s", device_id, request.url.path)
-        return JSONResponse(
-            {"error": "device token required — pair this device first"}, status_code=401
-        )
-
-    token = auth[7:]
-    row = db.get_device_auth_by_token(_conn, token)
-    if not row or row["device_id"] != device_id:
-        log.warning(
-            "auth: token mismatch device=%s token_prefix=%.12s path=%s",
-            device_id,
-            token,
-            request.url.path,
-        )
-        return JSONResponse({"error": "invalid device token"}, status_code=401)
-    # Reject soft-deleted devices even if their token somehow survived revocation
-    deleted = _conn.execute(
-        "SELECT deleted_at FROM devices WHERE device_id=?", (device_id,)
-    ).fetchone()
-    if deleted and deleted["deleted_at"] is not None:
-        log.warning("auth: device removed device=%s", device_id)
-        return JSONResponse(
-            {"error": "device has been removed — re-pair to continue"}, status_code=401
-        )
-    db.touch_device_last_seen(_conn, device_id)
-    return TrustedDevice(device_id=device_id, user_id=row["user_id"])
+def _require_device_auth(request: Request) -> "_auth.TrustedDevice | JSONResponse":
+    return _auth.require_device_auth(_conn, request)
 
 
 def _err(msg: str, status: int = 400) -> JSONResponse:
@@ -624,7 +575,7 @@ def device_config(body: DeviceConfigBody, request: Request):
        return {"device_token": "<token>"} and clear the flag.
     3. Otherwise: return {}.
     """
-    device_id = _device(request)
+    device_id = _auth.normalize_device_id(request)
     if not device_id:
         return _err("X-Device-ID required", 400)
 

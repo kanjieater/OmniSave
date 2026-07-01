@@ -2484,27 +2484,33 @@ def sync_romm_catalog_to_device(conn, username: str, romm_device_id: str) -> Non
 
 
 def insert_play_events(conn, device_id: str, owner_user_id: str, events: list[dict]) -> int:
-    """INSERT OR IGNORE raw activity events. Returns count of rows actually inserted."""
+    """INSERT OR IGNORE raw activity events atomically. Returns count of rows actually inserted."""
     now = _now()
     inserted = 0
-    for e in events:
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO device_play_events"
-            " (device_id, owner_user_id, profile_id, application_id,"
-            "  event_type, event_timestamp, monotonic_timestamp, recorded_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                device_id,
-                owner_user_id,
-                e.get("profile_id"),
-                e.get("application_id"),
-                e["event_type"],
-                e["event_timestamp"],
-                e["monotonic_timestamp"],
-                now,
-            ),
-        )
-        inserted += cur.rowcount
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for e in events:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO device_play_events"
+                " (device_id, owner_user_id, profile_id, application_id,"
+                "  event_type, event_timestamp, monotonic_timestamp, recorded_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    device_id,
+                    owner_user_id,
+                    e.get("profile_id"),
+                    e.get("application_id"),
+                    e["event_type"],
+                    e["event_timestamp"],
+                    e["monotonic_timestamp"],
+                    now,
+                ),
+            )
+            inserted += cur.rowcount
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     return inserted
 
 
@@ -2530,11 +2536,12 @@ def get_play_events(
     if since is not None:
         clauses.append("event_timestamp >= ?")
         params.append(since)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    rows = conn.execute(
-        f"SELECT * FROM device_play_events {where} ORDER BY event_timestamp ASC",
-        params,
-    ).fetchall()
+    sql = (
+        "SELECT * FROM device_play_events"
+        + (" WHERE " + " AND ".join(clauses) if clauses else "")
+        + " ORDER BY event_timestamp ASC"
+    )
+    rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
 

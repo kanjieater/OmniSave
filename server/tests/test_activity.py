@@ -262,3 +262,32 @@ def test_get_play_events_no_filters(client, conn):
     post_activity_events(client, DEVICE_B, [{**_EVT, "event_timestamp": 1700000002}])
     rows = db.get_play_events(conn)
     assert len(rows) == 2
+
+
+def test_insert_play_events_rolls_back_on_error(conn):
+    """ROLLBACK path: a bad event mid-batch leaves no rows committed."""
+    import database as db
+    from unittest.mock import patch
+
+    good = {**_EVT, "event_timestamp": 9000000001, "monotonic_timestamp": 9001}
+    events = [good]
+
+    original_execute = conn.execute
+
+    call_count = [0]
+
+    def patched_execute(sql, params=()):
+        if "INSERT OR IGNORE" in sql:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("simulated mid-batch failure")
+        return original_execute(sql, params)
+
+    with patch.object(conn, "execute", side_effect=patched_execute):
+        try:
+            db.insert_play_events(conn, "AABBCC112233", "admin", events)
+        except RuntimeError:
+            pass
+
+    rows = db.get_play_events(conn, device_id="AABBCC112233")
+    assert rows == [], "rolled-back rows must not persist"
