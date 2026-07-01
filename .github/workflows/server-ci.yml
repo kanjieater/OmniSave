@@ -78,10 +78,16 @@ jobs:
   diff-cover:
     name: Diff coverage (100% on changed lines)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Check out the real branch head (not the detached merge commit) so
+          # git push works when we auto-commit a stale spec.
+          ref: ${{ github.head_ref || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -90,6 +96,46 @@ jobs:
 
       - name: Build test image
         run: docker compose build test
+
+      - name: Generate OpenAPI spec
+        run: |
+          docker compose run --rm test python - << 'PYEOF'
+          import json, tempfile
+          from pathlib import Path
+
+          tmp = Path(tempfile.mkdtemp())
+          (tmp / "staging").mkdir()
+          (tmp / "archive").mkdir()
+
+          import database as db
+          conn = db.open_db(tmp / "spec.db")
+
+          import main, sync_api, sync_deliver_api, activity_api, ui_api
+          sync_api.init(conn, tmp / "staging", tmp / "archive")
+          sync_deliver_api.init(conn, tmp / "staging", tmp / "archive")
+          activity_api.init(conn)
+          ui_api.init(conn, tmp / "archive")
+
+          from fastapi.testclient import TestClient
+          spec = TestClient(main.app).get("/openapi.json").json()
+
+          out = Path("/app/server/src/openapi.json")
+          out.write_text(json.dumps(spec, indent=2) + "\n")
+          print(f"Regenerated {out}")
+          PYEOF
+
+      - name: Commit spec if stale
+        # Only push back on direct pushes; PR auto-commits would create an
+        # unchecked commit that blocks merge when branch protection is enabled.
+        if: github.event_name == 'push'
+        run: |
+          if ! git diff --quiet server/src/openapi.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add server/src/openapi.json
+            git commit -m "chore: auto-update openapi.json"
+            git push
+          fi
 
       - name: Run tests + diff-cover
         run: docker compose run --rm test
