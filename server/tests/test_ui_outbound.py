@@ -128,7 +128,7 @@ def test_retry_requires_auth(client, conn):
 
 def test_retry_unknown_transaction_returns_404(client):
     token = _bootstrap(client)
-    r = _retry(client, token, "does-not-exist")
+    r = _retry(client, token, "00000000-0000-0000-0000-000000000000")
     assert r.status_code == 404
 
 

@@ -3,6 +3,8 @@ UI push-to-device endpoint tests.
 POST /api/v1/ui/snapshots/{transaction_id}/push
 """
 
+import uuid
+
 import database as db
 from helpers import DEVICE_A, DEVICE_B, TITLE_1, TITLE_2, do_upload, poll_queue, login_admin, auth_header, report_catalog
 
@@ -169,9 +171,15 @@ def test_push_requires_auth(client, conn):
     assert r.status_code == 401
 
 
+def test_push_invalid_uuid_format_returns_422(client):
+    token = _bootstrap(client)
+    r = _push(client, token, "not-a-uuid", device_ids=[DEVICE_B])
+    assert r.status_code == 422
+
+
 def test_push_unknown_transaction_returns_404(client):
     token = _bootstrap(client)
-    r = _push(client, token, "does-not-exist", device_ids=[DEVICE_B])
+    r = _push(client, token, str(uuid.uuid4()), device_ids=[DEVICE_B])
     assert r.status_code == 404
 
 

@@ -235,6 +235,27 @@ CREATE TABLE IF NOT EXISTS device_installed_games (
     PRIMARY KEY (device_id, title_id)
 );
 CREATE INDEX IF NOT EXISTS idx_dig_title ON device_installed_games (title_id);
+
+-- Raw activity events reported by trusted devices.
+-- Platform-agnostic: the server has no concept of Switch/Nintendo/pdm.
+-- Deduplication is content-addressed; resubmission is always safe.
+CREATE TABLE IF NOT EXISTS device_play_events (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id            TEXT    NOT NULL,
+    owner_user_id        TEXT    NOT NULL,
+    profile_id           TEXT    NOT NULL DEFAULT '',
+    application_id       TEXT    NOT NULL DEFAULT '',
+    event_type           TEXT    NOT NULL CHECK(event_type IN (
+                             'APPLICATION_STARTED', 'APPLICATION_EXITED',
+                             'APPLICATION_FOCUSED', 'APPLICATION_UNFOCUSED',
+                             'PROFILE_ACTIVE', 'PROFILE_INACTIVE')),
+    event_timestamp      INTEGER NOT NULL,
+    monotonic_timestamp  INTEGER NOT NULL,
+    recorded_at          TEXT    NOT NULL,
+    UNIQUE(device_id, event_type, event_timestamp, monotonic_timestamp, application_id, profile_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dpe_device_app ON device_play_events(device_id, application_id);
+CREATE INDEX IF NOT EXISTS idx_dpe_time       ON device_play_events(event_timestamp DESC);
 """
 
 
@@ -2460,6 +2481,71 @@ def sync_romm_catalog_to_device(conn, username: str, romm_device_id: str) -> Non
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+def insert_play_events(conn, device_id: str, owner_user_id: str, events: list[dict]) -> int:
+    """INSERT OR IGNORE raw activity events atomically. Returns count of rows actually inserted."""
+    now = _now()
+    inserted = 0
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for e in events:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO device_play_events"
+                " (device_id, owner_user_id, profile_id, application_id,"
+                "  event_type, event_timestamp, monotonic_timestamp, recorded_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    device_id,
+                    owner_user_id,
+                    e.get("profile_id") or "",
+                    e.get("application_id") or "",
+                    e["event_type"],
+                    e["event_timestamp"],
+                    e["monotonic_timestamp"],
+                    now,
+                ),
+            )
+            inserted += cur.rowcount
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return inserted
+
+
+def get_play_events(
+    conn,
+    device_id: str | None = None,
+    application_id: str | None = None,
+    owner_user_id: str | None = None,
+    since: int | None = None,
+    limit: int = 1000,
+    offset: int = 0,
+) -> list[dict]:
+    """Return raw device_play_events rows matching the given filters."""
+    clauses: list[str] = []
+    params: list = []
+    if device_id is not None:
+        clauses.append("device_id = ?")
+        params.append(device_id)
+    if application_id is not None:
+        clauses.append("application_id = ?")
+        params.append(application_id)
+    if owner_user_id is not None:
+        clauses.append("owner_user_id = ?")
+        params.append(owner_user_id)
+    if since is not None:
+        clauses.append("event_timestamp >= ?")
+        params.append(since)
+    sql = (
+        "SELECT * FROM device_play_events"
+        + (" WHERE " + " AND ".join(clauses) if clauses else "")
+        + " ORDER BY event_timestamp ASC"
+        + " LIMIT ? OFFSET ?"
+    )
+    rows = conn.execute(sql, params + [limit, offset]).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_device_profiles(conn, device_id: str, user_id: str = "") -> list[dict]:

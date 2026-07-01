@@ -14,6 +14,7 @@ import re as _re
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -1375,17 +1376,18 @@ def list_errors(request: Request):
 
 
 @router.post("/errors/{transaction_id}/acknowledge")
-def acknowledge_error(transaction_id: str, request: Request):
+def acknowledge_error(transaction_id: UUID, request: Request):
     err = _auth_err(request)
     if err:
         return err
+    txn_id = str(transaction_id)
     row = _conn.execute(
         "SELECT 1 FROM sync_transactions WHERE transaction_id=? AND state='FAILED'",
-        (transaction_id,),
+        (txn_id,),
     ).fetchone()
     if not row:
         return JSONResponse({"error": "not found"}, status_code=404)
-    db.set_config(_conn, f"ack:{transaction_id}", "1")
+    db.set_config(_conn, f"ack:{txn_id}", "1")
     return {"ok": True}
 
 
@@ -1687,12 +1689,13 @@ class PushBody(BaseModel):
 
 
 @router.post("/snapshots/{transaction_id}/push")
-def push_snapshot(transaction_id: str, body: PushBody, request: Request):
+def push_snapshot(transaction_id: UUID, body: PushBody, request: Request):
     err = _auth_err(request)
     if err:
         return err
     username = _current_username(request) or ""
-    txn = db.get_transaction(_conn, transaction_id)
+    txn_id = str(transaction_id)
+    txn = db.get_transaction(_conn, txn_id)
     if not txn:
         return JSONResponse({"error": "not found"}, status_code=404)
     _pushable = {"READY_FOR_RESTORE", "COMPLETED"}
@@ -1731,7 +1734,7 @@ def push_snapshot(transaction_id: str, body: PushBody, request: Request):
         )
         oid = db.create_outbound_transaction(
             _conn,
-            transaction_id,
+            txn_id,
             device_id,
             target_profile_uid=target_profile,
         )
@@ -1744,7 +1747,7 @@ def push_snapshot(transaction_id: str, body: PushBody, request: Request):
             transaction_id=oid,
         )
         outbound_ids.append(oid)
-    log.info("ui push txn=%s → %d device(s)", transaction_id[:8], len(outbound_ids))
+    log.info("ui push txn=%s → %d device(s)", txn_id[:8], len(outbound_ids))
     return JSONResponse({"ok": True, "outbound_ids": outbound_ids}, status_code=202)
 
 
@@ -1838,11 +1841,12 @@ def device_restore_all(device_id: str, request: Request):
 
 
 @router.post("/outbounds/{transaction_id}/retry")
-def retry_outbound(transaction_id: str, request: Request):
+def retry_outbound(transaction_id: UUID, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    txn = db.retry_outbound(_conn, transaction_id)
+    txn_id = str(transaction_id)
+    txn = db.retry_outbound(_conn, txn_id)
     if txn is None:
         return JSONResponse({"error": "not found or not retryable"}, status_code=404)
     db.log_event(
@@ -1851,10 +1855,10 @@ def retry_outbound(transaction_id: str, request: Request):
         "ui retry",
         title_id=txn["title_id"],
         device_id=txn["target_device_id"],
-        transaction_id=transaction_id,
+        transaction_id=txn_id,
     )
-    log.info("ui retry outbound=%s", transaction_id[:8])
-    return JSONResponse({"ok": True, "transaction_id": transaction_id}, status_code=200)
+    log.info("ui retry outbound=%s", txn_id[:8])
+    return JSONResponse({"ok": True, "transaction_id": txn_id}, status_code=200)
 
 
 @router.post("/devices/{device_id}/outbounds/retry-failed")
@@ -1879,18 +1883,16 @@ def retry_failed_outbounds(device_id: str, request: Request):
     return JSONResponse({"ok": True, "retried": len(retried)})
 
 
-_TXN_RE = _re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _DL_UNSAFE_RE = _re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 
 
 @router.get("/snapshots/{transaction_id}/download")
-def download_snapshot(transaction_id: str, request: Request):
+def download_snapshot(transaction_id: UUID, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    if not _TXN_RE.match(transaction_id):
-        return JSONResponse({"error": "invalid transaction_id"}, status_code=400)
-    txn = db.get_transaction(_conn, transaction_id)
+    txn_id = str(transaction_id)
+    txn = db.get_transaction(_conn, txn_id)
     if not txn or not txn.get("snapshot_path"):
         return JSONResponse({"error": "not found"}, status_code=404)
     archive = Path(txn["snapshot_path"])
@@ -1914,11 +1916,12 @@ def download_snapshot(transaction_id: str, request: Request):
 
 
 @router.delete("/snapshots/{transaction_id}")
-def delete_snapshot(transaction_id: str, request: Request):
+def delete_snapshot(transaction_id: UUID, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    path = db.delete_snapshot(_conn, transaction_id)
+    txn_id = str(transaction_id)
+    path = db.delete_snapshot(_conn, txn_id)
     if path is None:
         return JSONResponse({"error": "not found or not deletable"}, status_code=404)
     if path:  # empty string = no archive file (duplicate save or already cleaned up)
@@ -1928,8 +1931,8 @@ def delete_snapshot(transaction_id: str, request: Request):
             archive.parent.rmdir()
         except OSError:
             pass
-    log.info("snapshot deleted: %s", transaction_id[:8])
-    return {"deleted": transaction_id}
+    log.info("snapshot deleted: %s", txn_id[:8])
+    return {"deleted": txn_id}
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────

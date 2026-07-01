@@ -188,6 +188,20 @@ def report_catalog(client, device_id: str, title_ids: list[str]) -> None:
     assert r.status_code == 200, f"report_catalog failed: {r.text}"
 
 
+def post_activity_events(
+    client, device_id: str, events: list[dict], token: str | None = None
+) -> dict:
+    """Pair device (if not already) then POST a batch of activity events."""
+    if token is None:
+        token = pair_device(client, device_id)
+    r = client.post(
+        "/api/v1/activity/events",
+        json={"events": events},
+        headers={"X-Device-ID": device_id, "Authorization": f"Bearer {token}"},
+    )
+    return r
+
+
 def poll_queue(client, device_id: str, token: str | None = None) -> list:
     """GET /queue and return the pending list. Auto-pairs the device if no token given."""
     if token is None:

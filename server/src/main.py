@@ -11,6 +11,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 
+import activity_api
 import database as db
 import romm_api
 import romm_index
@@ -59,6 +60,7 @@ def _gc_loop(db_path: Path, staging_dir: Path, archive_dir: Path) -> None:
 app = FastAPI(title="OmniSave", version=VERSION)
 app.include_router(sync_api.router)
 app.include_router(sync_deliver_api.router)
+app.include_router(activity_api.router)
 app.include_router(ui_api.router)
 app.include_router(romm_api.router)
 
@@ -117,6 +119,7 @@ def main():
 
     sync_api.init(conn, STAGING_DIR, ARCHIVE_DIR)
     sync_deliver_api.init(conn, STAGING_DIR, ARCHIVE_DIR)
+    activity_api.init(conn)
     ui_api.init(conn, ARCHIVE_DIR)
     romm_api.init(conn, STAGING_DIR, ARCHIVE_DIR)
     romm_meta.init(DB_PATH)

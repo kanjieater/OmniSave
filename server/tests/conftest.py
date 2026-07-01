@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pytest
 from fastapi.testclient import TestClient
 
+import activity_api
 import database as db
 import processing
 import sync_api
@@ -44,6 +45,7 @@ def client(conn, tmp_dirs):
     staging, archive = tmp_dirs
     sync_api.init(conn, staging, archive)
     sync_deliver_api.init(conn, staging, archive)
+    activity_api.init(conn)
     ui_api.init(conn, archive)
     return TestClient(app)
 

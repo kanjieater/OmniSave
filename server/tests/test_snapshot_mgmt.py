@@ -30,7 +30,7 @@ def test_delete_requires_auth(client, conn, tmp_dirs):
 
 def test_delete_nonexistent_returns_404(client):
     token = _bootstrap(client)
-    r = client.delete("/api/v1/ui/snapshots/does-not-exist", headers=_auth(token))
+    r = client.delete("/api/v1/ui/snapshots/00000000-0000-0000-0000-000000000000", headers=_auth(token))
     assert r.status_code == 404
 
 
