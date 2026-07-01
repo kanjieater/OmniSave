@@ -11,6 +11,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from uuid import UUID
 
 import xxhash
 from fastapi import APIRouter, Query, Request
@@ -31,7 +32,6 @@ _staging_dir: Path | None = None
 _archive_dir: Path | None = None
 
 _TITLE_RE = re.compile(r"^[A-Fa-f0-9]{16}$")
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 CHECKPOINT_SIZE = 4 * 1024 * 1024  # 4 MB — xxHash32 granularity
 WINDOW_SIZE = 64 * 1024 * 1024  # 64 MB — HTTP transport granularity
@@ -200,16 +200,15 @@ class ManifestBody(BaseModel):
 
 
 @router.post("/sessions/{session_id}/manifest")
-def post_manifest(session_id: str, body: ManifestBody, request: Request):
+def post_manifest(session_id: UUID, body: ManifestBody, request: Request):
     auth = _require_device_auth(request)
     if isinstance(auth, JSONResponse):
         return auth
-    if not _UUID_RE.match(session_id):
-        return _err("invalid session_id")
     if body.checkpoint_size != CHECKPOINT_SIZE:
         return _err(f"checkpoint_size must be {CHECKPOINT_SIZE}")
 
-    sess = db.get_session(_conn, session_id)
+    sess_id = str(session_id)
+    sess = db.get_session(_conn, sess_id)
     if not sess:
         return _err("session not found", 404)
     if sess["session_state"] != "ACTIVE":
@@ -230,10 +229,10 @@ def post_manifest(session_id: str, body: ManifestBody, request: Request):
             status_code=200,
         )
 
-    db.set_session_manifest(_conn, session_id, json.dumps(body.checkpoint_ledger))
+    db.set_session_manifest(_conn, sess_id, json.dumps(body.checkpoint_ledger))
     log.info(
         "manifest posted session=%s checkpoints=%d",
-        session_id[:8],
+        sess_id[:8],
         len(body.checkpoint_ledger),
     )
     return {"ok": True, "server_verified_bytes": 0}
@@ -243,18 +242,17 @@ def post_manifest(session_id: str, body: ManifestBody, request: Request):
 
 
 @router.put("/sessions/{session_id}/window")
-async def upload_window(session_id: str, offset: int, request: Request):
+async def upload_window(session_id: UUID, offset: int, request: Request):
     auth = _require_device_auth(request)
     if isinstance(auth, JSONResponse):
         return auth
-    if not _UUID_RE.match(session_id):
-        return _err("invalid session_id")
     if offset < 0:
         return _err("offset must be non-negative")
     if not _storage_ok():
         return _err("insufficient storage", 507)
 
-    sess = db.get_session(_conn, session_id)
+    sess_id = str(session_id)
+    sess = db.get_session(_conn, sess_id)
     if not sess:
         return _err("session not found", 404)
     if sess["session_state"] != "ACTIVE":
@@ -296,7 +294,7 @@ async def upload_window(session_id: str, offset: int, request: Request):
 
     ledger = json.loads(sess["checkpoint_ledger"])
 
-    staging = _staging_dir / session_id / "save.zip"
+    staging = _staging_dir / sess_id / "save.zip"
     staging.parent.mkdir(parents=True, exist_ok=True)
     await asyncio.get_event_loop().run_in_executor(
         None, _write_at_offset, staging, offset, data, staging.exists()
@@ -309,13 +307,13 @@ async def upload_window(session_id: str, offset: int, request: Request):
     try:
         cur_svb = _conn.execute(
             "SELECT server_verified_bytes FROM upload_sessions WHERE session_id=?",
-            (session_id,),
+            (sess_id,),
         ).fetchone()[0]
         if cur_svb != offset:  # pragma: no cover
             # Concurrent request already advanced — return winner's value
             _conn.execute("ROLLBACK")
             return {"server_verified_bytes": cur_svb}
-        db.advance_server_verified(_conn, session_id, new_svb)
+        db.advance_server_verified(_conn, sess_id, new_svb)
         _conn.execute("COMMIT")
     except Exception:  # pragma: no cover
         _conn.execute("ROLLBACK")
@@ -328,19 +326,17 @@ async def upload_window(session_id: str, offset: int, request: Request):
 
 
 @router.post("/sessions/{session_id}/commit")
-def commit_upload(session_id: str, request: Request):
+def commit_upload(session_id: UUID, request: Request):
     auth = _require_device_auth(request)
     if isinstance(auth, JSONResponse):
         return auth
-    if not _UUID_RE.match(session_id):
-        return _err("invalid session_id")
-
-    sess = db.get_session(_conn, session_id)
+    sess_id = str(session_id)
+    sess = db.get_session(_conn, sess_id)
     if not sess:
         return _err("session not found", 404)
 
     txn_id = sess["transaction_id"]
-    promoted = db.transition_to_processing(_conn, session_id)
+    promoted = db.transition_to_processing(_conn, sess_id)
 
     if promoted is None:
         # Already in PROCESSING or beyond, or upload incomplete.
@@ -350,7 +346,7 @@ def commit_upload(session_id: str, request: Request):
             return _err(f"upload incomplete: verified={svb} total={total}", 400)
         return JSONResponse({"processing": True}, status_code=200)
 
-    processing.submit(txn_id, session_id, _staging_dir, _archive_dir, _conn)
+    processing.submit(txn_id, sess_id, _staging_dir, _archive_dir, _conn)
     log.info("commit accepted txn=%s", txn_id[:8])
     return JSONResponse({"processing": True}, status_code=202)
 
@@ -359,20 +355,19 @@ def commit_upload(session_id: str, request: Request):
 
 
 @router.get("/sessions/{session_id}/resume")
-def session_resume(session_id: str, request: Request):
+def session_resume(session_id: UUID, request: Request):
     auth = _require_device_auth(request)
     if isinstance(auth, JSONResponse):
         return auth
     device_id = auth.device_id
-    if not _UUID_RE.match(session_id):
-        return _err("invalid session_id")
+    sess_id = str(session_id)
     row = _conn.execute(
         "SELECT us.session_state, us.server_verified_bytes, us.total_size_bytes, "
         "st.source_device_id "
         "FROM upload_sessions us "
         "JOIN sync_transactions st ON st.transaction_id = us.transaction_id "
         "WHERE us.session_id = ?",
-        (session_id,),
+        (sess_id,),
     ).fetchone()
     if not row or row["source_device_id"] != device_id:
         return _err("session not found", 404)

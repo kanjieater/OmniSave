@@ -243,8 +243,8 @@ CREATE TABLE IF NOT EXISTS device_play_events (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id            TEXT    NOT NULL,
     owner_user_id        TEXT    NOT NULL,
-    profile_id           TEXT,
-    application_id       TEXT,
+    profile_id           TEXT    NOT NULL DEFAULT '',
+    application_id       TEXT    NOT NULL DEFAULT '',
     event_type           TEXT    NOT NULL CHECK(event_type IN (
                              'APPLICATION_STARTED', 'APPLICATION_EXITED',
                              'APPLICATION_FOCUSED', 'APPLICATION_UNFOCUSED',
@@ -2498,8 +2498,8 @@ def insert_play_events(conn, device_id: str, owner_user_id: str, events: list[di
                 (
                     device_id,
                     owner_user_id,
-                    e.get("profile_id"),
-                    e.get("application_id"),
+                    e.get("profile_id") or "",
+                    e.get("application_id") or "",
                     e["event_type"],
                     e["event_timestamp"],
                     e["monotonic_timestamp"],
@@ -2520,6 +2520,8 @@ def get_play_events(
     application_id: str | None = None,
     owner_user_id: str | None = None,
     since: int | None = None,
+    limit: int = 1000,
+    offset: int = 0,
 ) -> list[dict]:
     """Return raw device_play_events rows matching the given filters."""
     clauses: list[str] = []
@@ -2540,8 +2542,9 @@ def get_play_events(
         "SELECT * FROM device_play_events"
         + (" WHERE " + " AND ".join(clauses) if clauses else "")
         + " ORDER BY event_timestamp ASC"
+        + " LIMIT ? OFFSET ?"
     )
-    rows = conn.execute(sql, params).fetchall()
+    rows = conn.execute(sql, params + [limit, offset]).fetchall()
     return [dict(r) for r in rows]
 
 

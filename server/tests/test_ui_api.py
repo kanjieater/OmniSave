@@ -1131,7 +1131,10 @@ def test_acknowledge_idempotent(client, conn):
 
 def test_acknowledge_unknown_transaction_404(client):
     token = _login(client)
-    r = client.post("/api/v1/ui/errors/no-such-txn/acknowledge", headers=_hdr(token))
+    r = client.post(
+        "/api/v1/ui/errors/00000000-0000-0000-0000-000000000000/acknowledge",
+        headers=_hdr(token),
+    )
     assert r.status_code == 404
 
 
@@ -1700,7 +1703,7 @@ def test_sync_prefs_merges_with_existing(client, conn):
 def test_push_snapshot_404_unknown_txn(client):
     token = _login(client)
     r = client.post(
-        "/api/v1/ui/snapshots/no-such-txn/push",
+        "/api/v1/ui/snapshots/00000000-0000-0000-0000-000000000000/push",
         json={"device_ids": []},
         headers=_hdr(token),
     )
@@ -1806,7 +1809,10 @@ def test_get_icon_url_uses_only_icon_url(monkeypatch):
 
 def test_retry_outbound_404_unknown(client):
     token = _login(client)
-    r = client.post("/api/v1/ui/outbounds/no-such-txn/retry", headers=_hdr(token))
+    r = client.post(
+        "/api/v1/ui/outbounds/00000000-0000-0000-0000-000000000000/retry",
+        headers=_hdr(token),
+    )
     assert r.status_code == 404
 
 

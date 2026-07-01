@@ -56,7 +56,7 @@ def require_device_auth(conn, request: Request) -> "TrustedDevice | JSONResponse
     deleted = conn.execute(
         "SELECT deleted_at FROM devices WHERE device_id=?", (device_id,)
     ).fetchone()
-    if deleted and deleted["deleted_at"] is not None:
+    if deleted is None or deleted["deleted_at"] is not None:
         log.warning("auth: device removed device=%s", device_id)
         return JSONResponse(
             {"error": "device has been removed — re-pair to continue"}, status_code=401

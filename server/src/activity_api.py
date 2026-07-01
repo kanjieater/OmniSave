@@ -6,10 +6,11 @@ Platform-agnostic: the server does not know or care about the event source.
 
 import logging
 import re
+from typing import Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import database as db
 import device_auth as _auth
@@ -22,14 +23,14 @@ _conn = None
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-_EVENT_TYPES = {
+EventType = Literal[
     "APPLICATION_STARTED",
     "APPLICATION_EXITED",
     "APPLICATION_FOCUSED",
     "APPLICATION_UNFOCUSED",
     "PROFILE_ACTIVE",
     "PROFILE_INACTIVE",
-}
+]
 
 
 def init(conn) -> None:
@@ -49,7 +50,7 @@ def _err(msg: str, status: int = 400) -> JSONResponse:
 
 
 class PlayEventIn(BaseModel):
-    event_type: str
+    event_type: EventType
     application_id: str | None = None
     profile_id: str | None = None
     event_timestamp: int
@@ -57,7 +58,7 @@ class PlayEventIn(BaseModel):
 
 
 class PlayEventsBody(BaseModel):
-    events: list[PlayEventIn]
+    events: list[PlayEventIn] = Field(max_length=500)
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
@@ -69,12 +70,7 @@ def post_events(body: PlayEventsBody, request: Request):
     if isinstance(trusted, JSONResponse):
         return trusted
 
-    if len(body.events) > 500:
-        return _err("too many events in one batch (max 500)")
-
     for e in body.events:
-        if e.event_type not in _EVENT_TYPES:
-            return _err(f"invalid event_type: {e.event_type!r}")
         if e.application_id is not None and not _ID_RE.match(e.application_id):
             return _err(f"invalid application_id: {e.application_id!r}")
         if e.profile_id is not None and not _ID_RE.match(e.profile_id):

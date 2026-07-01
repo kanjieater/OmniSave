@@ -70,7 +70,7 @@ def test_profile_only_event_no_application_id(client, conn):
     row = conn.execute(
         "SELECT application_id FROM device_play_events WHERE device_id=?", (DEVICE_A,)
     ).fetchone()
-    assert row["application_id"] is None
+    assert row["application_id"] == ""
 
 
 def test_separate_devices_isolated(client, conn):
@@ -102,6 +102,25 @@ def test_duplicate_push_idempotent(client, conn):
     assert count == 1
 
 
+def test_profile_event_dedup(client, conn):
+    """PROFILE_ACTIVE events (no application_id) must dedup on resubmission."""
+    evt = {
+        "event_type": "PROFILE_ACTIVE",
+        "profile_id": "user-1",
+        "event_timestamp": 1700000005,
+        "monotonic_timestamp": 55,
+    }
+    r1 = post_activity_events(client, DEVICE_A, [evt])
+    r2 = post_activity_events(client, DEVICE_A, [evt])
+    assert r1.json()["accepted"] == 1
+    assert r2.json()["accepted"] == 0
+    count = conn.execute(
+        "SELECT COUNT(*) FROM device_play_events WHERE device_id=? AND event_type='PROFILE_ACTIVE'",
+        (DEVICE_A,),
+    ).fetchone()[0]
+    assert count == 1
+
+
 def test_partial_duplicate_batch(client, conn):
     evt2 = {**_EVT, "event_type": "APPLICATION_EXITED", "monotonic_timestamp": 9999}
     post_activity_events(client, DEVICE_A, [_EVT])
@@ -120,8 +139,8 @@ def test_partial_duplicate_batch(client, conn):
 def test_invalid_event_type_rejected(client):
     evt = {**_EVT, "event_type": "NOT_A_REAL_TYPE"}
     r = post_activity_events(client, DEVICE_A, [evt])
-    assert r.status_code == 400
-    assert "event_type" in r.json()["error"]
+    assert r.status_code == 422  # Pydantic Literal rejects at parse time
+    assert "event_type" in str(r.json()["detail"])
 
 
 def test_invalid_application_id_rejected(client):
@@ -203,8 +222,8 @@ def test_batch_cap_enforced(client):
         for i in range(501)
     ]
     r = post_activity_events(client, DEVICE_A, events)
-    assert r.status_code == 400
-    assert "500" in r.json()["error"]
+    assert r.status_code == 422  # Pydantic Field(max_length=500) rejects at parse time
+    assert "500" in str(r.json()["detail"])
 
 
 def test_batch_at_cap_accepted(client, conn):

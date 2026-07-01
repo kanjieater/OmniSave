@@ -27,6 +27,7 @@ Full spec: [`.claude/skills/caveman/SKILL.md`](.claude/skills/caveman/SKILL.md)
 ./scripts/server.sh up            # build Docker image + start detached
 ./scripts/server.sh logs          # follow logs
 ./scripts/server.sh down          # stop
+./scripts/gen_openapi.sh          # regenerate server/src/openapi.json after any API change
 
 # Database (SQLite inside the running container)
 ./scripts/db.sh                              # interactive SQLite shell (column mode, headers on)

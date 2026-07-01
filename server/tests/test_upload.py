@@ -263,7 +263,7 @@ def test_manifest_invalid_session_id(client, device_token):
         json={"checkpoint_size": CHECKPOINT_SIZE, "checkpoint_ledger": [1]},
         headers=sync_hdrs(DEVICE_A, device_token),
     )
-    assert r.status_code == 400
+    assert r.status_code == 422
 
 
 def test_manifest_session_not_found(client, device_token):
@@ -311,7 +311,7 @@ def test_window_invalid_session_id(client, device_token):
         content=b"data",
         headers=sync_hdrs(DEVICE_A, device_token),
     )
-    assert r.status_code == 400
+    assert r.status_code == 422
 
 
 def test_window_negative_offset_rejected(client):
