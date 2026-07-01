@@ -185,26 +185,29 @@ export function DayHeatmap({ data, iconUrls }: Props) {
                     <TooltipTrigger asChild>{block}</TooltipTrigger>
                     <TooltipContent
                       side="top"
-                      className="p-[var(--spacing-2)] min-w-36 max-w-64"
+                      className="p-0 overflow-hidden min-w-52 max-w-[min(340px,_calc(100vw-2rem))]"
                     >
-                      <p className="text-[var(--color-text-muted)] mb-[var(--spacing-1)]">
+                      <p className="text-[var(--color-text-muted)] text-xs px-[var(--spacing-3)] pt-[var(--spacing-2)] pb-[var(--spacing-1)]">
                         {dateLabel}
                       </p>
                       {activity.count === 0 ? (
-                        <p className="text-[var(--color-text-muted)]">No playtime</p>
+                        <p className="text-sm text-[var(--color-text-muted)] px-[var(--spacing-3)] pb-[var(--spacing-2)]">No playtime</p>
                       ) : (
-                        <div className="flex flex-col gap-[var(--spacing-1)]">
+                        <div>
                           {games.map(g => (
-                            <div key={g.title_id} className="flex items-center gap-[var(--spacing-2)]">
+                            <div
+                              key={g.title_id}
+                              className="flex items-center gap-[var(--spacing-3)] py-[var(--spacing-2)] px-[var(--spacing-3)] border-t border-[var(--color-border-subtle)]"
+                            >
                               <GameIcon
                                 iconUrl={iconUrls?.[g.title_id] ?? null}
                                 name={g.display_name}
-                                size={20}
+                                size={40}
                               />
-                              <span className="flex-1 min-w-0 truncate text-[var(--color-text-primary)]">
+                              <span className="flex-1 min-w-0 truncate text-sm text-[var(--color-text-primary)]">
                                 {g.display_name}
                               </span>
-                              <span className="text-[var(--color-text-muted)] tabular-nums shrink-0 pl-[var(--spacing-2)]">
+                              <span className="text-sm text-[var(--color-text-muted)] tabular-nums shrink-0 pl-[var(--spacing-3)]">
                                 {fmt(g.minutes)}
                               </span>
                             </div>
