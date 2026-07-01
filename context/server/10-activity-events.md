@@ -10,15 +10,17 @@ The server is platform-agnostic: it has no concept of what kind of device is pro
 |---|---|---|
 | `device_id` | TEXT | From auth |
 | `owner_user_id` | TEXT | Stamped from `device_auth` at insert; immutable |
-| `profile_id` | TEXT nullable | Opaque client-supplied profile identifier |
-| `application_id` | TEXT nullable | Opaque client-supplied app/game identifier; NULL for profile-only events |
+| `profile_id` | TEXT (empty string if absent) | Opaque client-supplied profile identifier |
+| `application_id` | TEXT (empty string if absent) | Opaque client-supplied app/game identifier; empty string for profile-only events |
 | `event_type` | TEXT | See vocabulary below |
 | `event_timestamp` | INTEGER | Wall-clock POSIX seconds |
 | `monotonic_timestamp` | INTEGER | Monotonic/steady-clock seconds; use for duration math |
 | `recorded_at` | TEXT | Server receipt time (ISO-8601 UTC) |
 
 Dedup key: `(device_id, event_type, event_timestamp, monotonic_timestamp, application_id, profile_id)` —
-content-addressed. `INSERT OR IGNORE` makes resubmission always safe.
+content-addressed. `INSERT OR IGNORE` makes resubmission always safe. Both `application_id` and
+`profile_id` are `NOT NULL DEFAULT ''`; absent fields are stored as empty string (not NULL) so
+the UNIQUE constraint fires correctly for profile-only events.
 
 ## Event type vocabulary
 
