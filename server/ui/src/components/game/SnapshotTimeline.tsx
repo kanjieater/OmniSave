@@ -670,10 +670,11 @@ export interface SnapshotTimelineProps {
   onRommSearch: () => void
   rommEnabled?: boolean
   rommHost?: string | null
+  middleSlot?: React.ReactNode
 }
 
 export function SnapshotTimeline({
-  data, titleId, gameName, gameIconUrl, onSaveGameName, onRommSearch, rommEnabled, rommHost,
+  data, titleId, gameName, gameIconUrl, onSaveGameName, onRommSearch, rommEnabled, rommHost, middleSlot,
 }: SnapshotTimelineProps) {
   const qc = useQueryClient()
   const [selected, setSelected] = React.useState<Snapshot | null>(null)
@@ -735,6 +736,8 @@ export function SnapshotTimeline({
         rommId={data.rom_id}
         titleId={titleId}
       />
+
+      {middleSlot}
 
       {all.length > 0 && (
         <section className="flex flex-col gap-[var(--spacing-3)]">
