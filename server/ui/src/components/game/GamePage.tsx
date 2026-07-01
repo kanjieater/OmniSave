@@ -6,6 +6,7 @@ import { useBackground } from '@/components/layout/AppShellV2'
 import type { GameDetail } from '@/types'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Skeleton } from '@/components/ui/skeleton'
+import { DayHeatmap } from '@/components/ui/day-heatmap'
 import { RommSearchSheet } from './RommSearchSheet'
 import { SnapshotTimeline } from './SnapshotTimeline'
 
@@ -36,6 +37,13 @@ export default function GamePage() {
       return 30_000
     },
     refetchOnWindowFocus: true,
+  })
+
+  const { data: playtimeData, isLoading: playtimeLoading } = useQuery({
+    queryKey: ['playtime-daily', title_id],
+    queryFn: () => api.dailyPlaytime(title_id),
+    enabled: !!title_id,
+    staleTime: 60_000,
   })
 
   React.useEffect(() => { if (data?.icon_url) setBg(data.icon_url) }, [data?.icon_url, setBg])
@@ -84,6 +92,15 @@ export default function GamePage() {
         initialQuery={gameName}
         rommHost={rommHost}
       />
+
+      <section className="flex flex-col gap-[var(--spacing-2)]">
+        <h2 className="text-sm font-[var(--font-weight-semibold)] text-[var(--color-text-primary)] uppercase tracking-[var(--tracking-wide)]">Play History</h2>
+        {playtimeLoading ? (
+          <Skeleton className="h-24 w-full rounded-[var(--radius-md)]" />
+        ) : (
+          <DayHeatmap data={playtimeData?.days ?? []} />
+        )}
+      </section>
     </div>
   )
 }
