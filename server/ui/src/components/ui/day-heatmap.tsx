@@ -270,7 +270,7 @@ export function DayHeatmap({ data, iconUrls }: Props) {
                     {g.display_name}
                   </span>
                   <span className="text-sm text-[var(--color-text-muted)] tabular-nums shrink-0 pl-[var(--spacing-3)]">
-                    {fmt(g.minutes)}
+                    {g.minutes > 0 ? fmt(g.minutes) : '< 1m'}
                   </span>
                 </div>
               ))}
