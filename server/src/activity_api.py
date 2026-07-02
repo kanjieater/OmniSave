@@ -67,9 +67,18 @@ class PlayEventIn(BaseModel):
 
 class PlayEventsBody(BaseModel):
     events: list[PlayEventIn] = Field(max_length=500)
+    next_offset: int | None = None
 
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/offset")
+def get_offset(request: Request):
+    trusted = _require_device_auth(request)
+    if isinstance(trusted, JSONResponse):
+        return trusted
+    return {"last_offset": db.get_activity_offset(_conn, trusted.device_id)}
 
 
 @router.post("/events")
@@ -92,10 +101,13 @@ def post_events(body: PlayEventsBody, request: Request):
         trusted.user_id,
         [e.model_dump() for e in body.events],
     )
+    if body.next_offset is not None:
+        db.set_activity_offset(_conn, trusted.device_id, body.next_offset)
     log.info(
-        "activity: device=%s accepted=%d received=%d",
+        "activity: device=%s accepted=%d received=%d next_offset=%s",
         trusted.device_id,
         inserted,
         len(body.events),
+        body.next_offset,
     )
     return {"accepted": inserted, "received": len(body.events)}

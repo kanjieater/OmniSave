@@ -256,6 +256,14 @@ CREATE TABLE IF NOT EXISTS device_play_events (
 );
 CREATE INDEX IF NOT EXISTS idx_dpe_device_app ON device_play_events(device_id, application_id);
 CREATE INDEX IF NOT EXISTS idx_dpe_time       ON device_play_events(event_timestamp DESC);
+
+-- PDM offset the server has durably received for each device.
+-- Monotonically increasing; never regresses.
+CREATE TABLE IF NOT EXISTS device_activity_offset (
+    device_id   TEXT    PRIMARY KEY,
+    last_offset INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT    NOT NULL
+);
 """
 
 
@@ -2512,6 +2520,33 @@ def insert_play_events(conn, device_id: str, owner_user_id: str, events: list[di
         conn.execute("ROLLBACK")
         raise
     return inserted
+
+
+def get_activity_offset(conn, device_id: str) -> int:
+    row = conn.execute(
+        "SELECT last_offset FROM device_activity_offset WHERE device_id = ?",
+        (device_id,),
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def set_activity_offset(conn, device_id: str, last_offset: int) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            """
+            INSERT INTO device_activity_offset (device_id, last_offset, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(device_id) DO UPDATE
+                SET last_offset = MAX(last_offset, excluded.last_offset),
+                    updated_at  = excluded.updated_at
+            """,
+            (device_id, last_offset, _now()),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def get_play_events(
