@@ -2553,62 +2553,162 @@ def get_daily_playtime(
     owner_user_id: str,
     application_id: str | None = None,
 ) -> list[dict]:
-    """Return daily playtime totals in minutes derived from active-interval event pairs.
+    """Return daily playtime totals by reconstructing valid play sessions from the
+    activity event stream using a per-device state machine.
 
-    Pairs each APPLICATION_FOCUSED with the nearest APPLICATION_UNFOCUSED on the same
-    (device_id, application_id, profile_id) using monotonic_timestamp. These events mark
-    when an application is actively in use (foreground/screen-on). Clients are expected to
-    emit FOCUSED/UNFOCUSED to represent active time; STARTED/EXITED bracket the full
-    lifecycle and may include background suspension.
+    A session spans APPLICATION_STARTED → APPLICATION_EXITED. Active time is the
+    sum of APPLICATION_FOCUSED → APPLICATION_UNFOCUSED intervals (monotonic duration).
+    Sessions with no PROFILE_ACTIVE or PROFILE_INACTIVE event are excluded. Consecutive
+    UNFOCUSED events are collapsed. Zero-duration and negative intervals are ignored.
+    A new APPLICATION_STARTED while a session is open closes the prior session (crash
+    recovery). A backward monotonic_timestamp resets all state (device reboot boundary).
+    Streams from different devices are never mixed.
     """
-    sql = """
-        WITH sessions AS (
-          SELECT
-            date(s.event_timestamp, 'unixepoch') AS play_date,
-            s.application_id AS title_id,
-            MIN(e.monotonic_timestamp) - s.monotonic_timestamp AS duration_sec
-          FROM device_play_events s
-          JOIN device_play_events e ON
-            e.device_id = s.device_id
-            AND e.application_id IS s.application_id
-            AND e.profile_id IS s.profile_id
-            AND e.event_type = 'APPLICATION_UNFOCUSED'
-            AND e.monotonic_timestamp > s.monotonic_timestamp
-            AND e.monotonic_timestamp - s.monotonic_timestamp <= 86400
-          WHERE s.event_type = 'APPLICATION_FOCUSED'
-            AND s.owner_user_id = ?
-            AND (? IS NULL OR s.application_id = ?)
-          GROUP BY s.device_id, s.application_id, s.event_timestamp, s.monotonic_timestamp
-        )
-        SELECT
-          play_date AS date,
-          title_id,
-          COALESCE(l.label, title_id) AS display_name,
-          SUM(duration_sec) AS total_sec
-        FROM sessions
-        LEFT JOIN labels l ON l.entity_type = 'game' AND l.entity_id = title_id
-        WHERE duration_sec > 0
-        GROUP BY play_date, title_id
-        ORDER BY play_date, total_sec DESC
-    """
-    rows = conn.execute(sql, (owner_user_id, application_id, application_id)).fetchall()
-    days: dict[str, dict] = {}
-    for r in rows:
-        date = r["date"]
-        if date not in days:
-            days[date] = {"date": date, "total_sec": 0, "games": []}
-        days[date]["total_sec"] += r["total_sec"]
-        days[date]["games"].append(
+    rows = conn.execute(
+        """
+        SELECT event_type, application_id, event_timestamp, monotonic_timestamp, device_id
+        FROM device_play_events
+        WHERE owner_user_id = ?
+        ORDER BY device_id, id
+        """,
+        (owner_user_id,),
+    ).fetchall()
+
+    # accumulated[(date, app_id)] → total seconds across all valid sessions
+    accumulated: dict[tuple[str, str], int] = {}
+
+    # Per-device state: IDLE | IN_SESSION | FOCUSED
+    state = "IDLE"
+    session_app = ""
+    has_profile = False
+    session_acc: dict[tuple[str, str], int] = {}
+    focus_mono: int | None = None
+    focus_wall: int | None = None
+    prev_mono: int | None = None
+    prev_device: str | None = None
+
+    def _emit() -> None:
+        if has_profile and (application_id is None or session_app == application_id):
+            for k, v in session_acc.items():
+                accumulated[k] = accumulated.get(k, 0) + v
+
+    def _open(app: str) -> None:
+        nonlocal state, session_app, has_profile, session_acc, focus_mono, focus_wall
+        state = "IN_SESSION"
+        session_app = app
+        has_profile = False
+        session_acc = {}
+        focus_mono = None
+        focus_wall = None
+
+    def _reset() -> None:
+        nonlocal state, session_app, has_profile, session_acc, focus_mono, focus_wall, prev_mono
+        state = "IDLE"
+        session_app = ""
+        has_profile = False
+        session_acc = {}
+        focus_mono = None
+        focus_wall = None
+        prev_mono = None
+
+    for row in rows:
+        et = row["event_type"]
+        device = row["device_id"]
+        mono = row["monotonic_timestamp"]
+        wall = row["event_timestamp"]
+        app = row["application_id"] or ""
+
+        if device != prev_device:
+            _reset()
+            prev_device = device
+
+        # Strict backward mono = reboot boundary; discard any open session/interval
+        if prev_mono is not None and mono < prev_mono:
+            _reset()
+
+        prev_mono = mono
+
+        if state == "IDLE":
+            if et == "APPLICATION_STARTED":
+                _open(app)
+
+        elif state == "IN_SESSION":
+            if et == "APPLICATION_STARTED":
+                _emit()
+                _open(app)
+            elif et in ("PROFILE_ACTIVE", "PROFILE_INACTIVE"):
+                has_profile = True
+            elif et == "APPLICATION_FOCUSED":
+                focus_mono = mono
+                focus_wall = wall
+                state = "FOCUSED"
+            elif et == "APPLICATION_EXITED":
+                _emit()
+                _reset()
+
+        elif state == "FOCUSED":
+            if et == "APPLICATION_FOCUSED":
+                focus_mono = mono
+                focus_wall = wall
+            elif et in ("PROFILE_ACTIVE", "PROFILE_INACTIVE"):
+                has_profile = True
+            elif et == "APPLICATION_UNFOCUSED":
+                dur = mono - (focus_mono or mono)
+                if dur > 0 and focus_wall is not None:
+                    date = datetime.fromtimestamp(focus_wall, tz=UTC).strftime("%Y-%m-%d")
+                    key = (date, session_app)
+                    session_acc[key] = session_acc.get(key, 0) + dur
+                focus_mono = None
+                focus_wall = None
+                state = "IN_SESSION"
+                # Consecutive UNFOCUSED in IN_SESSION are no-ops — no special handling needed
+            elif et == "APPLICATION_STARTED":
+                focus_mono = None
+                focus_wall = None
+                _emit()
+                _open(app)
+            elif et == "APPLICATION_EXITED":
+                focus_mono = None
+                focus_wall = None
+                _emit()
+                _reset()
+
+    # Open sessions (no EXITED received) are not emitted per the contract
+
+    if not accumulated:
+        return []
+
+    days_sec: dict[str, int] = {}
+    days_games: dict[str, dict[str, int]] = {}
+    for (date, app_id), secs in accumulated.items():
+        days_sec[date] = days_sec.get(date, 0) + secs
+        if date not in days_games:
+            days_games[date] = {}
+        days_games[date][app_id] = days_games[date].get(app_id, 0) + secs
+
+    all_app_ids = list({k[1] for k in accumulated})
+    label_map: dict[str, str] = {}
+    if all_app_ids:
+        placeholders = ",".join(["?"] * len(all_app_ids))
+        lrows = conn.execute(
+            "SELECT entity_id, label FROM labels"
+            " WHERE entity_type = 'game' AND entity_id IN (" + placeholders + ")",
+            all_app_ids,
+        ).fetchall()
+        label_map = {r["entity_id"]: r["label"] for r in lrows}
+
+    result = []
+    for date in sorted(days_sec):
+        games = [
             {
-                "title_id": r["title_id"],
-                "display_name": r["display_name"],
-                "minutes": r["total_sec"] // 60,
+                "title_id": app_id,
+                "display_name": label_map.get(app_id, app_id),
+                "minutes": secs // 60,
             }
-        )
-    return [
-        {"date": d["date"], "minutes": d["total_sec"] // 60, "games": d["games"]}
-        for d in days.values()
-    ]
+            for app_id, secs in sorted(days_games[date].items(), key=lambda x: -x[1])
+        ]
+        result.append({"date": date, "minutes": days_sec[date] // 60, "games": games})
+    return result
 
 
 def list_device_profiles(conn, device_id: str, user_id: str = "") -> list[dict]:

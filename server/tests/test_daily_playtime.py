@@ -1,16 +1,48 @@
 """Tests for GET /api/v1/ui/playtime/daily.
 
-Covers the active-interval session-pairing SQL (nearest-unfocused algorithm),
-aggregation, filtering, and documented edge-case behaviour for malformed event streams.
+Verifies the per-device session reconstruction state machine:
+APPLICATION_STARTED → APPLICATION_EXITED boundaries, PROFILE_ACTIVE requirement,
+consecutive UNFOCUSED collapse, zero-duration exclusion, reboot/crash handling,
+and device isolation.
 """
 
-from helpers import DEVICE_A, auth_header, login_admin, post_activity_events
+from helpers import DEVICE_A, DEVICE_B, auth_header, login_admin, post_activity_events
 
 APP = "0100F2C0115B6000"
 OTHER_APP = "0100EC001DE7E000"
 
-# Base wall-clock timestamp: 2025-01-16 12:00:00 UTC (arbitrary, well within the DB)
+# Base wall-clock timestamp: 2025-01-16 12:00:00 UTC
 _BASE_TS = 1737028800
+
+
+def _started(ts: int, mono: int, app: str = APP) -> dict:
+    return {
+        "event_type": "APPLICATION_STARTED",
+        "application_id": app,
+        "profile_id": None,
+        "event_timestamp": ts,
+        "monotonic_timestamp": mono,
+    }
+
+
+def _exited(ts: int, mono: int, app: str = APP) -> dict:
+    return {
+        "event_type": "APPLICATION_EXITED",
+        "application_id": app,
+        "profile_id": None,
+        "event_timestamp": ts,
+        "monotonic_timestamp": mono,
+    }
+
+
+def _profile_active(ts: int, mono: int) -> dict:
+    return {
+        "event_type": "PROFILE_ACTIVE",
+        "application_id": None,
+        "profile_id": "user1",
+        "event_timestamp": ts,
+        "monotonic_timestamp": mono,
+    }
 
 
 def _focused(ts: int, mono: int, app: str = APP, profile: str = "p1") -> dict:
@@ -31,6 +63,17 @@ def _unfocused(ts: int, mono: int, app: str = APP, profile: str = "p1") -> dict:
         "event_timestamp": ts,
         "monotonic_timestamp": mono,
     }
+
+
+def _session(ts: int, start_mono: int, dur_mono: int, app: str = APP) -> list[dict]:
+    """One complete valid session: STARTED + PROFILE + FOCUSED + UNFOCUSED + EXITED."""
+    return [
+        _started(ts, start_mono - 1, app),
+        _profile_active(ts, start_mono),
+        _focused(ts, start_mono, app),
+        _unfocused(ts + dur_mono, start_mono + dur_mono, app),
+        _exited(ts + dur_mono, start_mono + dur_mono + 1, app),
+    ]
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -55,12 +98,9 @@ def test_empty_no_events(client):
 
 
 def test_daily_minutes_single_session(client):
-    """One FOCUSED + UNFOCUSED pair → correct minute count on that day."""
+    """One complete session with a 3600 s monotonic interval → 60 min."""
     token = login_admin(client)
-    post_activity_events(client, DEVICE_A, [
-        _focused(_BASE_TS, mono=1000),
-        _unfocused(_BASE_TS + 3600, mono=4600),   # 3600 s monotonic diff = 60 min
-    ])
+    post_activity_events(client, DEVICE_A, _session(_BASE_TS, start_mono=1000, dur_mono=3600))
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     assert r.status_code == 200
     days = r.json()["days"]
@@ -76,27 +116,24 @@ def test_aggregates_multiple_sessions_same_day(client):
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
         # Session 1 — 30 min
-        _focused(_BASE_TS, mono=100),
-        _unfocused(_BASE_TS + 1800, mono=1900),
-        # Session 2 — 60 min (same calendar day)
-        _focused(_BASE_TS + 7200, mono=7300),
-        _unfocused(_BASE_TS + 10800, mono=10900),
+        *_session(_BASE_TS, start_mono=100, dur_mono=1800),
+        # Session 2 — 60 min (same calendar day, higher mono)
+        *_session(_BASE_TS + 7200, start_mono=2000, dur_mono=3600),
     ])
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     days = r.json()["days"]
     assert len(days) == 1
-    assert days[0]["minutes"] == 90  # 30 + 60
+    assert days[0]["minutes"] == 90
 
 
 def test_separate_days_returned_separately(client):
     """Sessions on different calendar days appear as separate rows."""
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
-        _focused(_BASE_TS, mono=100),
-        _unfocused(_BASE_TS + 1800, mono=1900),
-        # Next day: _BASE_TS + 86400
-        _focused(_BASE_TS + 86400, mono=200000),
-        _unfocused(_BASE_TS + 86400 + 3600, mono=203600),  # 3600 s monotonic diff = 60 min
+        # Day 1 — 30 min
+        *_session(_BASE_TS, start_mono=100, dur_mono=1800),
+        # Day 2 — 60 min
+        *_session(_BASE_TS + 86400, start_mono=2000, dur_mono=3600),
     ])
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     days = r.json()["days"]
@@ -108,16 +145,15 @@ def test_separate_days_returned_separately(client):
 def test_day_total_not_truncated_per_game(client):
     """Two games each with 59 s sessions must sum to 1 min, not 0.
 
-    The old CAST(SUM/60) per-game path truncated 59 s → 0 for each game
-    before summing, yielding a day total of 0. The fix accumulates raw
-    seconds across all games and divides once at the day level.
+    Previous SQL implementation truncated 59 s → 0 per game before summing.
+    The state machine accumulates raw seconds and divides once at day level.
     """
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
-        _focused(_BASE_TS, mono=100, app=APP),
-        _unfocused(_BASE_TS + 59, mono=159, app=APP),           # 59 s
-        _focused(_BASE_TS + 200, mono=300, app=OTHER_APP),
-        _unfocused(_BASE_TS + 259, mono=359, app=OTHER_APP),    # 59 s
+        # APP — 59 s
+        *_session(_BASE_TS, start_mono=100, dur_mono=59, app=APP),
+        # OTHER_APP — 59 s (higher mono)
+        *_session(_BASE_TS + 200, start_mono=300, dur_mono=59, app=OTHER_APP),
     ])
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     days = r.json()["days"]
@@ -129,13 +165,11 @@ def test_day_total_not_truncated_per_game(client):
 
 
 def test_title_id_filter_isolates_game(client):
-    """?title_id=X excludes activity from other applications."""
+    """?title_id=X excludes sessions from other applications."""
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
-        _focused(_BASE_TS, mono=100, app=APP),
-        _unfocused(_BASE_TS + 3600, mono=3700, app=APP),
-        _focused(_BASE_TS + 86400, mono=200000, app=OTHER_APP),
-        _unfocused(_BASE_TS + 86400 + 1800, mono=201800, app=OTHER_APP),
+        *_session(_BASE_TS, start_mono=100, dur_mono=3600, app=APP),
+        *_session(_BASE_TS + 86400, start_mono=4000, dur_mono=1800, app=OTHER_APP),
     ])
     r = client.get(f"/api/v1/ui/playtime/daily?title_id={APP}", headers=auth_header(token))
     days = r.json()["days"]
@@ -144,13 +178,11 @@ def test_title_id_filter_isolates_game(client):
 
 
 def test_no_title_id_returns_all_apps(client):
-    """Without ?title_id, all applications contribute."""
+    """Without ?title_id, sessions from all applications contribute."""
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
-        _focused(_BASE_TS, mono=100, app=APP),
-        _unfocused(_BASE_TS + 3600, mono=3700, app=APP),
-        _focused(_BASE_TS + 86400, mono=200000, app=OTHER_APP),
-        _unfocused(_BASE_TS + 86400 + 1800, mono=201800, app=OTHER_APP),
+        *_session(_BASE_TS, start_mono=100, dur_mono=3600, app=APP),
+        *_session(_BASE_TS + 86400, start_mono=4000, dur_mono=1800, app=OTHER_APP),
     ])
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     days = r.json()["days"]
@@ -161,39 +193,124 @@ def test_no_title_id_returns_all_apps(client):
 
 
 def test_orphan_focus_excluded(client):
-    """FOCUSED with no matching UNFOCUSED contributes nothing."""
+    """FOCUSED event outside any session boundary (no STARTED) is ignored."""
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [_focused(_BASE_TS, mono=1)])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    assert r.json()["days"] == []
+
+
+def test_session_without_profile_excluded(client):
+    """Session with no PROFILE_ACTIVE or PROFILE_INACTIVE event contributes nothing."""
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
-        _focused(_BASE_TS, mono=1),
+        _started(_BASE_TS, mono=99),
+        _focused(_BASE_TS, mono=100),
+        _unfocused(_BASE_TS + 3600, mono=3700),
+        _exited(_BASE_TS + 3600, mono=3701),
     ])
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     assert r.json()["days"] == []
 
 
-def test_session_cap_excludes_long_sessions(client):
-    """UNFOCUSED more than 86400 s after FOCUSED is excluded (>24 h cap)."""
+def test_zero_duration_interval_excluded(client):
+    """FOCUSED and UNFOCUSED with identical monotonic values contribute nothing."""
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=999),
+        _profile_active(_BASE_TS, mono=1000),
         _focused(_BASE_TS, mono=1000),
-        _unfocused(_BASE_TS + 90000, mono=1000 + 86401),  # 86401 s > cap
+        _unfocused(_BASE_TS, mono=1000),          # dur = 0 — excluded
+        _focused(_BASE_TS + 1000, mono=2000),
+        _unfocused(_BASE_TS + 2200, mono=3200),   # dur = 1200 s = 20 min
+        _exited(_BASE_TS + 2200, mono=3201),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 20
+
+
+def test_consecutive_unfocused_collapsed(client):
+    """Two consecutive UNFOCUSED events: only the first pairing is counted."""
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=999),
+        _profile_active(_BASE_TS, mono=1000),
+        _focused(_BASE_TS, mono=1000),
+        _unfocused(_BASE_TS + 1800, mono=2800),   # dur = 1800 s = 30 min
+        _unfocused(_BASE_TS + 1800, mono=2800),   # second consecutive — no-op in IN_SESSION
+        _exited(_BASE_TS + 1800, mono=2801),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 30
+
+
+def test_crash_session_counts_before_new_started(client):
+    """Session ended by a new STARTED (crash/no EXIT) still emits its completed intervals."""
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        # App A session — no EXIT, terminated by App B's STARTED
+        _started(_BASE_TS, mono=49, app=APP),
+        _profile_active(_BASE_TS, mono=50),
+        _focused(_BASE_TS, mono=50, app=APP),
+        _unfocused(_BASE_TS + 1800, mono=1850, app=APP),  # 1800 s = 30 min
+        # App B STARTED closes App A's session
+        _started(_BASE_TS + 1900, mono=1900, app=OTHER_APP),
+        _profile_active(_BASE_TS + 1900, mono=1901),
+        _focused(_BASE_TS + 1900, mono=1901, app=OTHER_APP),
+        _unfocused(_BASE_TS + 3700, mono=3701, app=OTHER_APP),
+        _exited(_BASE_TS + 3700, mono=3702, app=OTHER_APP),
+    ])
+    r = client.get(f"/api/v1/ui/playtime/daily?title_id={APP}", headers=auth_header(token))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 30
+
+
+def test_open_session_excluded(client):
+    """Session with STARTED but no EXITED (still running) is not emitted."""
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=999),
+        _profile_active(_BASE_TS, mono=1000),
+        _focused(_BASE_TS, mono=1000),
+        _unfocused(_BASE_TS + 3600, mono=4600),
+        # No EXITED — session remains open
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    assert r.json()["days"] == []
+
+
+def test_focused_exited_without_unfocused_excluded(client):
+    """Open FOCUSED interval closed by EXITED (no UNFOCUSED) is discarded."""
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=999),
+        _profile_active(_BASE_TS, mono=1000),
+        _focused(_BASE_TS, mono=1000),
+        _exited(_BASE_TS + 3600, mono=4600),   # force-quit while focused
     ])
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     assert r.json()["days"] == []
 
 
 def test_malformed_double_focus_does_not_crash(client):
-    """FOCUS, FOCUS, UNFOCUS — documents best-effort behaviour; must not raise."""
+    """FOCUS, FOCUS, UNFOCUS — second FOCUSED overwrites first; must not raise."""
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=99),
+        _profile_active(_BASE_TS, mono=100),
         _focused(_BASE_TS, mono=100),
-        _focused(_BASE_TS + 60, mono=200),
-        _unfocused(_BASE_TS + 3660, mono=3800),  # nearest unfocus after both focuses
+        _focused(_BASE_TS + 60, mono=200),           # overwrites — this is the active focus
+        _unfocused(_BASE_TS + 3660, mono=3800),      # dur = 3800 - 200 = 3600 s = 60 min
+        _exited(_BASE_TS + 3660, mono=3801),
     ])
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     assert r.status_code == 200
     days = r.json()["days"]
-    # Both FOCUSEDs pair with the same UNFOCUSED under the nearest-unfocused algorithm;
-    # minutes may be over-counted. We only assert the response is valid.
     assert isinstance(days, list)
     for day in days:
         assert day["minutes"] >= 0
@@ -203,12 +320,47 @@ def test_result_is_sorted_by_date(client):
     """Response rows are ordered by date ascending."""
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
-        _focused(_BASE_TS + 86400 * 2, mono=300000),
-        _unfocused(_BASE_TS + 86400 * 2 + 1800, mono=301800),
-        _focused(_BASE_TS, mono=100),
-        _unfocused(_BASE_TS + 1800, mono=1900),
+        # Post in chronological order; response must still be date-sorted
+        *_session(_BASE_TS, start_mono=100, dur_mono=1800),
+        *_session(_BASE_TS + 86400 * 2, start_mono=2000, dur_mono=1800),
     ])
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     days = r.json()["days"]
     dates = [d["date"] for d in days]
     assert dates == sorted(dates)
+
+
+# ── Device isolation and ordering ─────────────────────────────────────────────
+
+
+def test_device_isolation(client):
+    """Event streams from two devices are reconstructed independently.
+
+    If streams were mixed, DEVICE_A's FOCUSED would pair with DEVICE_B's UNFOCUSED
+    (or vice-versa) producing wrong durations. Correct result: 30 + 45 = 75 min.
+    """
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, _session(_BASE_TS, start_mono=100, dur_mono=1800))
+    post_activity_events(client, DEVICE_B, _session(_BASE_TS, start_mono=100, dur_mono=2700))
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 75   # 1800 + 2700 = 4500 s // 60 = 75
+
+
+def test_out_of_insertion_order_events(client):
+    """Events with decreasing wall-clock but increasing monotonic are handled without crash."""
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        # Wall clock decreases; monotonic increases (simulates out-of-order wall time)
+        _started(_BASE_TS + 3600, mono=50),
+        _profile_active(_BASE_TS + 2400, mono=100),
+        _focused(_BASE_TS + 1800, mono=100),
+        _unfocused(_BASE_TS, mono=1900),           # dur = 1800 s
+        _exited(_BASE_TS - 600, mono=1901),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    assert r.status_code == 200
+    days = r.json()["days"]
+    assert isinstance(days, list)
+    assert all(d["minutes"] >= 0 for d in days)
