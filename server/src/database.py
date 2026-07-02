@@ -2686,23 +2686,19 @@ def get_daily_playtime(
             days_games[date] = {}
         days_games[date][app_id] = days_games[date].get(app_id, 0) + secs
 
+    import titledb as _titledb
+
     all_app_ids = list({k[1] for k in accumulated})
-    label_map: dict[str, str] = {}
-    if all_app_ids:
-        placeholders = ",".join(["?"] * len(all_app_ids))
-        lrows = conn.execute(
-            "SELECT entity_id, label FROM labels"
-            " WHERE entity_type = 'game' AND entity_id IN (" + placeholders + ")",
-            all_app_ids,
-        ).fetchall()
-        label_map = {r["entity_id"]: r["label"] for r in lrows}
+    label_map: dict[str, str] = {
+        app_id: (_titledb.resolve_game_name(app_id, conn) or app_id) for app_id in all_app_ids
+    }
 
     result = []
     for date in sorted(days_sec):
         games = [
             {
                 "title_id": app_id,
-                "display_name": label_map.get(app_id, app_id),
+                "display_name": label_map[app_id],
                 "minutes": secs // 60,
             }
             for app_id, secs in sorted(days_games[date].items(), key=lambda x: -x[1])
