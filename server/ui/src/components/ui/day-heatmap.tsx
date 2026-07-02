@@ -51,7 +51,7 @@ function toCalendarData(days: PlaytimeDay[], year: number): Activity[] {
 }
 
 interface Stats {
-  todayMinutes: number
+  allTimeMinutes: number
   last7Avg: number
   longestStreak: number
   currentStreak: number
@@ -61,7 +61,7 @@ function computeStats(data: PlaytimeDay[]): Stats {
   const today = toISO(new Date())
   const sevenDaysAgo = toISO(new Date(Date.now() - 6 * 86400_000))
 
-  const todayMinutes = data.find(d => d.date === today)?.minutes ?? 0
+  const allTimeMinutes = Math.floor(data.flatMap(d => d.games).reduce((s, g) => s + g.total_sec, 0) / 60)
   const last7Total = data
     .filter(d => d.date >= sevenDaysAgo && d.date <= today)
     .reduce((s, d) => s + d.minutes, 0)
@@ -100,7 +100,7 @@ function computeStats(data: PlaytimeDay[]): Stats {
       ? countBack(yesterday)
       : 0
 
-  return { todayMinutes, last7Avg, longestStreak, currentStreak }
+  return { allTimeMinutes, last7Avg, longestStreak, currentStreak }
 }
 
 interface TooltipState {
@@ -299,9 +299,9 @@ export function DayHeatmap({ data, iconUrls }: Props) {
           </span>
         </span>
         <span>
-          Today:{' '}
+          All time:{' '}
           <span className="font-[var(--font-weight-semibold)] text-[var(--color-success-text)]">
-            {stats.todayMinutes > 0 ? fmt(stats.todayMinutes) : '—'}
+            {stats.allTimeMinutes > 0 ? fmt(stats.allTimeMinutes) : '—'}
           </span>
         </span>
         <span>
