@@ -154,7 +154,8 @@ export function DayHeatmap({ data, iconUrls }: Props) {
   const stats = React.useMemo(() => computeStats(data), [data])
 
   const tooltipGames = tooltip ? (gameMap.get(tooltip.date) ?? []) : []
-  const tooltipMinutes = Math.floor(tooltipGames.reduce((s, g) => s + g.total_sec, 0) / 60)
+  const totalDaySec = tooltipGames.reduce((s, g) => s + g.total_sec, 0)
+  const tooltipMinutes = Math.floor(totalDaySec / 60)
   const tooltipDateLabel = tooltip
     ? new Date(tooltip.date + 'T12:00:00').toLocaleDateString('en-US', {
         weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
@@ -255,13 +256,13 @@ export function DayHeatmap({ data, iconUrls }: Props) {
         >
           <div className="flex items-center justify-between px-[var(--spacing-3)] pt-[var(--spacing-2)] pb-[var(--spacing-1)]">
             <p className="text-[var(--color-text-muted)] text-xs">{tooltipDateLabel}</p>
-            {tooltipMinutes > 0 && (
+            {totalDaySec > 0 && (
               <p className="text-xs font-[var(--font-weight-semibold)] text-[var(--color-text-primary)] pl-[var(--spacing-4)]">
-                {fmt(tooltipMinutes)}
+                {tooltipMinutes > 0 ? fmt(tooltipMinutes) : '< 1m'}
               </p>
             )}
           </div>
-          {tooltipMinutes === 0 ? (
+          {totalDaySec === 0 ? (
             <p className="text-sm text-[var(--color-text-muted)] px-[var(--spacing-3)] pb-[var(--spacing-2)]">No playtime</p>
           ) : (
             <div>
