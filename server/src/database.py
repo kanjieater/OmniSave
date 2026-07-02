@@ -256,6 +256,14 @@ CREATE TABLE IF NOT EXISTS device_play_events (
 );
 CREATE INDEX IF NOT EXISTS idx_dpe_device_app ON device_play_events(device_id, application_id);
 CREATE INDEX IF NOT EXISTS idx_dpe_time       ON device_play_events(event_timestamp DESC);
+
+-- PDM offset the server has durably received for each device.
+-- Monotonically increasing; never regresses.
+CREATE TABLE IF NOT EXISTS device_activity_offset (
+    device_id   TEXT    PRIMARY KEY,
+    last_offset INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT    NOT NULL
+);
 """
 
 
@@ -2514,6 +2522,33 @@ def insert_play_events(conn, device_id: str, owner_user_id: str, events: list[di
     return inserted
 
 
+def get_activity_offset(conn, device_id: str) -> int:
+    row = conn.execute(
+        "SELECT last_offset FROM device_activity_offset WHERE device_id = ?",
+        (device_id,),
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def set_activity_offset(conn, device_id: str, last_offset: int) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            """
+            INSERT INTO device_activity_offset (device_id, last_offset, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(device_id) DO UPDATE
+                SET last_offset = MAX(last_offset, excluded.last_offset),
+                    updated_at  = excluded.updated_at
+            """,
+            (device_id, last_offset, _now()),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 def get_play_events(
     conn,
     device_id: str | None = None,
@@ -2546,6 +2581,226 @@ def get_play_events(
     )
     rows = conn.execute(sql, params + [limit, offset]).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_daily_playtime(
+    conn,
+    owner_user_id: str,
+    application_id: str | None = None,
+) -> list[dict]:
+    """Return daily playtime totals by reconstructing valid play sessions from the
+    activity event stream using a per-device state machine.
+
+    A session spans APPLICATION_STARTED → APPLICATION_EXITED. Active time is the
+    sum of APPLICATION_FOCUSED → APPLICATION_UNFOCUSED intervals (monotonic duration).
+    Sessions with no PROFILE_ACTIVE or PROFILE_INACTIVE event are excluded. Consecutive
+    UNFOCUSED events are collapsed. Zero-duration and negative intervals are ignored.
+    A new APPLICATION_STARTED while a session is open closes the prior session (crash
+    recovery). A backward monotonic_timestamp resets all state (device reboot boundary).
+    Streams from different devices are never mixed.
+
+    Profile attribution: if the last PROFILE_ACTIVE in a session maps to a different
+    OmniSave user via device_profile_map, the session is excluded. Sessions on unowned
+    devices (reached via device_profile_map) are only included when the active profile
+    explicitly maps to this user. Latest PROFILE_ACTIVE wins for mid-session switches.
+    """
+    # Load profile→user mappings for all devices that could appear in the event stream:
+    # owned devices + devices where this user has a claimed profile.
+    profile_map: dict[tuple[str, str], str] = {}
+    for row in conn.execute(
+        """
+        SELECT dpm.device_id, dpm.profile_id, dpm.user_id
+        FROM device_profile_map dpm
+        WHERE dpm.user_id = ?
+           OR dpm.device_id IN (
+               SELECT DISTINCT device_id FROM device_play_events WHERE owner_user_id = ?
+           )
+        """,
+        (owner_user_id, owner_user_id),
+    ):
+        profile_map[(row["device_id"], row["profile_id"])] = row["user_id"]
+
+    rows = conn.execute(
+        """
+        SELECT event_type, application_id, profile_id,
+               event_timestamp, monotonic_timestamp, device_id,
+               owner_user_id AS device_owner
+        FROM device_play_events
+        WHERE owner_user_id = ?
+           OR device_id IN (SELECT device_id FROM device_profile_map WHERE user_id = ?)
+        ORDER BY device_id, id
+        """,
+        (owner_user_id, owner_user_id),
+    ).fetchall()
+
+    # accumulated[(date, app_id)] → total seconds across all valid sessions
+    accumulated: dict[tuple[str, str], int] = {}
+
+    # Per-device state: IDLE | IN_SESSION | FOCUSED
+    state = "IDLE"
+    session_app = ""
+    has_profile = False
+    session_profile_id: str | None = None
+    session_acc: dict[tuple[str, str], int] = {}
+    focus_mono: int | None = None
+    focus_wall: int | None = None
+    prev_mono: int | None = None
+    prev_device: str | None = None
+    current_device: str = ""
+    current_device_owner: str = ""
+
+    def _emit() -> None:
+        if not has_profile:
+            return
+        if session_profile_id:
+            mapped_user = profile_map.get((current_device, session_profile_id))
+            if mapped_user is not None and mapped_user != owner_user_id:
+                return  # session belongs to a different OmniSave user
+            if mapped_user is None and current_device_owner != owner_user_id:
+                return  # unowned device, active profile unmapped — don't claim
+        elif current_device_owner != owner_user_id:
+            # has_profile via PROFILE_INACTIVE only, unowned device — skip
+            return
+        if application_id is None or session_app == application_id:
+            for k, v in session_acc.items():
+                accumulated[k] = accumulated.get(k, 0) + v
+
+    def _open(app: str) -> None:
+        nonlocal \
+            state, \
+            session_app, \
+            has_profile, \
+            session_profile_id, \
+            session_acc, \
+            focus_mono, \
+            focus_wall
+        state = "IN_SESSION"
+        session_app = app
+        has_profile = False
+        session_profile_id = None
+        session_acc = {}
+        focus_mono = None
+        focus_wall = None
+
+    def _reset() -> None:
+        nonlocal \
+            state, \
+            session_app, \
+            has_profile, \
+            session_profile_id, \
+            session_acc, \
+            focus_mono, \
+            focus_wall, \
+            prev_mono
+        state = "IDLE"
+        session_app = ""
+        has_profile = False
+        session_profile_id = None
+        session_acc = {}
+        focus_mono = None
+        focus_wall = None
+        prev_mono = None
+
+    for row in rows:
+        et = row["event_type"]
+        device = row["device_id"]
+        mono = row["monotonic_timestamp"]
+        wall = row["event_timestamp"]
+        app = row["application_id"] or ""
+        raw_profile = row["profile_id"] or ""
+        # Normalize to 16 chars: device_profile_map stores first 64 bits of the 128-bit UID
+        profile_id_normalized = raw_profile[:16] if raw_profile else None
+
+        if device != prev_device:
+            _reset()
+            prev_device = device
+            current_device = device
+            current_device_owner = row["device_owner"]
+
+        # Strict backward mono = reboot boundary; discard any open session/interval
+        if prev_mono is not None and mono < prev_mono:
+            _reset()
+
+        prev_mono = mono
+
+        if state == "IDLE":
+            if et == "APPLICATION_STARTED":
+                _open(app)
+
+        elif state == "IN_SESSION":
+            if et == "APPLICATION_STARTED":
+                _emit()
+                _open(app)
+            elif et in ("PROFILE_ACTIVE", "PROFILE_INACTIVE"):
+                has_profile = True
+                if et == "PROFILE_ACTIVE" and profile_id_normalized:
+                    session_profile_id = profile_id_normalized  # latest wins
+            elif et == "APPLICATION_FOCUSED":
+                focus_mono = mono
+                focus_wall = wall
+                state = "FOCUSED"
+            elif et == "APPLICATION_EXITED":
+                _emit()
+                _reset()
+
+        elif state == "FOCUSED":
+            if et == "APPLICATION_FOCUSED":
+                focus_mono = mono
+                focus_wall = wall
+            elif et in ("PROFILE_ACTIVE", "PROFILE_INACTIVE"):
+                has_profile = True
+                if et == "PROFILE_ACTIVE" and profile_id_normalized:
+                    session_profile_id = profile_id_normalized  # latest wins
+            elif et == "APPLICATION_UNFOCUSED":
+                dur = mono - (focus_mono or mono)
+                if dur > 0 and focus_wall is not None:
+                    # Local time intentional: server TZ (set via TZ env var) matches the
+                    # user's timezone so heatmap cells align with the user's calendar day.
+                    # The frontend also uses local dates (new Date(), toLocaleDateString).
+                    date = datetime.fromtimestamp(focus_wall).strftime("%Y-%m-%d")
+                    key = (date, session_app)
+                    session_acc[key] = session_acc.get(key, 0) + dur
+                focus_mono = None
+                focus_wall = None
+                state = "IN_SESSION"
+                # Consecutive UNFOCUSED in IN_SESSION are no-ops — no special handling needed
+            elif et == "APPLICATION_STARTED":
+                focus_mono = None
+                focus_wall = None
+                _emit()
+                _open(app)
+            elif et == "APPLICATION_EXITED":
+                focus_mono = None
+                focus_wall = None
+                _emit()
+                _reset()
+
+    # Open sessions (no EXITED received) are not emitted per the contract
+
+    if not accumulated:
+        return []
+
+    days_sec: dict[str, int] = {}
+    days_games: dict[str, dict[str, int]] = {}
+    for (date, app_id), secs in accumulated.items():
+        days_sec[date] = days_sec.get(date, 0) + secs
+        if date not in days_games:
+            days_games[date] = {}
+        days_games[date][app_id] = days_games[date].get(app_id, 0) + secs
+
+    result = []
+    for date in sorted(days_sec):
+        games = [
+            {
+                "title_id": app_id,
+                "display_name": app_id,
+                "total_sec": secs,
+                "minutes": secs // 60,
+            }
+            for app_id, secs in sorted(days_games[date].items(), key=lambda x: -x[1])
+        ]
+        result.append({"date": date, "minutes": days_sec[date] // 60, "games": games})
+    return result
 
 
 def list_device_profiles(conn, device_id: str, user_id: str = "") -> list[dict]:
