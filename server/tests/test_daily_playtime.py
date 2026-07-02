@@ -491,6 +491,111 @@ def test_midnight_date_bucketing(client):
     assert days[dates.index("2025-01-17")]["minutes"] == 30
 
 
+def test_profile_active_while_focused_sets_attribution(client):
+    """PROFILE_ACTIVE received while in FOCUSED state is captured (lines 2751-2753)."""
+    tok_b = _create_user(client, "user_b_paf")
+    _map_profile(client, DEVICE_A, "profX", "user_b_paf")
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=10),
+        _focused(_BASE_TS, mono=50),
+        # PROFILE_ACTIVE while already FOCUSED — hits lines 2751-2753
+        {"event_type": "PROFILE_ACTIVE", "application_id": None, "profile_id": "profX",
+         "event_timestamp": _BASE_TS, "monotonic_timestamp": 60},
+        _unfocused(_BASE_TS + 3600, mono=3700),
+        _exited(_BASE_TS + 3600, mono=3701),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(tok_b))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 60
+
+
+def test_started_while_focused_emits_and_opens_new(client):
+    """APPLICATION_STARTED in FOCUSED state clears focus, emits accumulated intervals, opens new (lines 2768-2771)."""
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=10, app=APP),
+        _profile_active(_BASE_TS, mono=20),
+        _focused(_BASE_TS, mono=50, app=APP),
+        _unfocused(_BASE_TS + 1800, mono=1850, app=APP),   # 30 min accumulated
+        _focused(_BASE_TS + 1900, mono=1900, app=APP),     # re-enter FOCUSED state
+        # STARTED while FOCUSED — hits lines 2768-2771
+        _started(_BASE_TS + 2000, mono=2000, app=OTHER_APP),
+        _profile_active(_BASE_TS + 2000, mono=2001),
+        _focused(_BASE_TS + 2000, mono=2001, app=OTHER_APP),
+        _unfocused(_BASE_TS + 5601, mono=5601, app=OTHER_APP),   # 5601-2001=3600s=60min
+        _exited(_BASE_TS + 5601, mono=5602, app=OTHER_APP),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 90   # APP 30 min + OTHER_APP 60 min
+
+
+def test_reboot_boundary_discards_pre_reboot_open_session(client):
+    """Backward mono signals reboot; _reset() discards accumulated open session (line 2722).
+
+    Pre-reboot events are POSTed first (lower insertion id), post-reboot events second
+    (higher id). ORDER BY id yields high-mono pre-reboot events before low-mono
+    post-reboot events, creating the backward jump.
+    """
+    token = login_admin(client)
+    # Pre-reboot batch — higher mono, inserted first
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=1000),
+        _profile_active(_BASE_TS, mono=1001),
+        _focused(_BASE_TS, mono=1002),
+        _unfocused(_BASE_TS + 1800, mono=2800),   # 30 min interval (no EXIT → open session)
+    ])
+    # Post-reboot batch — lower mono, inserted second → backward jump detected
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS + 7200, mono=100),       # mono=100 < prev_mono=2800 → _reset()
+        _profile_active(_BASE_TS + 7200, mono=101),
+        _focused(_BASE_TS + 7200, mono=101),
+        _unfocused(_BASE_TS + 10800, mono=3701),   # 60 min
+        _exited(_BASE_TS + 10800, mono=3702),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    total = sum(d["minutes"] for d in days)
+    assert total == 60   # pre-reboot open session discarded; only post-reboot 60 min
+
+
+def test_unmapped_active_profile_non_owner_excluded(client):
+    """Session's active profile is unmapped and device not owned by querying user → excluded (line 2660).
+
+    user_b has profY mapped on DEVICE_A (so events are visible in the WHERE clause),
+    but the session's PROFILE_ACTIVE is for "user1" which has no mapping.
+    """
+    tok_b = _create_user(client, "user_b_nonowner")
+    # Give user_b a foothold on DEVICE_A so the SELECT returns events
+    _map_profile(client, DEVICE_A, "profY", "user_b_nonowner")
+    # Session uses "user1" profile — not mapped to anyone
+    post_activity_events(client, DEVICE_A, _session(_BASE_TS, start_mono=1000, dur_mono=3600))
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(tok_b))
+    assert r.json()["days"] == []
+
+
+def test_profile_inactive_only_non_owner_excluded(client):
+    """PROFILE_INACTIVE only (no ACTIVE) on device not owned by querying user → excluded (line 2663).
+
+    user_b has profZ mapped on DEVICE_A so events are visible, but session has no
+    PROFILE_ACTIVE — session_profile_id stays None, device owner is admin ≠ user_b.
+    """
+    tok_b = _create_user(client, "user_b_ionly")
+    _map_profile(client, DEVICE_A, "profZ", "user_b_ionly")
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=10),
+        {"event_type": "PROFILE_INACTIVE", "application_id": None, "profile_id": "user1",
+         "event_timestamp": _BASE_TS, "monotonic_timestamp": 20},
+        _focused(_BASE_TS, mono=50),
+        _unfocused(_BASE_TS + 3600, mono=3700),
+        _exited(_BASE_TS + 3600, mono=3701),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(tok_b))
+    assert r.json()["days"] == []
+
+
 def test_profile_switch_mid_session_latest_wins(client):
     """PROFILE_ACTIVE(A) then PROFILE_ACTIVE(B) in one session — last active profile wins."""
     tok_b = _create_user(client, "user_b")

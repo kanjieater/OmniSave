@@ -323,3 +323,26 @@ def test_insert_play_events_rolls_back_on_error(conn):
 
     rows = db.get_play_events(conn, device_id="AABBCC112233")
     assert rows == [], "rolled-back rows must not persist"
+
+
+def test_set_activity_offset_rolls_back_on_error(conn):
+    """Exception during INSERT triggers ROLLBACK — offset must not persist (lines 2547-2549)."""
+    from unittest.mock import patch
+
+    original_execute = conn.execute
+    call_count = [0]
+
+    def patched(sql, params=()):
+        if "INSERT INTO device_activity_offset" in sql:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("simulated insert failure")
+        return original_execute(sql, params)
+
+    with patch.object(conn, "execute", side_effect=patched):
+        try:
+            db.set_activity_offset(conn, "ZZDEVICE01", 99)
+        except RuntimeError:
+            pass
+
+    assert db.get_activity_offset(conn, "ZZDEVICE01") == 0, "rolled-back offset must not persist"
