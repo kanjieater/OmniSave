@@ -229,24 +229,33 @@ export function DayHeatmap({ data, iconUrls }: Props) {
       {/* Tooltip portal — custom, no Radix, works on both mouse and touch */}
       {tooltip && createPortal(
         <div
-          style={{
-            position: 'fixed',
-            top: tooltip.rect.top - 8,
-            left: Math.max(8, Math.min(
-              tooltip.rect.left + tooltip.rect.width / 2,
-              window.innerWidth - 8
-            )),
-            transform: 'translate(-50%, -100%)',
-            zIndex: 9999,
-            minWidth: '13rem',
-            maxWidth: `min(340px, calc(100vw - 2rem))`,
-            pointerEvents: 'none',
-          }}
+          style={(() => {
+            const maxW = Math.min(340, window.innerWidth - 32)
+            const halfW = maxW / 2
+            return {
+              position: 'fixed' as const,
+              top: tooltip.rect.top - 8,
+              left: Math.max(halfW + 4, Math.min(
+                tooltip.rect.left + tooltip.rect.width / 2,
+                window.innerWidth - halfW - 4
+              )),
+              transform: 'translate(-50%, -100%)',
+              zIndex: 9999,
+              minWidth: '13rem',
+              maxWidth: `min(340px, calc(100vw - 2rem))`,
+              pointerEvents: 'none' as const,
+            }
+          })()}
           className="rounded-[var(--radius-md)] border border-[var(--color-border-base)] bg-[var(--color-bg-elevated)] shadow-[var(--shadow-lg)]"
         >
-          <p className="text-[var(--color-text-muted)] text-xs px-[var(--spacing-3)] pt-[var(--spacing-2)] pb-[var(--spacing-1)]">
-            {tooltipDateLabel}
-          </p>
+          <div className="flex items-center justify-between px-[var(--spacing-3)] pt-[var(--spacing-2)] pb-[var(--spacing-1)]">
+            <p className="text-[var(--color-text-muted)] text-xs">{tooltipDateLabel}</p>
+            {tooltipMinutes > 0 && (
+              <p className="text-xs font-[var(--font-weight-semibold)] text-[var(--color-text-primary)] pl-[var(--spacing-4)]">
+                {fmt(tooltipMinutes)}
+              </p>
+            )}
+          </div>
           {tooltipMinutes === 0 ? (
             <p className="text-sm text-[var(--color-text-muted)] px-[var(--spacing-3)] pb-[var(--spacing-2)]">No playtime</p>
           ) : (
