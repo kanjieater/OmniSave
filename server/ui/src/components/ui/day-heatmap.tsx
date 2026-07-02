@@ -154,9 +154,7 @@ export function DayHeatmap({ data, iconUrls }: Props) {
   const stats = React.useMemo(() => computeStats(data), [data])
 
   const tooltipGames = tooltip ? (gameMap.get(tooltip.date) ?? []) : []
-  // Sum raw seconds across all games then floor once — same formula as the backend day total,
-  // ensuring the header matches the heatmap cell intensity exactly.
-  const tooltipMinutes = Math.floor(tooltipGames.reduce((s, g) => s + g.total_sec, 0) / 60)
+  const tooltipMinutes = tooltipGames.reduce((s, g) => s + g.minutes, 0)
   const tooltipDateLabel = tooltip
     ? new Date(tooltip.date + 'T12:00:00').toLocaleDateString('en-US', {
         weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
