@@ -364,3 +364,104 @@ def test_out_of_insertion_order_events(client):
     days = r.json()["days"]
     assert isinstance(days, list)
     assert all(d["minutes"] >= 0 for d in days)
+
+
+# ── Profile attribution ────────────────────────────────────────────────────────
+
+
+def _map_profile(client, device_id: str, profile_id: str, user_id: str) -> None:
+    """Insert a device_profile_map entry directly — bypasses the claim API
+    (which requires the profile to be in device_known_profiles first)."""
+    import ui_api as _ui
+    from datetime import datetime, timezone
+    _ui._conn.execute(
+        """
+        INSERT OR REPLACE INTO device_profile_map
+            (device_id, profile_id, user_id, profile_name, created_at)
+        VALUES (?, ?, ?, '', ?)
+        """,
+        (device_id, profile_id, user_id, datetime.now(timezone.utc).isoformat()),
+    )
+
+
+def _create_user(client, username: str, password: str = "pass") -> str:
+    """Create a non-admin user and return their session token."""
+    admin_tok = login_admin(client)
+    r = client.post(
+        "/api/v1/ui/users",
+        json={"username": username, "password": password},
+        headers=auth_header(admin_tok),
+    )
+    assert r.status_code == 200, r.text
+    return login_admin(client, username, password)
+
+
+def test_profile_mapped_to_other_user_excluded(client):
+    """Session whose active profile is mapped to a different OmniSave user is excluded."""
+    token = login_admin(client)
+    # Profile "user1" (used by _profile_active helper) → mapped to user_b, not admin
+    _map_profile(client, DEVICE_A, "user1", "user_b")
+    post_activity_events(client, DEVICE_A, _session(_BASE_TS, start_mono=1000, dur_mono=3600))
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    assert r.json()["days"] == []
+
+
+def test_profile_mapped_to_other_user_visible_to_that_user(client):
+    """Session excluded from device owner is visible to the user the profile maps to."""
+    tok_b = _create_user(client, "user_b")
+    # Map "user1" profile on DEVICE_A to user_b
+    _map_profile(client, DEVICE_A, "user1", "user_b")
+    post_activity_events(client, DEVICE_A, _session(_BASE_TS, start_mono=1000, dur_mono=3600))
+    # user_b sees the session even though DEVICE_A is owned by admin
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(tok_b))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 60
+
+
+def test_profile_mapped_to_same_user_included(client):
+    """Session with profile explicitly mapped to the querying user is counted."""
+    token = login_admin(client)
+    _map_profile(client, DEVICE_A, "user1", "admin")
+    post_activity_events(client, DEVICE_A, _session(_BASE_TS, start_mono=1000, dur_mono=3600))
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 60
+
+
+def test_unattributed_profile_falls_to_device_owner(client):
+    """Profile with no device_profile_map entry counts for the device owner."""
+    token = login_admin(client)
+    # No _map_profile call — profile "user1" has no mapping
+    post_activity_events(client, DEVICE_A, _session(_BASE_TS, start_mono=1000, dur_mono=3600))
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 60
+
+
+def test_profile_switch_mid_session_latest_wins(client):
+    """PROFILE_ACTIVE(A) then PROFILE_ACTIVE(B) in one session — last active profile wins."""
+    tok_b = _create_user(client, "user_b")
+    _map_profile(client, DEVICE_A, "profA", "admin")
+    _map_profile(client, DEVICE_A, "profB", "user_b")
+
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=10),
+        {"event_type": "PROFILE_ACTIVE", "application_id": None, "profile_id": "profA",
+         "event_timestamp": _BASE_TS, "monotonic_timestamp": 50},
+        _focused(_BASE_TS, mono=100),
+        _unfocused(_BASE_TS + 1800, mono=1900),    # 30 min interval
+        {"event_type": "PROFILE_ACTIVE", "application_id": None, "profile_id": "profB",
+         "event_timestamp": _BASE_TS + 1800, "monotonic_timestamp": 1900},  # switch after unfocus
+        _exited(_BASE_TS + 1800, mono=1901),
+    ])
+
+    admin_tok = login_admin(client)
+    # admin → profB is not theirs, so session is excluded
+    assert client.get("/api/v1/ui/playtime/daily", headers=auth_header(admin_tok)).json()["days"] == []
+    # user_b → profB maps to them, so session is included
+    days = client.get("/api/v1/ui/playtime/daily", headers=auth_header(tok_b)).json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 30

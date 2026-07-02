@@ -2563,15 +2563,39 @@ def get_daily_playtime(
     A new APPLICATION_STARTED while a session is open closes the prior session (crash
     recovery). A backward monotonic_timestamp resets all state (device reboot boundary).
     Streams from different devices are never mixed.
+
+    Profile attribution: if the last PROFILE_ACTIVE in a session maps to a different
+    OmniSave user via device_profile_map, the session is excluded. Sessions on unowned
+    devices (reached via device_profile_map) are only included when the active profile
+    explicitly maps to this user. Latest PROFILE_ACTIVE wins for mid-session switches.
     """
+    # Load profile→user mappings for all devices that could appear in the event stream:
+    # owned devices + devices where this user has a claimed profile.
+    profile_map: dict[tuple[str, str], str] = {}
+    for row in conn.execute(
+        """
+        SELECT dpm.device_id, dpm.profile_id, dpm.user_id
+        FROM device_profile_map dpm
+        WHERE dpm.user_id = ?
+           OR dpm.device_id IN (
+               SELECT DISTINCT device_id FROM device_play_events WHERE owner_user_id = ?
+           )
+        """,
+        (owner_user_id, owner_user_id),
+    ):
+        profile_map[(row["device_id"], row["profile_id"])] = row["user_id"]
+
     rows = conn.execute(
         """
-        SELECT event_type, application_id, event_timestamp, monotonic_timestamp, device_id
+        SELECT event_type, application_id, profile_id,
+               event_timestamp, monotonic_timestamp, device_id,
+               owner_user_id AS device_owner
         FROM device_play_events
         WHERE owner_user_id = ?
+           OR device_id IN (SELECT device_id FROM device_profile_map WHERE user_id = ?)
         ORDER BY device_id, id
         """,
-        (owner_user_id,),
+        (owner_user_id, owner_user_id),
     ).fetchall()
 
     # accumulated[(date, app_id)] → total seconds across all valid sessions
@@ -2581,31 +2605,62 @@ def get_daily_playtime(
     state = "IDLE"
     session_app = ""
     has_profile = False
+    session_profile_id: str | None = None
     session_acc: dict[tuple[str, str], int] = {}
     focus_mono: int | None = None
     focus_wall: int | None = None
     prev_mono: int | None = None
     prev_device: str | None = None
+    current_device: str = ""
+    current_device_owner: str = ""
 
     def _emit() -> None:
-        if has_profile and (application_id is None or session_app == application_id):
+        if not has_profile:
+            return
+        if session_profile_id:
+            mapped_user = profile_map.get((current_device, session_profile_id))
+            if mapped_user is not None and mapped_user != owner_user_id:
+                return  # session belongs to a different OmniSave user
+            if mapped_user is None and current_device_owner != owner_user_id:
+                return  # unowned device, active profile unmapped — don't claim
+        elif current_device_owner != owner_user_id:
+            # has_profile via PROFILE_INACTIVE only, unowned device — skip
+            return
+        if application_id is None or session_app == application_id:
             for k, v in session_acc.items():
                 accumulated[k] = accumulated.get(k, 0) + v
 
     def _open(app: str) -> None:
-        nonlocal state, session_app, has_profile, session_acc, focus_mono, focus_wall
+        nonlocal \
+            state, \
+            session_app, \
+            has_profile, \
+            session_profile_id, \
+            session_acc, \
+            focus_mono, \
+            focus_wall
         state = "IN_SESSION"
         session_app = app
         has_profile = False
+        session_profile_id = None
         session_acc = {}
         focus_mono = None
         focus_wall = None
 
     def _reset() -> None:
-        nonlocal state, session_app, has_profile, session_acc, focus_mono, focus_wall, prev_mono
+        nonlocal \
+            state, \
+            session_app, \
+            has_profile, \
+            session_profile_id, \
+            session_acc, \
+            focus_mono, \
+            focus_wall, \
+            prev_mono
         state = "IDLE"
         session_app = ""
         has_profile = False
+        session_profile_id = None
         session_acc = {}
         focus_mono = None
         focus_wall = None
@@ -2617,10 +2672,15 @@ def get_daily_playtime(
         mono = row["monotonic_timestamp"]
         wall = row["event_timestamp"]
         app = row["application_id"] or ""
+        raw_profile = row["profile_id"] or ""
+        # Normalize to 16 chars: device_profile_map stores first 64 bits of the 128-bit UID
+        profile_id_normalized = raw_profile[:16] if raw_profile else None
 
         if device != prev_device:
             _reset()
             prev_device = device
+            current_device = device
+            current_device_owner = row["device_owner"]
 
         # Strict backward mono = reboot boundary; discard any open session/interval
         if prev_mono is not None and mono < prev_mono:
@@ -2638,6 +2698,8 @@ def get_daily_playtime(
                 _open(app)
             elif et in ("PROFILE_ACTIVE", "PROFILE_INACTIVE"):
                 has_profile = True
+                if et == "PROFILE_ACTIVE" and profile_id_normalized:
+                    session_profile_id = profile_id_normalized  # latest wins
             elif et == "APPLICATION_FOCUSED":
                 focus_mono = mono
                 focus_wall = wall
@@ -2652,6 +2714,8 @@ def get_daily_playtime(
                 focus_wall = wall
             elif et in ("PROFILE_ACTIVE", "PROFILE_INACTIVE"):
                 has_profile = True
+                if et == "PROFILE_ACTIVE" and profile_id_normalized:
+                    session_profile_id = profile_id_normalized  # latest wins
             elif et == "APPLICATION_UNFOCUSED":
                 dur = mono - (focus_mono or mono)
                 if dur > 0 and focus_wall is not None:
