@@ -2716,6 +2716,9 @@ def get_daily_playtime(
             elif et == "APPLICATION_UNFOCUSED":
                 dur = mono - (focus_mono or mono)
                 if dur > 0 and focus_wall is not None:
+                    # Local time intentional: server TZ (set via TZ env var) matches the
+                    # user's timezone so heatmap cells align with the user's calendar day.
+                    # The frontend also uses local dates (new Date(), toLocaleDateString).
                     date = datetime.fromtimestamp(focus_wall).strftime("%Y-%m-%d")
                     key = (date, session_app)
                     session_acc[key] = session_acc.get(key, 0) + dur
