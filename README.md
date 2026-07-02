@@ -120,6 +120,15 @@ Dashboard → Games → (game):
 - Delete individual snapshots you no longer want.
 - Push any version back to any device.
 
+### Viewing your playtime history
+
+Dashboard → Playtime:
+
+- A heatmap shows every day you played, with color intensity based on total time.
+- Hover or tap any cell to see a per-game breakdown for that day.
+- Navigate between years with the chevrons. Year totals and all-time stats update automatically.
+- Each OmniSave user sees only their own sessions. On a shared device, sessions are attributed to the right account based on the active Switch profile.
+
 ### Turning off sync for a game on a specific device
 
 Dashboard → Devices → (device) → Games → toggle the game off. Any pending delivery for that game to that device is cancelled immediately. Other devices are unaffected.

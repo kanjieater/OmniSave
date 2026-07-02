@@ -1,6 +1,6 @@
 import type {
   AppError, AppEvent, AuthStatus, DashboardData, Device, DeviceAccessEntry, DeviceProfile,
-  DeviceGame, DeviceTokenStatus, GameDetail, Game, LoginUser, RommResult, SettingsData,
+  DeviceGame, DeviceTokenStatus, GameDetail, Game, LoginUser, PlaytimeDay, RommResult, SettingsData,
 } from './types';
 import { updateServerOffset } from './lib/serverTime';
 
@@ -142,6 +142,11 @@ export const api = {
     get<{ enabled: boolean; host: string; has_api_key: boolean; source_id: string; romm_username: string | null; romm_connect_status: string; romm_connect_detail: string }>('/settings/romm'),
   setRommServerSettings: (body: { enabled?: boolean; host?: string; api_key?: string; source_id?: string }) =>
     put<{ ok: boolean; romm_username: string | null; romm_connect_status: string; romm_connect_detail: string }>('/settings/romm', body),
+
+  dailyPlaytime: (titleId?: string) => {
+    const qs = titleId ? `?title_id=${encodeURIComponent(titleId)}` : ''
+    return get<{ days: PlaytimeDay[] }>(`/playtime/daily${qs}`)
+  },
 
   health: () =>
     fetch('/api/health').then(r => r.json() as Promise<{ version: string; service: string }>),

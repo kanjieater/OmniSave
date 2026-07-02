@@ -447,6 +447,25 @@
         }
       }
     },
+    "/api/v1/activity/offset": {
+      "get": {
+        "tags": [
+          "activity"
+        ],
+        "summary": "Get Offset",
+        "operationId": "get_offset_api_v1_activity_offset_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/activity/events": {
       "post": {
         "tags": [
@@ -1286,6 +1305,53 @@
               "type": "integer",
               "default": 100,
               "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ui/playtime/daily": {
+      "get": {
+        "tags": [
+          "ui"
+        ],
+        "summary": "Get Daily Playtime",
+        "operationId": "get_daily_playtime_api_v1_ui_playtime_daily_get",
+        "parameters": [
+          {
+            "name": "title_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Title Id"
             }
           }
         ],
@@ -3061,6 +3127,17 @@
             "type": "array",
             "maxItems": 500,
             "title": "Events"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
           }
         },
         "type": "object",
