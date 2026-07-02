@@ -168,7 +168,7 @@ export function DayHeatmap({ data, iconUrls }: Props) {
         <button
           onClick={() => setYear(y => y - 1)}
           disabled={year <= earliestYear}
-          className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors duration-[var(--motion-duration-fast)]"
+          className="cursor-pointer text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors duration-[var(--motion-duration-fast)]"
           aria-label="Previous year"
         >
           <ChevronLeft size={16} />
@@ -179,7 +179,7 @@ export function DayHeatmap({ data, iconUrls }: Props) {
         <button
           onClick={() => setYear(y => y + 1)}
           disabled={year >= currentYear}
-          className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors duration-[var(--motion-duration-fast)]"
+          className="cursor-pointer text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors duration-[var(--motion-duration-fast)]"
           aria-label="Next year"
         >
           <ChevronRight size={16} />
