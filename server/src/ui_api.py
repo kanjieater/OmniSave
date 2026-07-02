@@ -1335,6 +1335,11 @@ def get_daily_playtime(request: Request, title_id: str | None = None):
         return err
     username = _current_username(request) or ""
     rows = db.get_daily_playtime(_conn, username, application_id=title_id)
+    for day in rows:
+        for game in day["games"]:
+            app_id = game["title_id"]
+            game["display_name"] = _game_display_name(_conn, app_id, username) or app_id
+            game["icon_url"] = _game_icon_url(_conn, app_id, username)
     return {"days": rows}
 
 

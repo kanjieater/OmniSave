@@ -135,8 +135,13 @@ export default function Dashboard() {
   const gameIconUrls = React.useMemo(() => {
     const m: Record<string, string | null> = {}
     for (const g of data?.recent_games ?? []) m[g.title_id] = g.icon_url ?? null
+    for (const day of playtimeData?.days ?? []) {
+      for (const g of day.games) {
+        if (!(g.title_id in m)) m[g.title_id] = g.icon_url ?? null
+      }
+    }
     return m
-  }, [data?.recent_games])
+  }, [data?.recent_games, playtimeData?.days])
 
   return (
     <div className="flex flex-col gap-[var(--spacing-8)] p-[var(--spacing-4)] md:p-[var(--spacing-6)] max-w-5xl mx-auto">
