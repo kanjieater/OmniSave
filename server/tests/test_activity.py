@@ -163,6 +163,19 @@ def test_application_id_too_long_rejected(client):
     assert r.status_code == 400
 
 
+def test_app_event_requires_application_id(client):
+    """APPLICATION_STARTED/EXITED/FOCUSED/UNFOCUSED without application_id → 400."""
+    app_event_types = [
+        "APPLICATION_STARTED", "APPLICATION_EXITED",
+        "APPLICATION_FOCUSED", "APPLICATION_UNFOCUSED",
+    ]
+    for et in app_event_types:
+        evt = {**_EVT, "event_type": et, "application_id": None}
+        r = post_activity_events(client, DEVICE_A, [evt])
+        assert r.status_code == 400, f"{et} with null application_id should be rejected"
+        assert "application_id" in r.json()["error"]
+
+
 def test_all_event_types_accepted(client, conn):
     types = [
         "APPLICATION_STARTED", "APPLICATION_EXITED",

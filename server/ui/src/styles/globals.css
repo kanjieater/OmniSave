@@ -62,6 +62,7 @@ body {
 }
 
 /* Noise texture overlay for Level 1 surfaces */
+
 .surface-noise::after {
   content: '';
   position: absolute;

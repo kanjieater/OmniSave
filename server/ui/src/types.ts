@@ -187,3 +187,17 @@ export interface DeviceProfile {
   user_id: string | null;
   is_mine: boolean;
 }
+
+export interface PlaytimeGame {
+  title_id: string;
+  display_name: string;
+  total_sec: number;
+  minutes: number;
+  icon_url?: string | null;
+}
+
+export interface PlaytimeDay {
+  date: string;    // "YYYY-MM-DD"
+  minutes: number;
+  games: PlaytimeGame[];
+}
