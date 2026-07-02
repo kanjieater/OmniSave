@@ -441,6 +441,56 @@ def test_unattributed_profile_falls_to_device_owner(client):
     assert days[0]["minutes"] == 60
 
 
+def test_32char_profile_id_truncated_for_lookup(client):
+    """Switch emits 32-char hex UIDs; server truncates to [:16] for device_profile_map lookup."""
+    tok_b = _create_user(client, "user_b_trunc")
+    full_uid = "AABBCCDDEEFF001122334455667788FF"   # 32-char hex (Switch UID format)
+    short_uid = full_uid[:16]                         # 16 chars stored in device_profile_map
+    _map_profile(client, DEVICE_A, short_uid, "user_b_trunc")
+
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=10),
+        {
+            "event_type": "PROFILE_ACTIVE",
+            "application_id": None,
+            "profile_id": full_uid,
+            "event_timestamp": _BASE_TS,
+            "monotonic_timestamp": 50,
+        },
+        _focused(_BASE_TS, mono=100, profile=full_uid),
+        _unfocused(_BASE_TS + 3600, mono=3700, profile=full_uid),
+        _exited(_BASE_TS + 3600, mono=3701),
+    ])
+
+    tok_b_days = client.get("/api/v1/ui/playtime/daily", headers=auth_header(tok_b)).json()["days"]
+    assert len(tok_b_days) == 1
+    assert tok_b_days[0]["minutes"] == 60
+
+    admin_tok = login_admin(client)
+    assert client.get("/api/v1/ui/playtime/daily", headers=auth_header(admin_tok)).json()["days"] == []
+
+
+def test_midnight_date_bucketing(client):
+    """Sessions either side of midnight UTC are attributed to distinct dates."""
+    # 2025-01-16 23:30:00 UTC
+    ts_before = _BASE_TS + 41400
+    # 2025-01-17 00:30:00 UTC
+    ts_after = _BASE_TS + 45000
+
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        *_session(ts_before, start_mono=100,   dur_mono=1800),
+        *_session(ts_after,  start_mono=10000, dur_mono=1800),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    dates = [d["date"] for d in days]
+    assert "2025-01-16" in dates
+    assert "2025-01-17" in dates
+    assert days[dates.index("2025-01-16")]["minutes"] == 30
+    assert days[dates.index("2025-01-17")]["minutes"] == 30
+
+
 def test_profile_switch_mid_session_latest_wins(client):
     """PROFILE_ACTIVE(A) then PROFILE_ACTIVE(B) in one session — last active profile wins."""
     tok_b = _create_user(client, "user_b")
