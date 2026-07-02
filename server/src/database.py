@@ -2655,7 +2655,7 @@ def get_daily_playtime(
             elif et == "APPLICATION_UNFOCUSED":
                 dur = mono - (focus_mono or mono)
                 if dur > 0 and focus_wall is not None:
-                    date = datetime.fromtimestamp(focus_wall, tz=UTC).strftime("%Y-%m-%d")
+                    date = datetime.fromtimestamp(focus_wall).strftime("%Y-%m-%d")
                     key = (date, session_app)
                     session_acc[key] = session_acc.get(key, 0) + dur
                 focus_mono = None
@@ -2686,19 +2686,13 @@ def get_daily_playtime(
             days_games[date] = {}
         days_games[date][app_id] = days_games[date].get(app_id, 0) + secs
 
-    import titledb as _titledb
-
-    all_app_ids = list({k[1] for k in accumulated})
-    label_map: dict[str, str] = {
-        app_id: (_titledb.resolve_game_name(app_id, conn) or app_id) for app_id in all_app_ids
-    }
-
     result = []
     for date in sorted(days_sec):
         games = [
             {
                 "title_id": app_id,
-                "display_name": label_map[app_id],
+                "display_name": app_id,
+                "total_sec": secs,
                 "minutes": secs // 60,
             }
             for app_id, secs in sorted(days_games[date].items(), key=lambda x: -x[1])

@@ -32,6 +32,14 @@ EventType = Literal[
     "PROFILE_INACTIVE",
 ]
 
+# These event types always refer to a specific application; application_id is required.
+_APP_EVENT_TYPES = {
+    "APPLICATION_STARTED",
+    "APPLICATION_EXITED",
+    "APPLICATION_FOCUSED",
+    "APPLICATION_UNFOCUSED",
+}
+
 
 def init(conn) -> None:
     global _conn
@@ -71,6 +79,8 @@ def post_events(body: PlayEventsBody, request: Request):
         return trusted
 
     for e in body.events:
+        if e.event_type in _APP_EVENT_TYPES and not e.application_id:
+            return _err(f"{e.event_type} requires a non-empty application_id")
         if e.application_id is not None and not _ID_RE.match(e.application_id):
             return _err(f"invalid application_id: {e.application_id!r}")
         if e.profile_id is not None and not _ID_RE.match(e.profile_id):

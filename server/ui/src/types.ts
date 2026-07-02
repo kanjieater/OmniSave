@@ -191,7 +191,9 @@ export interface DeviceProfile {
 export interface PlaytimeGame {
   title_id: string;
   display_name: string;
+  total_sec: number;
   minutes: number;
+  icon_url?: string | null;
 }
 
 export interface PlaytimeDay {
