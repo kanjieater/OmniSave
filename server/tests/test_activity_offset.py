@@ -130,3 +130,56 @@ def test_set_activity_offset_monotonic_via_db(conn):
 
     db.set_activity_offset(conn, "DEVICE_X", 200)  # should advance
     assert db.get_activity_offset(conn, "DEVICE_X") == 200
+
+
+def test_insert_play_events_atomic_with_offset(conn):
+    """Events and watermark advance in one transaction via insert_play_events(next_offset=...)."""
+    evt = {
+        "event_type": "APPLICATION_STARTED",
+        "application_id": "ABCDEF1234567890",
+        "profile_id": None,
+        "event_timestamp": 1700000000,
+        "monotonic_timestamp": 1,
+    }
+    inserted = db.insert_play_events(conn, "DEVICE_X", "admin", [evt], next_offset=99)
+    assert inserted == 1
+    assert db.get_activity_offset(conn, "DEVICE_X") == 99
+
+    # Idempotent re-insert must not double-count; offset must not regress
+    inserted2 = db.insert_play_events(conn, "DEVICE_X", "admin", [evt], next_offset=99)
+    assert inserted2 == 0
+    assert db.get_activity_offset(conn, "DEVICE_X") == 99
+
+
+# ── Invalid-event filtering ───────────────────────────────────────────────────
+
+
+def test_invalid_event_in_batch_drops_bad_accepts_good(client):
+    """Bad application_id is dropped; valid events in the same batch are still accepted."""
+    token = pair_device(client, DEVICE_A)
+    good = {**_EVT, "monotonic_timestamp": 9001}
+    bad = {**_EVT, "monotonic_timestamp": 9002, "application_id": "not-valid!!"}
+    r = client.post(
+        "/api/v1/activity/events",
+        json={"events": [good, bad], "next_offset": 55},
+        headers={"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["accepted"] == 1
+    assert r.json()["received"] == 2
+    assert _get_offset(client, DEVICE_A, token).json()["last_offset"] == 55
+
+
+def test_app_event_without_application_id_dropped(client):
+    """APPLICATION_STARTED missing application_id is dropped; offset still advances."""
+    token = pair_device(client, DEVICE_A)
+    bad = {**_EVT, "application_id": None, "monotonic_timestamp": 7777}
+    good = {**_EVT, "monotonic_timestamp": 7778}
+    r = client.post(
+        "/api/v1/activity/events",
+        json={"events": [bad, good], "next_offset": 60},
+        headers={"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["accepted"] == 1
+    assert _get_offset(client, DEVICE_A, token).json()["last_offset"] == 60

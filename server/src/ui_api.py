@@ -511,9 +511,22 @@ def pair_by_code(body: PairByCodeBody, request: Request):
     if not device_id:
         return JSONResponse({"error": "invalid or expired pairing code"}, status_code=400)
 
-    db.set_device_owner(_conn, device_id, username)
-    db.create_device_token(_conn, device_id, username)
-    _conn.execute("UPDATE devices SET deleted_at=NULL WHERE device_id=?", (device_id,))
+    _conn.execute("BEGIN IMMEDIATE")
+    try:
+        db.set_device_owner(_conn, device_id, username)
+        db.create_device_token(_conn, device_id, username)
+        _conn.execute("UPDATE devices SET deleted_at=NULL WHERE device_id=?", (device_id,))
+        # Auto-claim first profile if device-config already arrived before pairing completed.
+        _first = db.get_auto_claim_profile(_conn, device_id)
+        if _first:
+            _profile_id, _profile_name = _first
+            db.upsert_device_profile(_conn, device_id, _profile_id, username, _profile_name)
+            db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, username)
+            db.set_user_device_default_profile(_conn, device_id, username, _profile_id)
+        _conn.execute("COMMIT")
+    except Exception:
+        _conn.execute("ROLLBACK")
+        raise
     db.set_device_config_pending(_conn, device_id)
     device = db.get_device(_conn, device_id)
     log.info("pair-by-code: device=%s owner=%s", device_id, username)
@@ -1335,11 +1348,14 @@ def get_daily_playtime(request: Request, title_id: str | None = None):
         return err
     username = _current_username(request) or ""
     rows = db.get_daily_playtime(_conn, username, application_id=title_id)
+    all_ids = list({g["title_id"] for day in rows for g in day["games"]})
+    meta = game_meta.bulk_game_meta(_conn, all_ids, username)
     for day in rows:
         for game in day["games"]:
             app_id = game["title_id"]
-            game["display_name"] = _game_display_name(_conn, app_id, username) or app_id
-            game["icon_url"] = _game_icon_url(_conn, app_id, username)
+            m = meta.get(app_id, {})
+            game["display_name"] = m.get("display_name") or app_id
+            game["icon_url"] = m.get("icon_url")
     return {"days": rows}
 
 

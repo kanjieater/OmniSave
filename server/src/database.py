@@ -2527,8 +2527,14 @@ def sync_romm_catalog_to_device(conn, username: str, romm_device_id: str) -> Non
         raise
 
 
-def insert_play_events(conn, device_id: str, owner_user_id: str, events: list[dict]) -> int:
-    """INSERT OR IGNORE raw activity events atomically. Returns count of rows actually inserted."""
+def insert_play_events(
+    conn,
+    device_id: str,
+    owner_user_id: str,
+    events: list[dict],
+    next_offset: int | None = None,
+) -> int:
+    """INSERT OR IGNORE raw activity events, optionally advancing the watermark in the same transaction."""
     now = _now()
     inserted = 0
     conn.execute("BEGIN IMMEDIATE")
@@ -2551,6 +2557,17 @@ def insert_play_events(conn, device_id: str, owner_user_id: str, events: list[di
                 ),
             )
             inserted += cur.rowcount
+        if next_offset is not None:
+            conn.execute(
+                """
+                INSERT INTO device_activity_offset (device_id, last_offset, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE
+                    SET last_offset = MAX(last_offset, excluded.last_offset),
+                        updated_at  = excluded.updated_at
+                """,
+                (device_id, next_offset, now),
+            )
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -2686,7 +2703,8 @@ def get_daily_playtime(
     current_device_owner: str = ""
 
     def _emit() -> None:
-        if not has_profile:
+        # Owned devices are attributed even without a PROFILE event (first boot, profile not yet registered).
+        if not has_profile and current_device_owner != owner_user_id:
             return
         if session_profile_id:
             mapped_user = profile_map.get((current_device, session_profile_id))
@@ -2751,7 +2769,8 @@ def get_daily_playtime(
             _reset()
             prev_device = device
             current_device = device
-            current_device_owner = row["device_owner"]
+
+        current_device_owner = row["device_owner"]
 
         # Strict backward mono = reboot boundary; discard any open session/interval
         if prev_mono is not None and mono < prev_mono:
@@ -2835,7 +2854,10 @@ def get_daily_playtime(
             }
             for app_id, secs in sorted(days_games[date].items(), key=lambda x: -x[1])
         ]
-        result.append({"date": date, "minutes": days_sec[date] // 60, "games": games})
+        secs = days_sec[date]
+        result.append(
+            {"date": date, "minutes": max(1, secs // 60) if secs > 0 else 0, "games": games}
+        )
     return result
 
 

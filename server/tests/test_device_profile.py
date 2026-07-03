@@ -732,3 +732,105 @@ def test_migration_crash_recovery_promotes_orphan_new_table(tmp_path):
     ).fetchone()
     assert orphan is None
     raw.close()
+
+
+def test_pair_by_code_auto_claims_existing_profile(client):
+    """Profiles registered before pairing are auto-claimed when the UI user pairs the device."""
+    # Switch connects before pairing — sends device-config with known_profiles, gets a code
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": [{"profile_id": PROF_A, "profile_name": "x"}]},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert r.status_code == 200
+    code = r.json().get("pairing_code")
+    assert code, "expected pairing_code from unpaired device-config"
+
+    # UI user claims the device via pair-by-code
+    admin_tok = _login(client)
+    r2 = client.post(
+        "/api/v1/ui/devices/pair",
+        json={"code": code},
+        headers=_hdr(admin_tok),
+    )
+    assert r2.status_code == 200
+
+    # Profile should now be auto-claimed by admin and set as default
+    r3 = client.get(f"/api/v1/ui/devices/{DEVICE_A}/profiles", headers=_hdr(admin_tok))
+    assert r3.status_code == 200
+    profiles = r3.json()["profiles"]
+    assert any(p["profile_id"] == PROF_A and p["is_mine"] for p in profiles), (
+        "profile should be auto-claimed for the pairing user"
+    )
+    devices_r = client.get("/api/v1/ui/devices", headers=_hdr(admin_tok))
+    device = next(d for d in devices_r.json()["devices"] if d["device_id"] == DEVICE_A)
+    assert device["default_profile_uid"] == PROF_A, "profile should be set as default"
+
+
+def test_device_config_profile_transaction_rollback(client, monkeypatch):
+    """Exception inside profile-registration transaction triggers ROLLBACK."""
+    from main import app as _app
+    from fastapi.testclient import TestClient
+    import database as db_mod
+
+    admin_tok = _login(client)
+    client.post(f"/api/v1/ui/devices/{DEVICE_A}/token", headers=_hdr(admin_tok))
+
+    original = db_mod.upsert_known_profile
+    called = {"n": 0}
+
+    def _raise(*args, **kwargs):
+        called["n"] += 1
+        if called["n"] == 1:
+            raise RuntimeError("simulated failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(db_mod, "upsert_known_profile", _raise)
+    nc = TestClient(_app, raise_server_exceptions=False)
+    r = nc.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": [{"profile_id": PROF_A, "profile_name": "x"}]},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    assert r.status_code == 500
+
+
+def test_pair_by_code_transaction_rollback(client, monkeypatch):
+    """Exception inside pair_by_code transaction triggers ROLLBACK: no partial state."""
+    from main import app as _app
+    from fastapi.testclient import TestClient
+    import database as db_mod
+
+    # Get a pairing code from an unpaired device-config
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": [{"profile_id": PROF_A, "profile_name": "x"}]},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    code = r.json()["pairing_code"]
+
+    original = db_mod.set_device_owner
+    called = {"n": 0}
+
+    def _raise(*args, **kwargs):
+        called["n"] += 1
+        if called["n"] == 1:
+            raise RuntimeError("simulated failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(db_mod, "set_device_owner", _raise)
+    admin_tok = _login(client)
+    nc = TestClient(_app, raise_server_exceptions=False)
+    r2 = nc.post(
+        "/api/v1/ui/devices/pair",
+        json={"code": code},
+        headers=_hdr(admin_tok),
+    )
+    assert r2.status_code == 500
+    # ROLLBACK must have left device without an owner
+    import database as db_mod2
+    import ui_api as _ui
+    row = _ui._conn.execute(
+        "SELECT owner_user_id FROM devices WHERE device_id=?", (DEVICE_A,)
+    ).fetchone()
+    assert row is None or row[0] is None, "owner should not be set after rollback"

@@ -143,37 +143,44 @@ def test_invalid_event_type_rejected(client):
     assert "event_type" in str(r.json()["detail"])
 
 
-def test_invalid_application_id_rejected(client):
+def test_invalid_application_id_dropped(client):
+    """Bad application_id is dropped; batch returns 200 with accepted=0."""
     evt = {**_EVT, "application_id": "../../../etc/passwd"}
     r = post_activity_events(client, DEVICE_A, [evt])
-    assert r.status_code == 400
-    assert "application_id" in r.json()["error"]
+    assert r.status_code == 200
+    assert r.json()["accepted"] == 0
+    assert r.json()["received"] == 1
 
 
-def test_invalid_profile_id_rejected(client):
-    evt = {**_EVT, "profile_id": "bad id with spaces!"}
-    r = post_activity_events(client, DEVICE_A, [evt])
-    assert r.status_code == 400
-    assert "profile_id" in r.json()["error"]
+def test_invalid_profile_id_dropped(client):
+    """Bad profile_id is dropped; valid events in the same batch are still accepted."""
+    good = {**_EVT, "monotonic_timestamp": 1}
+    bad = {**_EVT, "monotonic_timestamp": 2, "profile_id": "bad id with spaces!"}
+    r = post_activity_events(client, DEVICE_A, [good, bad])
+    assert r.status_code == 200
+    assert r.json()["accepted"] == 1
+    assert r.json()["received"] == 2
 
 
-def test_application_id_too_long_rejected(client):
+def test_application_id_too_long_dropped(client):
+    """application_id > 64 chars is dropped; batch succeeds."""
     evt = {**_EVT, "application_id": "a" * 65}
     r = post_activity_events(client, DEVICE_A, [evt])
-    assert r.status_code == 400
+    assert r.status_code == 200
+    assert r.json()["accepted"] == 0
 
 
-def test_app_event_requires_application_id(client):
-    """APPLICATION_STARTED/EXITED/FOCUSED/UNFOCUSED without application_id → 400."""
+def test_app_event_without_application_id_dropped(client):
+    """APPLICATION_STARTED/EXITED/FOCUSED/UNFOCUSED with null application_id are dropped."""
     app_event_types = [
         "APPLICATION_STARTED", "APPLICATION_EXITED",
         "APPLICATION_FOCUSED", "APPLICATION_UNFOCUSED",
     ]
     for et in app_event_types:
-        evt = {**_EVT, "event_type": et, "application_id": None}
+        evt = {**_EVT, "event_type": et, "application_id": None, "monotonic_timestamp": ord(et[0])}
         r = post_activity_events(client, DEVICE_A, [evt])
-        assert r.status_code == 400, f"{et} with null application_id should be rejected"
-        assert "application_id" in r.json()["error"]
+        assert r.status_code == 200, f"{et} should not reject the batch"
+        assert r.json()["accepted"] == 0, f"{et} with null application_id should be dropped"
 
 
 def test_all_event_types_accepted(client, conn):
