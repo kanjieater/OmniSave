@@ -140,12 +140,22 @@ def start_inbound(body: InboundBody, request: Request):
             and not db.get_user_has_claim_on_device(_conn, auth.device_id, _device_owner)
             and not db.has_non_owner_claims(_conn, auth.device_id, _device_owner)
         ):
-            db.upsert_device_profile(
-                _conn, auth.device_id, body.user_key, _device_owner,
-                body.user_display or "", is_auto_claimed=True,
-            )
-            db.backfill_owner_on_profile_claim(_conn, auth.device_id, body.user_key, _device_owner)
-            db.set_user_device_default_profile(_conn, auth.device_id, _device_owner, body.user_key)
+            _conn.execute("BEGIN IMMEDIATE")
+            try:
+                db.upsert_device_profile(
+                    _conn, auth.device_id, body.user_key, _device_owner,
+                    body.user_display or "", is_auto_claimed=True,
+                )
+                db.backfill_owner_on_profile_claim(
+                    _conn, auth.device_id, body.user_key, _device_owner
+                )
+                db.set_user_device_default_profile(
+                    _conn, auth.device_id, _device_owner, body.user_key
+                )
+                _conn.execute("COMMIT")
+            except Exception:
+                _conn.execute("ROLLBACK")
+                raise
 
     # 3. Resolve owner — profile map is now populated if auto-claimed above.
     owner_user_id = None
