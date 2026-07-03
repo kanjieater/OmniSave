@@ -502,8 +502,8 @@ def test_start_inbound_auto_claims_profile(client, conn):
     ).fetchone()
     assert pre["owner_user_id"] == "admin"
 
-def test_auto_claim_db_error_rolls_back(client, monkeypatch):
-    """Exception inside auto-claim transaction triggers ROLLBACK and re-raises."""
+def test_auto_claim_db_error_rolls_back(client, conn, monkeypatch):
+    """Exception inside auto-claim transaction triggers ROLLBACK: no partial commit."""
     from main import app as _app
     from fastapi.testclient import TestClient
     import database as db_mod
@@ -527,3 +527,9 @@ def test_auto_claim_db_error_rolls_back(client, monkeypatch):
         headers={"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 500
+    # ROLLBACK must have prevented any device_profile_map row from being written.
+    rows = conn.execute(
+        "SELECT * FROM device_profile_map WHERE device_id=? AND profile_id=?",
+        (DEVICE_A, "AABBCCDD11223344"),
+    ).fetchall()
+    assert rows == [], "auto-claim row should have been rolled back"

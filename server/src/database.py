@@ -2854,7 +2854,8 @@ def get_daily_playtime(
             }
             for app_id, secs in sorted(days_games[date].items(), key=lambda x: -x[1])
         ]
-        result.append({"date": date, "minutes": max(1, days_sec[date] // 60), "games": games})
+        secs = days_sec[date]
+        result.append({"date": date, "minutes": max(1, secs // 60) if secs > 0 else 0, "games": games})
     return result
 
 

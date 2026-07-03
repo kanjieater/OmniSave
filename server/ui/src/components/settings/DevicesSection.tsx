@@ -155,6 +155,7 @@ function ProfilesInCard({ device }: { device: Device }) {
   const profilesKey = ['deviceProfiles', deviceId]
   const devicesKey = ['devices']
 
+  const prevProfileCount = React.useRef(0)
   const { data, isLoading } = useQuery({
     queryKey: profilesKey,
     queryFn: () => api.deviceProfiles(deviceId),
@@ -166,6 +167,16 @@ function ProfilesInCard({ device }: { device: Device }) {
         : false,
   })
   const profiles: DeviceProfile[] = data?.profiles ?? []
+
+  // When profiles first appear both caches are stale: devices (default_profile_uid) and
+  // profiles (is_mine / claim state). Invalidate both so the UI reflects auto-claim immediately.
+  React.useEffect(() => {
+    if (profiles.length > 0 && prevProfileCount.current === 0) {
+      void qc.invalidateQueries({ queryKey: devicesKey })
+      void qc.invalidateQueries({ queryKey: profilesKey })
+    }
+    prevProfileCount.current = profiles.length
+  }, [profiles.length, qc, devicesKey, profilesKey])
 
   const claim = useMutation({
     mutationFn: (profileId: string) => api.claimProfile(deviceId, profileId),

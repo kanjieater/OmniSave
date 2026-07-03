@@ -130,18 +130,19 @@ def start_inbound(body: InboundBody, request: Request):
     # Must happen before owner resolution so get_profile_owner sees the claim.
     # Guards: profile unclaimed + owner has no other claim + no non-owner claims on device
     # (last guard distinguishes single-owner devices from managed multi-user devices).
-    # is_auto_claimed=True so an explicit assignment later evicts this cleanly.
+    # upsert_known_profile is inside the transaction so the profile never appears
+    # unclaimed in the DB — eliminates the poll-sees-unclaimed race condition.
     if body.user_key and body.user_key != db.NULL_PROFILE_ID:
-        db.upsert_known_profile(_conn, auth.device_id, body.user_key, body.user_display or "")
         _device_owner = db.get_device_owner(_conn, auth.device_id)
-        if (
-            _device_owner
-            and not db.get_profile_owner(_conn, auth.device_id, body.user_key)
-            and not db.get_user_has_claim_on_device(_conn, auth.device_id, _device_owner)
-            and not db.has_non_owner_claims(_conn, auth.device_id, _device_owner)
-        ):
-            _conn.execute("BEGIN IMMEDIATE")
-            try:
+        _conn.execute("BEGIN IMMEDIATE")
+        try:
+            db.upsert_known_profile(_conn, auth.device_id, body.user_key, body.user_display or "")
+            if (
+                _device_owner
+                and not db.get_profile_owner(_conn, auth.device_id, body.user_key)
+                and not db.get_user_has_claim_on_device(_conn, auth.device_id, _device_owner)
+                and not db.has_non_owner_claims(_conn, auth.device_id, _device_owner)
+            ):
                 db.upsert_device_profile(
                     _conn,
                     auth.device_id,
@@ -156,10 +157,10 @@ def start_inbound(body: InboundBody, request: Request):
                 db.set_user_device_default_profile(
                     _conn, auth.device_id, _device_owner, body.user_key
                 )
-                _conn.execute("COMMIT")
-            except Exception:
-                _conn.execute("ROLLBACK")
-                raise
+            _conn.execute("COMMIT")
+        except Exception:
+            _conn.execute("ROLLBACK")
+            raise
 
     # 3. Resolve owner — profile map is now populated if auto-claimed above.
     owner_user_id = None
@@ -615,23 +616,27 @@ def device_config(body: DeviceConfigBody, request: Request):
         (device_id, _bootstrap_now, _bootstrap_now),
     )
 
-    # Update known profiles regardless of token state.
+    # Update known profiles and auto-claim in one transaction so profiles are never
+    # visible in the DB unclaimed — eliminates the poll-sees-unclaimed race.
     _device_owner = db.get_device_owner(_conn, device_id)
-    for p in body.known_profiles or []:
-        if p.profile_id and p.profile_id != db.NULL_PROFILE_ID:
-            db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
-
-    # Auto-claim: device owner always gets the first globally-unclaimed profile.
-    # Subsequent shared users get the next unclaimed one when they accept the share.
-    # DB count is used (not the current request list) because start_inbound also registers
-    # profiles via upsert_known_profile when it first sees a user_key on a fresh upload.
-    if _device_owner and not db.get_user_has_claim_on_device(_conn, device_id, _device_owner):
-        _first = db.get_auto_claim_profile(_conn, device_id)
-        if _first:
-            _profile_id, _profile_name = _first
-            db.upsert_device_profile(_conn, device_id, _profile_id, _device_owner, _profile_name)
-            db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, _device_owner)
-            db.set_user_device_default_profile(_conn, device_id, _device_owner, _profile_id)
+    _conn.execute("BEGIN IMMEDIATE")
+    try:
+        for p in body.known_profiles or []:
+            if p.profile_id and p.profile_id != db.NULL_PROFILE_ID:
+                db.upsert_known_profile(_conn, device_id, p.profile_id, p.profile_name)
+        # Auto-claim: device owner always gets the first globally-unclaimed profile.
+        # Subsequent shared users get the next unclaimed one when they accept the share.
+        if _device_owner and not db.get_user_has_claim_on_device(_conn, device_id, _device_owner):
+            _first = db.get_auto_claim_profile(_conn, device_id)
+            if _first:
+                _profile_id, _profile_name = _first
+                db.upsert_device_profile(_conn, device_id, _profile_id, _device_owner, _profile_name)
+                db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, _device_owner)
+                db.set_user_device_default_profile(_conn, device_id, _device_owner, _profile_id)
+        _conn.execute("COMMIT")
+    except Exception:
+        _conn.execute("ROLLBACK")
+        raise
 
     # Catalog update: atomically replace installed-game inventory, then backfill outbounds.
     if body.installed_titles is not None:
