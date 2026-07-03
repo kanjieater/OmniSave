@@ -35,6 +35,7 @@ def game_icon_url(conn, title_id: str, username: str) -> str | None:
                 return cache["icon_url"]
     return titledb.get_icon_url(title_id)
 
+
 def bulk_game_meta(conn, title_ids: list[str], username: str) -> dict[str, dict]:
     """Fetch display_name and icon_url for multiple title_ids in 3 queries instead of 2N."""
     if not title_ids:

@@ -90,13 +90,25 @@ def post_events(body: PlayEventsBody, request: Request):
     valid_events = []
     for e in body.events:
         if e.event_type in _APP_EVENT_TYPES and not e.application_id:
-            log.warning("activity: device=%s dropping %s: missing application_id", trusted.device_id, e.event_type)
+            log.warning(
+                "activity: device=%s dropping %s: missing application_id",
+                trusted.device_id,
+                e.event_type,
+            )
             continue
         if e.application_id is not None and not _ID_RE.match(e.application_id):
-            log.warning("activity: device=%s dropping event: invalid application_id %r", trusted.device_id, e.application_id)
+            log.warning(
+                "activity: device=%s dropping event: invalid application_id %r",
+                trusted.device_id,
+                e.application_id,
+            )
             continue
         if e.profile_id is not None and not _ID_RE.match(e.profile_id):
-            log.warning("activity: device=%s dropping event: invalid profile_id %r", trusted.device_id, e.profile_id)
+            log.warning(
+                "activity: device=%s dropping event: invalid profile_id %r",
+                trusted.device_id,
+                e.profile_id,
+            )
             continue
         valid_events.append(e)
 
