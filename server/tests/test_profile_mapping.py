@@ -136,8 +136,8 @@ def test_ownership_claimed_profile_stamps_owner(client, conn, device_token):
     assert owner == "alice"
 
 
-def test_ownership_unclaimed_profile_is_null(client, conn, device_token):
-    """user_key present but profile not claimed → owner_user_id is NULL (T6)."""
+def test_ownership_unclaimed_profile_auto_claimed_for_device_owner(client, conn, device_token):
+    """Single-owner device: first upload auto-claims profile for device owner."""
     _seed(client, user_key=PROFILE_A)
     r = client.post(
         "/api/v1/sync/transactions/inbound",
@@ -149,11 +149,11 @@ def test_ownership_unclaimed_profile_is_null(client, conn, device_token):
     owner = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()["owner_user_id"]
-    assert owner is None  # unclaimed profile → NULL, not device owner
+    assert owner == "admin"  # auto-claimed for device owner on first upload
 
 
-def test_ownership_unknown_profile_key_is_null(client, conn, device_token):
-    """Unknown user_key → owner_user_id is NULL (T6); no fallback to device owner."""
+def test_ownership_first_seen_profile_auto_claimed_for_device_owner(client, conn, device_token):
+    """First-seen profile on a single-owner device → auto-claimed for device owner."""
     _seed(client)
     r = client.post(
         "/api/v1/sync/transactions/inbound",
@@ -165,7 +165,7 @@ def test_ownership_unknown_profile_key_is_null(client, conn, device_token):
     owner = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()["owner_user_id"]
-    assert owner is None  # unknown profile → NULL, not device owner
+    assert owner == "admin"  # auto-claimed for device owner (no multi-user claims on device)
 
 
 def test_ownership_no_user_key_stamps_device_owner(client, conn, device_token):

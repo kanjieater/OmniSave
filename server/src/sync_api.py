@@ -126,19 +126,35 @@ def start_inbound(body: InboundBody, request: Request):
     if not _storage_ok():
         return _err("insufficient storage", 507)
 
-    # 2. Stamp owner_user_id from the device profile claim map.
-    # Modern client (user_key present): use claim map; NULL if unclaimed (T6) — save is
-    # archived but invisible/un-deliverable until someone claims that device profile.
-    # Legacy client (user_key absent): fall back to device auth user for backward compat.
+    # 2. Register profile and optionally auto-claim for device owner.
+    # Must happen before owner resolution so get_profile_owner sees the claim.
+    # Guards: profile unclaimed + owner has no other claim + no non-owner claims on device
+    # (last guard distinguishes single-owner devices from managed multi-user devices).
+    # is_auto_claimed=True so an explicit assignment later evicts this cleanly.
+    if body.user_key and body.user_key != db.NULL_PROFILE_ID:
+        db.upsert_known_profile(_conn, auth.device_id, body.user_key, body.user_display or "")
+        _device_owner = db.get_device_owner(_conn, auth.device_id)
+        if (
+            _device_owner
+            and not db.get_profile_owner(_conn, auth.device_id, body.user_key)
+            and not db.get_user_has_claim_on_device(_conn, auth.device_id, _device_owner)
+            and not db.has_non_owner_claims(_conn, auth.device_id, _device_owner)
+        ):
+            db.upsert_device_profile(
+                _conn, auth.device_id, body.user_key, _device_owner,
+                body.user_display or "", is_auto_claimed=True,
+            )
+            db.backfill_owner_on_profile_claim(_conn, auth.device_id, body.user_key, _device_owner)
+            db.set_user_device_default_profile(_conn, auth.device_id, _device_owner, body.user_key)
+
+    # 3. Resolve owner — profile map is now populated if auto-claimed above.
     owner_user_id = None
     if body.user_key:
         owner_user_id = db.get_profile_owner(_conn, auth.device_id, body.user_key)
     else:
         owner_user_id = auth.user_id
 
-    # 3. Idempotent open: same slot already UPLOADING → reuse its session.
-    # Prevents orphaned transaction storms (e.g. after a lineage wipe the Switch
-    # sends parent_seq=null for every title repeatedly — one session per slot is enough).
+    # 4. Idempotent open: same slot already UPLOADING → reuse its session.
     existing = db.find_uploading_inbound(
         _conn,
         auth.device_id,
@@ -157,11 +173,8 @@ def start_inbound(body: InboundBody, request: Request):
         )
         return {"transaction_id": txn_id, "session_id": session_id}
 
-    # 4. Insert transaction with ownership already resolved
+    # 5. Insert transaction with ownership already resolved
     db.upsert_device(_conn, auth.device_id, body.hardware_type)
-    # Update known profiles cache whenever a real user_key is seen
-    if body.user_key and body.user_key != db.NULL_PROFILE_ID:
-        db.upsert_known_profile(_conn, auth.device_id, body.user_key, body.user_display or "")
     txn_id, session_id = db.create_inbound_transaction(
         _conn,
         device_id=auth.device_id,

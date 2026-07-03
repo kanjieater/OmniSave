@@ -460,3 +460,44 @@ def test_validate_window_ledger_exhausted():
     data = block + block
     result = _validate_window(data, 0, ledger, CHECKPOINT_SIZE, CHECKPOINT_SIZE * 2)
     assert result == CHECKPOINT_SIZE  # only first validated
+
+
+def test_start_inbound_auto_claims_profile(client, conn):
+    """First upload with a user_key auto-claims the profile for the device owner
+    and backfills any prior NULL-owner transactions for that profile."""
+    tok = pair_device(client, DEVICE_A)
+    profile_id = "AABBCCDDEEFF00112233445566778899"
+
+    conn.execute(
+        "INSERT INTO sync_transactions"
+        " (transaction_id, title_id, source_device_id, direction, state, user_key, owner_user_id,"
+        "  created_at, updated_at)"
+        " VALUES ('pre-txn-111', ?, ?, 'inbound', 'READY_FOR_RESTORE', ?, NULL,"
+        "  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        (TITLE_1, DEVICE_A, profile_id),
+    )
+    conn.commit()
+
+    r = client.post(
+        "/api/v1/sync/transactions/inbound",
+        json={"title_id": TITLE_2, "total_size_bytes": 1024, "user_key": profile_id},
+        headers=sync_hdrs(DEVICE_A, tok),
+    )
+    assert r.status_code == 200
+
+    claim = conn.execute(
+        "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
+        (DEVICE_A, profile_id),
+    ).fetchone()
+    assert claim is not None and claim["user_id"] == "admin"
+
+    txn_id = r.json()["transaction_id"]
+    row = conn.execute(
+        "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
+    ).fetchone()
+    assert row["owner_user_id"] == "admin"
+
+    pre = conn.execute(
+        "SELECT owner_user_id FROM sync_transactions WHERE transaction_id='pre-txn-111'"
+    ).fetchone()
+    assert pre["owner_user_id"] == "admin"

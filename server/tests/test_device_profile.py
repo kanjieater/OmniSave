@@ -427,11 +427,12 @@ def test_unclaim_profile_requires_auth(client):
     assert r.status_code == 401
 
 
-def test_unclaim_profile_not_claimed(client):
+def test_unclaim_auto_claimed_profile_succeeds(client):
+    """Upload auto-claims profile for device owner; owner can explicitly unclaim it."""
     _seed(client, user_key=PROF_A)
     token = _login(client)
     r = client.delete(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROF_A}", headers=_hdr(token))
-    assert r.status_code == 404
+    assert r.status_code == 204
 
 
 def test_unclaim_profile_not_own_profile(client):
@@ -466,8 +467,11 @@ def test_admin_can_unclaim_any_profile(client):
 
 
 def test_unclaim_profile_unclaimed_non_admin_404(client):
-    """Non-admin deleting a known but fully unclaimed profile returns 404."""
-    _seed(client, user_key=PROF_A)  # registers profile as known; no claim inserted
+    """Non-admin deleting a known but truly unclaimed profile returns 404."""
+    # Upload PROF_B first so admin auto-claims it; this blocks auto-claim for PROF_A
+    # (device owner already has a claim), leaving PROF_A genuinely unclaimed.
+    do_upload(client, DEVICE_A, TITLE_1, SAVE, user_key=PROF_B)
+    _seed(client, user_key=PROF_A)  # PROF_A stays unclaimed
     admin_token = _login(client)
     player_token = _create_user(client, admin_token, "player")
     r = client.delete(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROF_A}", headers=_hdr(player_token))
