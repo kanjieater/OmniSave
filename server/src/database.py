@@ -147,11 +147,12 @@ CREATE TABLE IF NOT EXISTS device_auth (
 );
 
 CREATE TABLE IF NOT EXISTS device_profile_map (
-    device_id    TEXT NOT NULL,
-    profile_id   TEXT NOT NULL,
-    user_id      TEXT NOT NULL,
-    profile_name TEXT NOT NULL DEFAULT '',
-    created_at   TEXT NOT NULL,
+    device_id      TEXT    NOT NULL,
+    profile_id     TEXT    NOT NULL,
+    user_id        TEXT    NOT NULL,
+    profile_name   TEXT    NOT NULL DEFAULT '',
+    created_at     TEXT    NOT NULL,
+    is_auto_claimed BOOLEAN NOT NULL DEFAULT 0,
     PRIMARY KEY (device_id, profile_id, user_id),
     UNIQUE (device_id, user_id)
 );
@@ -567,6 +568,14 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             "UPDATE devices SET client_type='switch'"
             " WHERE client_type='' AND device_id NOT LIKE 'romm:%' AND hardware_type!='romm-vsc'"
         )
+
+    # Add is_auto_claimed to device_profile_map (new installs have it via SCHEMA)
+    if "device_profile_map" in existing:
+        dpm_cols = {r[1] for r in conn.execute("PRAGMA table_info(device_profile_map)").fetchall()}
+        if "is_auto_claimed" not in dpm_cols:
+            conn.execute(
+                "ALTER TABLE device_profile_map ADD COLUMN is_auto_claimed BOOLEAN NOT NULL DEFAULT 0"
+            )
 
     # Add owner_user_id to events (new installs have it via SCHEMA)
     if "events" in existing:
@@ -2120,32 +2129,44 @@ def upsert_known_profile(conn, device_id: str, profile_id: str, profile_name: st
 
 
 def upsert_device_profile(
-    conn, device_id: str, profile_id: str, user_id: str, profile_name: str = ""
+    conn,
+    device_id: str,
+    profile_id: str,
+    user_id: str,
+    profile_name: str = "",
+    is_auto_claimed: bool = False,
 ) -> None:
     """Claim a device profile for an OmniSave user.
 
     One OmniSave user claims exactly ONE device profile per device (UNIQUE device_id, user_id).
     Multiple OmniSave users may claim the same device profile (PK includes user_id).
     INSERT OR REPLACE atomically evicts any prior claim by the same user on this device.
+
+    Explicit claims (is_auto_claimed=False) also evict any lazy upload auto-claims on this
+    profile so the explicit assignment takes sole ownership.
     """
+    if not is_auto_claimed:
+        conn.execute(
+            "DELETE FROM device_profile_map WHERE device_id=? AND profile_id=? AND is_auto_claimed=1",
+            (device_id, profile_id),
+        )
     conn.execute(
         "INSERT OR REPLACE INTO device_profile_map"
-        " (device_id, profile_id, user_id, profile_name, created_at)"
-        " VALUES (?,?,?,?,?)",
-        (device_id, profile_id, user_id, profile_name, _now()),
+        " (device_id, profile_id, user_id, profile_name, created_at, is_auto_claimed)"
+        " VALUES (?,?,?,?,?,?)",
+        (device_id, profile_id, user_id, profile_name, _now(), int(is_auto_claimed)),
     )
 
 
 def get_profile_owner(conn, device_id: str, profile_id: str) -> str | None:
-    """Return the oldest claimant for a profile, or None if unclaimed.
+    """Return the authoritative owner for a profile, or None if unclaimed.
 
-    ORDER BY created_at ASC makes the result deterministic when multiple OmniSave users
-    share the same Nintendo profile (3-col PK allows this). The oldest claim is the
-    authoritative owner for inbound transaction stamping.
+    Explicit claims (is_auto_claimed=0) take priority over lazy upload auto-claims
+    (is_auto_claimed=1). Within each tier the oldest claim wins for determinism.
     """
     row = conn.execute(
         "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?"
-        " ORDER BY created_at ASC LIMIT 1",
+        " ORDER BY is_auto_claimed ASC, created_at ASC LIMIT 1",
         (device_id, profile_id),
     ).fetchone()
     return row["user_id"] if row else None
@@ -2219,6 +2240,21 @@ def get_user_has_claim_on_device(conn, device_id: str, user_id: str) -> bool:
         conn.execute(
             "SELECT 1 FROM device_profile_map WHERE device_id=? AND user_id=?",
             (device_id, user_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def has_non_owner_claims(conn, device_id: str, owner_user_id: str) -> bool:
+    """Return True if any user other than owner_user_id has a claim on this device.
+
+    Used to detect managed multi-user devices where the owner should not auto-claim
+    unclaimed profiles — they may be intended for assignment to another user.
+    """
+    return (
+        conn.execute(
+            "SELECT 1 FROM device_profile_map WHERE device_id=? AND user_id!=?",
+            (device_id, owner_user_id),
         ).fetchone()
         is not None
     )
