@@ -87,22 +87,26 @@ def post_events(body: PlayEventsBody, request: Request):
     if isinstance(trusted, JSONResponse):
         return trusted
 
+    valid_events = []
     for e in body.events:
         if e.event_type in _APP_EVENT_TYPES and not e.application_id:
-            return _err(f"{e.event_type} requires a non-empty application_id")
+            log.warning("activity: device=%s dropping %s: missing application_id", trusted.device_id, e.event_type)
+            continue
         if e.application_id is not None and not _ID_RE.match(e.application_id):
-            return _err(f"invalid application_id: {e.application_id!r}")
+            log.warning("activity: device=%s dropping event: invalid application_id %r", trusted.device_id, e.application_id)
+            continue
         if e.profile_id is not None and not _ID_RE.match(e.profile_id):
-            return _err(f"invalid profile_id: {e.profile_id!r}")
+            log.warning("activity: device=%s dropping event: invalid profile_id %r", trusted.device_id, e.profile_id)
+            continue
+        valid_events.append(e)
 
     inserted = db.insert_play_events(
         _conn,
         trusted.device_id,
         trusted.user_id,
-        [e.model_dump() for e in body.events],
+        [e.model_dump() for e in valid_events],
+        next_offset=body.next_offset,
     )
-    if body.next_offset is not None:
-        db.set_activity_offset(_conn, trusted.device_id, body.next_offset)
     log.info(
         "activity: device=%s accepted=%d received=%d next_offset=%s",
         trusted.device_id,

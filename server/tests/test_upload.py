@@ -501,3 +501,29 @@ def test_start_inbound_auto_claims_profile(client, conn):
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id='pre-txn-111'"
     ).fetchone()
     assert pre["owner_user_id"] == "admin"
+
+def test_auto_claim_db_error_rolls_back(client, monkeypatch):
+    """Exception inside auto-claim transaction triggers ROLLBACK and re-raises."""
+    from main import app as _app
+    from fastapi.testclient import TestClient
+    import database as db_mod
+
+    token = pair_device(client, DEVICE_A)
+    original = db_mod.upsert_device_profile
+    called = {"n": 0}
+
+    def _raise(*args, **kwargs):
+        called["n"] += 1
+        if called["n"] == 1:
+            raise RuntimeError("simulated DB failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(db_mod, "upsert_device_profile", _raise)
+    nc = TestClient(_app, raise_server_exceptions=False)
+    r = nc.post(
+        "/api/v1/sync/transactions/inbound",
+        json={"title_id": "0100F2C0115B6000", "total_size_bytes": 1024, "user_key": "AABBCCDD11223344",
+              "user_display": "Player"},
+        headers={"X-Device-ID": DEVICE_A, "Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 500

@@ -200,16 +200,22 @@ def test_orphan_focus_excluded(client):
     assert r.json()["days"] == []
 
 
-def test_session_without_profile_excluded(client):
-    """Session with no PROFILE_ACTIVE or PROFILE_INACTIVE event contributes nothing."""
-    token = login_admin(client)
+def test_session_without_profile_excluded_on_non_owned_device(client):
+    """Session with no PROFILE event on a device not owned by the querying user → excluded.
+
+    On an owned device, no-profile sessions ARE included (see
+    test_owned_device_session_visible_without_profile_event). On a foreign device,
+    we have no basis for attribution, so the session must stay invisible.
+    """
+    tok_b = _create_user(client, "user_b_noprof")
+    _map_profile(client, DEVICE_A, "profX", "user_b_noprof")   # gives user_b access to events
     post_activity_events(client, DEVICE_A, [
         _started(_BASE_TS, mono=99),
         _focused(_BASE_TS, mono=100),
         _unfocused(_BASE_TS + 3600, mono=3700),
         _exited(_BASE_TS + 3600, mono=3701),
     ])
-    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(tok_b))
     assert r.json()["days"] == []
 
 
@@ -620,3 +626,42 @@ def test_profile_switch_mid_session_latest_wins(client):
     days = client.get("/api/v1/ui/playtime/daily", headers=auth_header(tok_b)).json()["days"]
     assert len(days) == 1
     assert days[0]["minutes"] == 30
+
+# ── Owned device without PROFILE event ───────────────────────────────────────
+
+
+def test_owned_device_session_visible_without_profile_event(client):
+    """Session on owner's device with no PROFILE_ACTIVE/INACTIVE is included.
+
+    First-boot scenario where the profile hasn't fired yet — the device
+    is owned, so we know who it belongs to.
+    """
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        _started(_BASE_TS, mono=10),
+        _focused(_BASE_TS, mono=20),
+        _unfocused(_BASE_TS + 3600, mono=3620),
+        _exited(_BASE_TS + 3600, mono=3621),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 60
+
+
+# ── Sub-minute day-level minutes ──────────────────────────────────────────────
+
+
+def test_sub_minute_session_returns_minutes_one(client):
+    """A session shorter than 60 s must return minutes=1, not 0.
+
+    A zero minutes value would cause the day to be excluded from streak
+    counts and rendered as a dark (no-play) cell in the heatmap.
+    """
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, _session(_BASE_TS, start_mono=100, dur_mono=30))
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    days = r.json()["days"]
+    assert len(days) == 1
+    assert days[0]["minutes"] == 1
+    assert days[0]["games"][0]["total_sec"] == 30
