@@ -507,12 +507,12 @@ def pair_by_code(body: PairByCodeBody, request: Request):
     if not username:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    device_id = db.claim_pairing_code(_conn, body.code)
-    if not device_id:
-        return JSONResponse({"error": "invalid or expired pairing code"}, status_code=400)
-
     _conn.execute("BEGIN IMMEDIATE")
     try:
+        device_id = db.claim_pairing_code(_conn, body.code)
+        if not device_id:
+            _conn.execute("ROLLBACK")
+            return JSONResponse({"error": "invalid or expired pairing code"}, status_code=400)
         db.set_device_owner(_conn, device_id, username)
         db.create_device_token(_conn, device_id, username)
         _conn.execute("UPDATE devices SET deleted_at=NULL WHERE device_id=?", (device_id,))
