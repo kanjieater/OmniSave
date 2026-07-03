@@ -538,8 +538,9 @@ def test_started_while_focused_emits_and_opens_new(client):
     assert days[0]["minutes"] == 90   # APP 30 min + OTHER_APP 60 min
 
 
-def test_reboot_boundary_discards_pre_reboot_open_session(client):
-    """Backward mono signals reboot; _reset() discards accumulated open session (line 2722).
+def test_reboot_boundary_preserves_completed_pre_reboot_intervals(client):
+    """Backward mono signals reboot; completed FOCUSED→UNFOCUSED intervals before
+    the reboot are emitted, only the open FOCUSED interval (if any) is discarded.
 
     Pre-reboot events are POSTed first (lower insertion id), post-reboot events second
     (higher id). ORDER BY id yields high-mono pre-reboot events before low-mono
@@ -551,11 +552,11 @@ def test_reboot_boundary_discards_pre_reboot_open_session(client):
         _started(_BASE_TS, mono=1000),
         _profile_active(_BASE_TS, mono=1001),
         _focused(_BASE_TS, mono=1002),
-        _unfocused(_BASE_TS + 1800, mono=2800),   # 30 min interval (no EXIT → open session)
+        _unfocused(_BASE_TS + 1800, mono=2800),   # 30 min complete interval
     ])
     # Post-reboot batch — lower mono, inserted second → backward jump detected
     post_activity_events(client, DEVICE_A, [
-        _started(_BASE_TS + 7200, mono=100),       # mono=100 < prev_mono=2800 → _reset()
+        _started(_BASE_TS + 7200, mono=100),       # mono=100 < prev_mono=2800 → _emit()+_reset()
         _profile_active(_BASE_TS + 7200, mono=101),
         _focused(_BASE_TS + 7200, mono=101),
         _unfocused(_BASE_TS + 10800, mono=3701),   # 60 min
@@ -564,7 +565,7 @@ def test_reboot_boundary_discards_pre_reboot_open_session(client):
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     days = r.json()["days"]
     total = sum(d["minutes"] for d in days)
-    assert total == 60   # pre-reboot open session discarded; only post-reboot 60 min
+    assert total == 89   # pre-reboot 29m (1798s mono) preserved + post-reboot 60 min
 
 
 def test_unmapped_active_profile_non_owner_excluded(client):

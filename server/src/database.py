@@ -2772,8 +2772,10 @@ def get_daily_playtime(
 
         current_device_owner = row["device_owner"]
 
-        # Strict backward mono = reboot boundary; discard any open session/interval
+        # Strict backward mono = reboot boundary; emit completed intervals before
+        # discarding state so already-computed FOCUSED→UNFOCUSED durations are kept.
         if prev_mono is not None and mono < prev_mono:
+            _emit()
             _reset()
 
         prev_mono = mono
