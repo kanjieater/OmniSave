@@ -793,3 +793,44 @@ def test_device_config_profile_transaction_rollback(client, monkeypatch):
         headers={"X-Device-ID": DEVICE_A},
     )
     assert r.status_code == 500
+
+
+def test_pair_by_code_transaction_rollback(client, monkeypatch):
+    """Exception inside pair_by_code transaction triggers ROLLBACK: no partial state."""
+    from main import app as _app
+    from fastapi.testclient import TestClient
+    import database as db_mod
+
+    # Get a pairing code from an unpaired device-config
+    r = client.post(
+        "/api/v1/sync/device-config",
+        json={"known_profiles": [{"profile_id": PROF_A, "profile_name": "x"}]},
+        headers={"X-Device-ID": DEVICE_A},
+    )
+    code = r.json()["pairing_code"]
+
+    original = db_mod.set_device_owner
+    called = {"n": 0}
+
+    def _raise(*args, **kwargs):
+        called["n"] += 1
+        if called["n"] == 1:
+            raise RuntimeError("simulated failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(db_mod, "set_device_owner", _raise)
+    admin_tok = _login(client)
+    nc = TestClient(_app, raise_server_exceptions=False)
+    r2 = nc.post(
+        "/api/v1/ui/devices/pair",
+        json={"code": code},
+        headers=_hdr(admin_tok),
+    )
+    assert r2.status_code == 500
+    # ROLLBACK must have left device without an owner
+    import database as db_mod2
+    import ui_api as _ui
+    row = _ui._conn.execute(
+        "SELECT owner_user_id FROM devices WHERE device_id=?", (DEVICE_A,)
+    ).fetchone()
+    assert row is None or row[0] is None, "owner should not be set after rollback"

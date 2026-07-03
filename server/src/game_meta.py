@@ -37,7 +37,10 @@ def game_icon_url(conn, title_id: str, username: str) -> str | None:
 
 
 def bulk_game_meta(conn, title_ids: list[str], username: str) -> dict[str, dict]:
-    """Fetch display_name and icon_url for multiple title_ids in 3 queries instead of 2N."""
+    """Fetch display_name and icon_url for multiple title_ids in 3 queries instead of 2N.
+
+    Returns dict[title_id -> {"display_name": str|None, "icon_url": str|None}].
+    """
     if not title_ids:
         return {}
 

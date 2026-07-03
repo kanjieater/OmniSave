@@ -155,7 +155,9 @@ function ProfilesInCard({ device }: { device: Device }) {
   const profilesKey = ['deviceProfiles', deviceId]
   const devicesKey = ['devices']
 
-  const prevProfileCount = React.useRef(0)
+  // null = not yet initialised; avoids spurious invalidation on every re-mount when
+  // profiles are already cached (prevProfileCount would reset to 0 on each mount).
+  const prevProfileCount = React.useRef<number | null>(null)
   const { data, isLoading } = useQuery({
     queryKey: profilesKey,
     queryFn: () => api.deviceProfiles(deviceId),
@@ -170,7 +172,12 @@ function ProfilesInCard({ device }: { device: Device }) {
 
   // When profiles first appear both caches are stale: devices (default_profile_uid) and
   // profiles (is_mine / claim state). Invalidate both so the UI reflects auto-claim immediately.
+  // null-init means the first run on mount just snapshots the current count rather than firing.
   React.useEffect(() => {
+    if (prevProfileCount.current === null) {
+      prevProfileCount.current = profiles.length
+      return
+    }
     if (profiles.length > 0 && prevProfileCount.current === 0) {
       void qc.invalidateQueries({ queryKey: devicesKey })
       void qc.invalidateQueries({ queryKey: profilesKey })
