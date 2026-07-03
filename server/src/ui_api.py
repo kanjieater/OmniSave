@@ -514,6 +514,13 @@ def pair_by_code(body: PairByCodeBody, request: Request):
     db.set_device_owner(_conn, device_id, username)
     db.create_device_token(_conn, device_id, username)
     _conn.execute("UPDATE devices SET deleted_at=NULL WHERE device_id=?", (device_id,))
+    # Auto-claim first profile if device-config already arrived before pairing completed.
+    _first = db.get_auto_claim_profile(_conn, device_id)
+    if _first:
+        _profile_id, _profile_name = _first
+        db.upsert_device_profile(_conn, device_id, _profile_id, username, _profile_name)
+        db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, username)
+        db.set_user_device_default_profile(_conn, device_id, username, _profile_id)
     db.set_device_config_pending(_conn, device_id)
     device = db.get_device(_conn, device_id)
     log.info("pair-by-code: device=%s owner=%s", device_id, username)
