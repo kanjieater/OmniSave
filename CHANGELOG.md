@@ -1,5 +1,54 @@
 # Changelog
 
+## [1.4.0](https://github.com/kanjieater/OmniSave/compare/v1.3.1...v1.4.0) (2026-07-03)
+
+
+### Features
+
+* add platform-agnostic activity event ingestion ([1dba36c](https://github.com/kanjieater/OmniSave/commit/1dba36c90f7f2a4437e2eca14893ec3f70d08469))
+* add playtime heatmap to dashboard and game pages ([8b5fa0f](https://github.com/kanjieater/OmniSave/commit/8b5fa0fc330003847a1ad827be83ef70fb2b09ba))
+* add server-driven PDM offset tracking for activity backfill ([1ccd3ea](https://github.com/kanjieater/OmniSave/commit/1ccd3ea1c6cd89b1f8fc84b203d4343c67c95745))
+* attribute playtime sessions to the correct OmniSave user via profile map ([0a30b74](https://github.com/kanjieater/OmniSave/commit/0a30b740a96f80befefc19ce35637d426b709196))
+* auto-generate openapi.json in CI ([8d3ec54](https://github.com/kanjieater/OmniSave/commit/8d3ec543943808bcfdca31ef1ac259b4c4903ecb))
+* auto-generate openapi.json in CI + restore gen_openapi.sh ([2766311](https://github.com/kanjieater/OmniSave/commit/2766311954919c98153a239acbedb5083e1bad4d))
+* platform-agnostic activity event ingestion ([5fdb97c](https://github.com/kanjieater/OmniSave/commit/5fdb97c75a2d312c9212a755c816dd9207831c79))
+* playtime heatmap on dashboard and game pages ([459bb38](https://github.com/kanjieater/OmniSave/commit/459bb38e9e76b9fffe1e66eb46fc834ff0f58bd5))
+* playtime heatmap, activity backfill, and sub-minute session display ([3a67a74](https://github.com/kanjieater/OmniSave/commit/3a67a74029d2333788f72cc336783ea4fefbd9f7))
+* rich heatmap tooltip, per-game breakdown, year nav, stats bar ([6af8a27](https://github.com/kanjieater/OmniSave/commit/6af8a273ff4379320e1bfdc7997f26690b9865eb))
+
+
+### Bug Fixes
+
+* add sys.path so import works when python runs outside pytest ([d305b3f](https://github.com/kanjieater/OmniSave/commit/d305b3f214db6c6b7239ecb14b8fe640083de0f4))
+* address PR [#30](https://github.com/kanjieater/OmniSave/issues/30) review — atomicity, auth dedup, sql style ([979f9d3](https://github.com/kanjieater/OmniSave/commit/979f9d3d147f5d1b360aca53030c0d57e2270866))
+* address PR 33 activity-event review findings ([b7e0bb8](https://github.com/kanjieater/OmniSave/commit/b7e0bb803930b6c0359adc5b32ccdf0989ab85e3))
+* address PR 33 activity-event review findings ([6c7cb1d](https://github.com/kanjieater/OmniSave/commit/6c7cb1d0e8b7d184c2dab0fdfc032ac61abbc44d))
+* atomic profile registration + immediate UI refresh on device add ([7bbea4e](https://github.com/kanjieater/OmniSave/commit/7bbea4e2a958489d8ea8cffb964538fd41772e67))
+* auto-claim device owner profile on first upload ([5be9a00](https://github.com/kanjieater/OmniSave/commit/5be9a005d578e03f10f7620aba82c4f425aa6f8f))
+* auto-claim device owner's profile on first upload ([d0647ef](https://github.com/kanjieater/OmniSave/commit/d0647ef3f9ea6923f84623c8cb37cecd6d622abb))
+* auto-claim profile at pair time when device-config arrives first ([126bf13](https://github.com/kanjieater/OmniSave/commit/126bf139ef8745498ff2a52ce705084605ad701d))
+* clamp tooltip within viewport edges + show day total in header ([1de7226](https://github.com/kanjieater/OmniSave/commit/1de72266ec3bcabdc72ea5380abf24a1bfbb0665))
+* correct DST streak bugs and per-game minute truncation ([41a786a](https://github.com/kanjieater/OmniSave/commit/41a786a8eda299f62b0ea78bd4a7c4c7bf7f9435))
+* enable heatmap tooltip on mobile tap ([2a2880e](https://github.com/kanjieater/OmniSave/commit/2a2880e6249e15e1e4120bd212bad97070ca0415))
+* enlarge tooltip rows to match activity log sizing ([b041c1e](https://github.com/kanjieater/OmniSave/commit/b041c1e318d218e5456937560070f18f12246c08))
+* move claim_pairing_code inside BEGIN IMMEDIATE in pair_by_code ([17b0f2c](https://github.com/kanjieater/OmniSave/commit/17b0f2cf51478012661eca0c4c9718317312614c))
+* move claim_pairing_code inside BEGIN IMMEDIATE in pair_by_code ([3de1f30](https://github.com/kanjieater/OmniSave/commit/3de1f30097d5d1a129a2d51bcddc21878b934ec9))
+* remove onOpenChange so Radix can't immediately close touch-opened tooltip ([a40b679](https://github.com/kanjieater/OmniSave/commit/a40b6795323a222cca3f2dc3f0a3e030effd26a7))
+* replace Radix Tooltip with custom portal for heatmap cells ([55f9b36](https://github.com/kanjieater/OmniSave/commit/55f9b36ba9193f86bca6848b2e2cf4643964af62))
+* replace SQL JOIN with per-device session state machine for playtime ([6a217f9](https://github.com/kanjieater/OmniSave/commit/6a217f9c9a1be234f8a26b9a9dbc3df563de72c3))
+* replace Today stat with All time total using consistent floor-once formula ([9e54247](https://github.com/kanjieater/OmniSave/commit/9e542473f0d201363b406d3c61c99233091a6f4d))
+* resolve game display names via titledb instead of empty labels table ([652ecc8](https://github.com/kanjieater/OmniSave/commit/652ecc81fbdd9734174250b9b86872f76c5ab4d4))
+* resolve merge conflicts, lint, transaction hardening for pair_by_code ([22bc4d8](https://github.com/kanjieater/OmniSave/commit/22bc4d846459227e31caa08751257e6fe0478c4d))
+* resolve PR [#31](https://github.com/kanjieater/OmniSave/issues/31) round-6 review — display_name/icon enrichment + tooltip total consistency ([66cad8a](https://github.com/kanjieater/OmniSave/commit/66cad8ab02c9df90f1dca92b457b3bfdabf6fb5a))
+* resolve test regressions from UUID path param annotations ([0fab526](https://github.com/kanjieater/OmniSave/commit/0fab526fd630e02ec03665e5e101fd8b1b509844))
+* restore Pydantic batch cap gate and correct tooltipMinutes formula ([b2c2aca](https://github.com/kanjieater/OmniSave/commit/b2c2aca0c8be8b02f27de6170af6665a36921ade))
+* ruff format activity_api.py and game_meta.py ([660b8f5](https://github.com/kanjieater/OmniSave/commit/660b8f51e676053d4315ef04ea8a9857fc34ad27))
+* show '&lt; 1m' instead of '0m' for sub-minute game sessions in tooltip ([640438f](https://github.com/kanjieater/OmniSave/commit/640438fc44d68440c6ed005973c558de663e1a71))
+* show games and &lt; 1m label for sub-minute playtime sessions ([67671a5](https://github.com/kanjieater/OmniSave/commit/67671a5f3f932b8e5880e57d3eaa5dcb02a31e05))
+* show pointer cursor on year nav chevrons ([83eea40](https://github.com/kanjieater/OmniSave/commit/83eea40ebc1fb21d40493888c0a80f6e2fa1cefb))
+* validate app event application_id + return total_sec per game ([f943b03](https://github.com/kanjieater/OmniSave/commit/f943b03c3ac16f126fe4537ed9cd755161a26495))
+* wrap auto-claim writes in BEGIN IMMEDIATE transaction ([5a674d6](https://github.com/kanjieater/OmniSave/commit/5a674d6694b9a06e79143b923a31fa46cc53573a))
+
 ## [1.3.1](https://github.com/kanjieater/OmniSave/compare/v1.3.0...v1.3.1) (2026-06-23)
 
 
