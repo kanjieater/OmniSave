@@ -143,8 +143,12 @@ def start_inbound(body: InboundBody, request: Request):
             _conn.execute("BEGIN IMMEDIATE")
             try:
                 db.upsert_device_profile(
-                    _conn, auth.device_id, body.user_key, _device_owner,
-                    body.user_display or "", is_auto_claimed=True,
+                    _conn,
+                    auth.device_id,
+                    body.user_key,
+                    _device_owner,
+                    body.user_display or "",
+                    is_auto_claimed=True,
                 )
                 db.backfill_owner_on_profile_claim(
                     _conn, auth.device_id, body.user_key, _device_owner
