@@ -1,29 +1,24 @@
-# Production-style compose for /mnt/srv/omnisave (scripts/server.sh).
-# Hostnames, paths, and ports come from .env only.
+# Production compose for /mnt/srv/omnisave.
+# Secrets and runtime config come from .env only.
 
 services:
   omnisave:
-    container_name: ${OMNISAVE_CONTAINER_NAME:-omnisave}
-    image: ${OMNISAVE_IMAGE:-omnisave:latest}
-    build:
-      context: ${OMNISAVE_REPO}/server
-      dockerfile: Dockerfile
-      args:
-        GIT_SHA: ${GIT_SHA:-unknown}
+    container_name: omnisave
+    image: ghcr.io/kanjieater/omnisave:latest
+    pull_policy: always
     restart: unless-stopped
     logging:
       driver: json-file
     env_file:
       - .env
     ports:
-      - "${OMNISAVE_PORT_PUBLISH:-8991}:${OMNISAVE_PORT_INTERNAL:-8991}"
+      - "8991:8991"
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./data:/app/data
-      - ./config:/app/config
     networks:
       - selfhost
 
 networks:
   selfhost:
-    external: true    
+    external: true

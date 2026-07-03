@@ -49,13 +49,19 @@
 * **SQL Injection Prevention (Python):** Never use string interpolation (f-strings or `.format()`) for SQLite queries. Always use parameterized queries (`conn.execute("...", (var,))`).
 * **Credential Hygiene:** Never hardcode passwords or API keys in source code. Always read them from environment variables and never output them to the console or log files.
 
-## 10. System Invariants (CI-Enforced)
+## 10. Production Deploy Gate
+
+**Never pass `--prod` to `scripts/server.sh` without the user explicitly saying so in the current conversation.**
+
+`./scripts/server.sh up` (no flag) always targets dev — safe to run. `--prod` targets the live production instance at `/mnt/srv/omnisave`. If a task requires deploying to prod, stop and ask the user first. No exceptions.
+
+## 11. System Invariants (CI-Enforced)
 1. **Server coverage:** Every changed line in `server/src/` must be covered by tests — enforced by `diff-cover --fail-under=95` in CI (`docker compose run --rm test` from repo root).
 2. **Server test env:** The only valid test environment is Docker. Never run Python or pytest directly on the host.
 3. **CI is the gate:** Never add git hooks (pre-commit, pre-push, commit-msg) that block or delay `git commit` or `git push`.
 4. Tests should be considered early, but do not have to be written until the end.
 
-## 11. Test Tiers — 2-Speed Feedback Loop
+## 12. Test Tiers — 2-Speed Feedback Loop
 
 **Never run Python directly on the host. Always use Docker.**
 
