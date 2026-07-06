@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.5.0](https://github.com/kanjieater/OmniSave/compare/v1.4.0...v1.5.0) (2026-07-06)
+
+
+### Features
+
+* stable UUID user identity — replace username FK with UUID across all tables ([c46c8a2](https://github.com/kanjieater/OmniSave/commit/c46c8a2bb21d98f2315b6861e3d612f6c8ba97a1))
+* stable UUID user identity (replace username FK with UUID) ([e4146f8](https://github.com/kanjieater/OmniSave/commit/e4146f8dfbcc8fead7f5f900862902869431c5f5))
+
+
+### Bug Fixes
+
+* address all 7 PR [#41](https://github.com/kanjieater/OmniSave/issues/41) review findings ([0f73da2](https://github.com/kanjieater/OmniSave/commit/0f73da23d4831e4de0a89a57f78472d5d06e5a21))
+* address PR review findings ([b51cc10](https://github.com/kanjieater/OmniSave/commit/b51cc1066c815513a8a2cf18b5f02b5307359198))
+* address round 4-5 PR review findings ([032f347](https://github.com/kanjieater/OmniSave/commit/032f3478a6900c79b85a529a4bcccffe0b70d26d))
+* admin ownership backfill missing from UUID migration + merge main ([cb2404b](https://github.com/kanjieater/OmniSave/commit/cb2404b85cb225d8f4cf4dca0f9909ecb9c85df4))
+* emit completed sessions before monotonic-reset discard ([6a23e00](https://github.com/kanjieater/OmniSave/commit/6a23e00bfb8ee5be6837fae15356684d0990e9bd))
+* filter non-retail Switch titles from activity ingestion and playtime ([804caf4](https://github.com/kanjieater/OmniSave/commit/804caf454e9e5503d80a6181ce375016803e9ce2))
+* filter non-retail Switch titles from activity ingestion and playtime ([d815068](https://github.com/kanjieater/OmniSave/commit/d815068187676186e716a330d9b2d3292d851a03))
+* idempotent romm device canonicalization on migration boot ([e3f9b39](https://github.com/kanjieater/OmniSave/commit/e3f9b393f7246e11e2593a12bce698b69fbc08cf))
+* pin romm_source_id on first PUT /settings/romm to prevent device ID split on username rename ([d7fa63d](https://github.com/kanjieater/OmniSave/commit/d7fa63d061626851510c2e6d08b75de39dd0671c))
+* pin romm_source_id on first setup to prevent device ID split ([815e1dc](https://github.com/kanjieater/OmniSave/commit/815e1dc291d1991853972109530abdb4a13ea7b1))
+* replace UUID leaks in UI with display usernames ([c7a82ab](https://github.com/kanjieater/OmniSave/commit/c7a82abf88dccda6b87f8ca6dadcb328a9f00efa))
+* rewrite container_name and port via server.sh when deploying ([b1f13ee](https://github.com/kanjieater/OmniSave/commit/b1f13eee87a57dcef783942ea75881ebd62cd482))
+
+
+### Performance Improvements
+
+* skip admin backfill loop when devices table already holds UUIDs ([85737fa](https://github.com/kanjieater/OmniSave/commit/85737fa3c7dfd465ef8685fad94a2a9127bc8cd6))
+
 ## [1.4.0](https://github.com/kanjieater/OmniSave/compare/v1.3.1...v1.4.0) (2026-07-03)
 
 
