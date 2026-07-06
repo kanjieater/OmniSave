@@ -1035,6 +1035,68 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     if "id" in au_cols_now:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_id ON auth_users(id)")
 
+    # Idempotent: pin romm_source_id and canonicalise stale romm:username device IDs.
+    # RomM shipped in v1.3.0 using romm:{username} as the virtual device ID.
+    # UUID migration changed the fallback to romm:{uuid}. On upgrade, old
+    # romm:username entries in sync_transactions / device_title_head have no
+    # display_name and show as truncated device_id strings in the UI.
+    # For each user with a registered canonical romm device: pin romm_source_id
+    # (prevents future drift), then merge stale romm:* references to canonical.
+    if "devices" in existing and "sync_transactions" in existing:
+        _txn_cols = {r[1] for r in conn.execute("PRAGMA table_info(sync_transactions)").fetchall()}
+        _dth_cols = {r[1] for r in conn.execute("PRAGMA table_info(device_title_head)").fetchall()}
+        _uc_cols = {r[1] for r in conn.execute("PRAGMA table_info(user_config)").fetchall()}
+        _canonical_romm = conn.execute(
+            "SELECT device_id, owner_user_id FROM devices"
+            " WHERE device_id LIKE 'romm:%' AND client_type='romm'"
+            "   AND owner_user_id IS NOT NULL AND deleted_at IS NULL"
+            " ORDER BY created_at ASC"
+        ).fetchall()
+        for _crow in _canonical_romm:
+            _cid = _crow["device_id"]
+            _ouid = _crow["owner_user_id"]
+            if "user_config" in existing and "user_id" in _uc_cols:
+                conn.execute(
+                    "INSERT OR IGNORE INTO user_config (user_id, key, value) VALUES (?,?,?)",
+                    (_ouid, "romm_source_id", _cid),
+                )
+            if "source_device_id" in _txn_cols:
+                conn.execute(
+                    "UPDATE sync_transactions SET source_device_id=?"
+                    " WHERE source_device_id LIKE 'romm:%' AND source_device_id!=?"
+                    "   AND owner_user_id=?",
+                    (_cid, _cid, _ouid),
+                )
+            if "target_device_id" in _txn_cols:
+                conn.execute(
+                    "UPDATE sync_transactions SET target_device_id=?"
+                    " WHERE target_device_id LIKE 'romm:%' AND target_device_id!=?"
+                    "   AND owner_user_id=?",
+                    (_cid, _cid, _ouid),
+                )
+            if "device_title_head" in existing and "device_id" in _dth_cols:
+                conn.execute(
+                    "INSERT INTO device_title_head (title_id, device_id, last_seq, updated_at)"
+                    " SELECT title_id, ?, last_seq, updated_at"
+                    " FROM device_title_head"
+                    " WHERE device_id LIKE 'romm:%' AND device_id!=?"
+                    "   AND title_id IN ("
+                    "     SELECT title_id FROM sync_transactions WHERE owner_user_id=?"
+                    "   )"
+                    " ON CONFLICT (title_id, device_id) DO UPDATE"
+                    "   SET last_seq = MAX(last_seq, excluded.last_seq),"
+                    "       updated_at = MAX(updated_at, excluded.updated_at)",
+                    (_cid, _cid, _ouid),
+                )
+                conn.execute(
+                    "DELETE FROM device_title_head"
+                    " WHERE device_id LIKE 'romm:%' AND device_id!=?"
+                    "   AND title_id IN ("
+                    "     SELECT title_id FROM sync_transactions WHERE owner_user_id=?"
+                    "   )",
+                    (_cid, _ouid),
+                )
+
 
 class LockedConnection:
     """Thread-safe proxy around sqlite3.Connection.
