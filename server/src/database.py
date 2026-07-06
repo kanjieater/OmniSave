@@ -806,9 +806,14 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 "SELECT value FROM server_config WHERE key='admin_user_id'"
             ).fetchone()
             admin_user_id = admin_id_row["value"] if admin_id_row else str(uuid.uuid4())
+            admin_name_row = conn.execute(
+                "SELECT value FROM server_config WHERE key='admin_username'"
+            ).fetchone()
+            old_admin_name = admin_name_row["value"] if admin_name_row else "admin"
         else:
             admin_id_row = None
             admin_user_id = str(uuid.uuid4())
+            old_admin_name = "admin"
 
         conn.execute("SAVEPOINT uuid_migration")
         try:
@@ -822,7 +827,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 conn.execute("UPDATE auth_users SET id=? WHERE username=?", (uid, uname))
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_id ON auth_users(id)")
             # Simple FK tables: only update values, column names stay the same
-            for _tbl, _col in [
+            _SIMPLE_FK = [
                 ("devices", "owner_user_id"),
                 ("sync_transactions", "owner_user_id"),
                 ("events", "owner_user_id"),
@@ -830,7 +835,8 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 ("device_access", "user_id"),
                 ("device_play_events", "owner_user_id"),
                 ("device_profile_map", "user_id"),
-            ]:
+            ]
+            for _tbl, _col in _SIMPLE_FK:
                 if _tbl in existing:
                     conn.execute(
                         f"UPDATE {_tbl} SET {_col} = ("
@@ -838,6 +844,13 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                         f") WHERE {_col} IS NOT NULL AND EXISTS ("
                         f"  SELECT 1 FROM auth_users WHERE username = {_tbl}.{_col}"
                         f")"
+                    )
+            # Admin rows: admin is in server_config, not auth_users — backfill separately
+            for _tbl, _col in _SIMPLE_FK:
+                if _tbl in existing:
+                    conn.execute(
+                        f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
+                        (admin_user_id, old_admin_name),
                     )
             # auth_sessions: rename username → user_id column
             as_cols = {r[1] for r in conn.execute("PRAGMA table_info(auth_sessions)").fetchall()}
@@ -873,9 +886,11 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 """)
                 conn.execute(
                     "INSERT INTO user_config_new (user_id, key, value)"
-                    " SELECT COALESCE((SELECT id FROM auth_users WHERE username=uc.username), uc.username),"
+                    " SELECT COALESCE((SELECT id FROM auth_users WHERE username=uc.username),"
+                    "   CASE WHEN uc.username=? THEN ? ELSE uc.username END),"
                     "  uc.key, uc.value"
-                    " FROM user_config uc"
+                    " FROM user_config uc",
+                    (old_admin_name, admin_user_id),
                 )
                 conn.execute("DROP TABLE user_config")
                 conn.execute("ALTER TABLE user_config_new RENAME TO user_config")
@@ -896,9 +911,11 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 pi_col = "COALESCE(r.pull_initialized,0)" if has_pi else "0"
                 conn.execute(
                     "INSERT INTO romm_title_map_new (user_id,title_id,rom_id,mapped_at,pull_initialized)"
-                    f" SELECT COALESCE((SELECT id FROM auth_users WHERE username=r.username),r.username),"
+                    f" SELECT COALESCE((SELECT id FROM auth_users WHERE username=r.username),"
+                    f"   CASE WHEN r.username=? THEN ? ELSE r.username END),"
                     f"  r.title_id, r.rom_id, r.mapped_at, {pi_col}"
-                    " FROM romm_title_map r"
+                    " FROM romm_title_map r",
+                    (old_admin_name, admin_user_id),
                 )
                 conn.execute("DROP TABLE romm_title_map")
                 conn.execute("ALTER TABLE romm_title_map_new RENAME TO romm_title_map")
@@ -921,9 +938,11 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 """)
                 conn.execute(
                     "INSERT INTO romm_game_cache_new (user_id,rom_id,name,icon_url,fetched_at)"
-                    " SELECT COALESCE((SELECT id FROM auth_users WHERE username=r.username),r.username),"
+                    " SELECT COALESCE((SELECT id FROM auth_users WHERE username=r.username),"
+                    "   CASE WHEN r.username=? THEN ? ELSE r.username END),"
                     "  r.rom_id, r.name, r.icon_url, r.fetched_at"
-                    " FROM romm_game_cache r"
+                    " FROM romm_game_cache r",
+                    (old_admin_name, admin_user_id),
                 )
                 conn.execute("DROP TABLE romm_game_cache")
                 conn.execute("ALTER TABLE romm_game_cache_new RENAME TO romm_game_cache")
@@ -944,9 +963,11 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 """)
                 conn.execute(
                     "INSERT INTO romm_save_sync_new (user_id,rom_id,romm_save_id,direction,transaction_id,synced_at)"
-                    " SELECT COALESCE((SELECT id FROM auth_users WHERE username=r.username),r.username),"
+                    " SELECT COALESCE((SELECT id FROM auth_users WHERE username=r.username),"
+                    "   CASE WHEN r.username=? THEN ? ELSE r.username END),"
                     "  r.rom_id, r.romm_save_id, r.direction, r.transaction_id, r.synced_at"
-                    " FROM romm_save_sync r"
+                    " FROM romm_save_sync r",
+                    (old_admin_name, admin_user_id),
                 )
                 conn.execute("DROP TABLE romm_save_sync")
                 conn.execute("ALTER TABLE romm_save_sync_new RENAME TO romm_save_sync")
@@ -955,6 +976,47 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         except Exception:
             conn.execute("ROLLBACK TO SAVEPOINT uuid_migration")
             raise
+
+    # Admin ownership backfill — idempotent, runs every startup.
+    # Admin is not in auth_users so the UUID migration JOIN skips admin rows.
+    # This step fixes any ownership column still holding the admin username string.
+    # Safe no-op once all rows are already UUIDs.
+    if sc_tables:
+        _auid_row = conn.execute(
+            "SELECT value FROM server_config WHERE key='admin_user_id'"
+        ).fetchone()
+        _aname_row = conn.execute(
+            "SELECT value FROM server_config WHERE key='admin_username'"
+        ).fetchone()
+        if _auid_row and _aname_row:
+            _auid = _auid_row["value"]
+            _aname = _aname_row["value"]
+            for _tbl, _col in [
+                ("devices", "owner_user_id"),
+                ("sync_transactions", "owner_user_id"),
+                ("events", "owner_user_id"),
+                ("device_auth", "user_id"),
+                ("device_access", "user_id"),
+                ("device_play_events", "owner_user_id"),
+                ("device_profile_map", "user_id"),
+                ("user_config", "user_id"),
+                ("romm_title_map", "user_id"),
+                ("romm_game_cache", "user_id"),
+                ("romm_save_sync", "user_id"),
+                ("auth_sessions", "user_id"),
+            ]:
+                if _tbl in existing:
+                    _tcols = {
+                        r[1]
+                        for r in conn.execute(
+                            f"PRAGMA table_info({_tbl})"  # noqa: S608
+                        ).fetchall()
+                    }
+                    if _col in _tcols:
+                        conn.execute(
+                            f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
+                            (_auid, _aname),
+                        )
 
 
 class LockedConnection:

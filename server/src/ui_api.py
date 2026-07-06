@@ -2037,6 +2037,8 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
     # Read current device_id BEFORE any writes so we can retire it if it changes
     old_device_id = db.get_user_config(_conn, user_id, "romm_source_id")
     romm_device_id = old_device_id or f"romm:{user_id}"
+    if not old_device_id:
+        db.set_user_config(_conn, user_id, "romm_source_id", romm_device_id)
     if body.source_id is not None and body.source_id.strip():
         romm_device_id = body.source_id.strip()
         db.set_user_config(_conn, user_id, "romm_source_id", romm_device_id)
