@@ -138,7 +138,6 @@ CREATE TABLE IF NOT EXISTS auth_users (
     created_at    TEXT NOT NULL,
     id            TEXT NOT NULL DEFAULT ''
 );
-
 CREATE TABLE IF NOT EXISTS auth_sessions (
     session_id TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL,
@@ -866,10 +865,13 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 conn.execute(
                     "INSERT INTO auth_sessions_new (session_id, user_id, token, created_at)"
                     " SELECT s.session_id,"
-                    "  COALESCE((SELECT id FROM auth_users WHERE username=s.username), ?),"
+                    "  CASE WHEN s.username=? THEN ?"
+                    "       ELSE (SELECT id FROM auth_users WHERE username=s.username) END,"
                     "  s.token, s.created_at"
-                    " FROM auth_sessions s",
-                    (admin_user_id,),
+                    " FROM auth_sessions s"
+                    " WHERE s.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=s.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
                 )
                 conn.execute("DROP TABLE auth_sessions")
                 conn.execute("ALTER TABLE auth_sessions_new RENAME TO auth_sessions")
@@ -886,11 +888,13 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 """)
                 conn.execute(
                     "INSERT INTO user_config_new (user_id, key, value)"
-                    " SELECT COALESCE((SELECT id FROM auth_users WHERE username=uc.username),"
-                    "   CASE WHEN uc.username=? THEN ? ELSE uc.username END),"
+                    " SELECT CASE WHEN uc.username=? THEN ?"
+                    "             ELSE (SELECT id FROM auth_users WHERE username=uc.username) END,"
                     "  uc.key, uc.value"
-                    " FROM user_config uc",
-                    (old_admin_name, admin_user_id),
+                    " FROM user_config uc"
+                    " WHERE uc.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=uc.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
                 )
                 conn.execute("DROP TABLE user_config")
                 conn.execute("ALTER TABLE user_config_new RENAME TO user_config")
@@ -911,11 +915,13 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 pi_col = "COALESCE(r.pull_initialized,0)" if has_pi else "0"
                 conn.execute(
                     "INSERT INTO romm_title_map_new (user_id,title_id,rom_id,mapped_at,pull_initialized)"
-                    f" SELECT COALESCE((SELECT id FROM auth_users WHERE username=r.username),"
-                    f"   CASE WHEN r.username=? THEN ? ELSE r.username END),"
+                    f" SELECT CASE WHEN r.username=? THEN ?"
+                    f"             ELSE (SELECT id FROM auth_users WHERE username=r.username) END,"
                     f"  r.title_id, r.rom_id, r.mapped_at, {pi_col}"
-                    " FROM romm_title_map r",
-                    (old_admin_name, admin_user_id),
+                    " FROM romm_title_map r"
+                    " WHERE r.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=r.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
                 )
                 conn.execute("DROP TABLE romm_title_map")
                 conn.execute("ALTER TABLE romm_title_map_new RENAME TO romm_title_map")
@@ -938,11 +944,13 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 """)
                 conn.execute(
                     "INSERT INTO romm_game_cache_new (user_id,rom_id,name,icon_url,fetched_at)"
-                    " SELECT COALESCE((SELECT id FROM auth_users WHERE username=r.username),"
-                    "   CASE WHEN r.username=? THEN ? ELSE r.username END),"
+                    " SELECT CASE WHEN r.username=? THEN ?"
+                    "             ELSE (SELECT id FROM auth_users WHERE username=r.username) END,"
                     "  r.rom_id, r.name, r.icon_url, r.fetched_at"
-                    " FROM romm_game_cache r",
-                    (old_admin_name, admin_user_id),
+                    " FROM romm_game_cache r"
+                    " WHERE r.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=r.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
                 )
                 conn.execute("DROP TABLE romm_game_cache")
                 conn.execute("ALTER TABLE romm_game_cache_new RENAME TO romm_game_cache")
@@ -963,11 +971,13 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 """)
                 conn.execute(
                     "INSERT INTO romm_save_sync_new (user_id,rom_id,romm_save_id,direction,transaction_id,synced_at)"
-                    " SELECT COALESCE((SELECT id FROM auth_users WHERE username=r.username),"
-                    "   CASE WHEN r.username=? THEN ? ELSE r.username END),"
+                    " SELECT CASE WHEN r.username=? THEN ?"
+                    "             ELSE (SELECT id FROM auth_users WHERE username=r.username) END,"
                     "  r.rom_id, r.romm_save_id, r.direction, r.transaction_id, r.synced_at"
-                    " FROM romm_save_sync r",
-                    (old_admin_name, admin_user_id),
+                    " FROM romm_save_sync r"
+                    " WHERE r.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=r.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
                 )
                 conn.execute("DROP TABLE romm_save_sync")
                 conn.execute("ALTER TABLE romm_save_sync_new RENAME TO romm_save_sync")
@@ -975,6 +985,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             log.info("UUID identity migration: %d user(s) migrated", len(user_uuids))
         except Exception:
             conn.execute("ROLLBACK TO SAVEPOINT uuid_migration")
+            conn.execute("RELEASE SAVEPOINT uuid_migration")
             raise
 
     # Admin ownership backfill — idempotent, runs every startup.
@@ -1017,6 +1028,12 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                             f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
                             (_auid, _aname),
                         )
+
+    # Idempotent — must exist for both fresh installs and post-migration upgrades.
+    # Not in SCHEMA because it would fail on legacy DBs before the migration adds auth_users.id.
+    au_cols_now = {r[1] for r in conn.execute("PRAGMA table_info(auth_users)").fetchall()}
+    if "id" in au_cols_now:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_id ON auth_users(id)")
 
 
 class LockedConnection:

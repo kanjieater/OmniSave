@@ -351,8 +351,12 @@ def _repair_romm_push_head_device_title_head(conn) -> int:
     so multiple sync records produce a single authoritative entry. INSERT OR IGNORE skips
     titles already tracked by device_title_head.
 
-    Assumption: one RomM virtual device per user (romm_source_id or romm:{username}).
+    Assumption: one RomM virtual device per user (romm_source_id or romm:{user_id}).
     """
+    rss_cols = {r[1] for r in conn.execute("PRAGMA table_info(romm_save_sync)").fetchall()}
+    uc_cols = {r[1] for r in conn.execute("PRAGMA table_info(user_config)").fetchall()}
+    if "user_id" not in rss_cols or "user_id" not in uc_cols:
+        return 0
     cur = conn.execute("""
         INSERT INTO device_title_head (title_id, device_id, last_seq, updated_at)
         SELECT

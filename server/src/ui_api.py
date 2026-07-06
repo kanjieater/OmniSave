@@ -84,9 +84,12 @@ def init(conn, archive_dir: Path | None = None) -> None:
 
 def _check_reset_flag() -> None:
     if _RESET_FLAG.exists():
-        admin_user_id = db.get_config(_conn, "admin_user_id") or ""
-        if admin_user_id:
-            db.delete_auth_sessions_for_user(_conn, admin_user_id)
+        admin_user_id = db.get_config(_conn, "admin_user_id")
+        if not admin_user_id:
+            raise RuntimeError(
+                "admin_user_id missing from server_config — cannot reset credentials"
+            )
+        db.delete_auth_sessions_for_user(_conn, admin_user_id)
         db.set_config(_conn, "admin_password_hash", _hash_password("admin"))
         _RESET_FLAG.unlink(missing_ok=True)
         log.warning("admin credentials reset via reset flag — password reset to 'admin'")
@@ -2154,6 +2157,11 @@ def change_credentials(body: ChangeCredentialsBody, request: Request, response: 
             return JSONResponse({"error": "current password incorrect"}, status_code=403)
         admin_user_id = db.get_config(_conn, "admin_user_id") or ""
         if body.new_username:
+            existing = _conn.execute(
+                "SELECT 1 FROM auth_users WHERE username=?", (body.new_username,)
+            ).fetchone()
+            if existing:
+                return JSONResponse({"error": "username already taken"}, status_code=409)
             db.set_config(_conn, "admin_username", body.new_username)
             log.info("admin username changed")
         if body.new_password:
