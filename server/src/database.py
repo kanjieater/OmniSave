@@ -1014,34 +1014,43 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         if _auid_row and _aname_row:
             _auid = _auid_row["value"]
             _aname = _aname_row["value"]
-            for _tbl, _col in [
-                ("devices", "owner_user_id"),
-                ("sync_transactions", "owner_user_id"),
-                ("events", "owner_user_id"),
-                ("device_auth", "user_id"),
-                ("device_access", "user_id"),
-                ("device_share_codes", "granted_by"),
-                ("device_access", "granted_by"),
-                ("device_play_events", "owner_user_id"),
-                ("device_profile_map", "user_id"),
-                ("user_config", "user_id"),
-                ("romm_title_map", "user_id"),
-                ("romm_game_cache", "user_id"),
-                ("romm_save_sync", "user_id"),
-                ("auth_sessions", "user_id"),
-            ]:
-                if _tbl in existing:
-                    _tcols = {
-                        r[1]
-                        for r in conn.execute(
-                            f"PRAGMA table_info({_tbl})"  # noqa: S608
-                        ).fetchall()
-                    }
-                    if _col in _tcols:
-                        conn.execute(
-                            f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
-                            (_auid, _aname),
-                        )
+            # Fast-path: once the admin username string is absent from `devices`
+            # (cheapest proxy), all other tables are already converted too.
+            # Avoids 14 PRAGMA + 14 full-table scans on every restart post-migration.
+            _needs_backfill = "devices" not in existing or bool(
+                conn.execute(
+                    "SELECT 1 FROM devices WHERE owner_user_id=? LIMIT 1", (_aname,)
+                ).fetchone()
+            )
+            if _needs_backfill:
+                for _tbl, _col in [
+                    ("devices", "owner_user_id"),
+                    ("sync_transactions", "owner_user_id"),
+                    ("events", "owner_user_id"),
+                    ("device_auth", "user_id"),
+                    ("device_access", "user_id"),
+                    ("device_share_codes", "granted_by"),
+                    ("device_access", "granted_by"),
+                    ("device_play_events", "owner_user_id"),
+                    ("device_profile_map", "user_id"),
+                    ("user_config", "user_id"),
+                    ("romm_title_map", "user_id"),
+                    ("romm_game_cache", "user_id"),
+                    ("romm_save_sync", "user_id"),
+                    ("auth_sessions", "user_id"),
+                ]:
+                    if _tbl in existing:
+                        _tcols = {
+                            r[1]
+                            for r in conn.execute(
+                                f"PRAGMA table_info({_tbl})"  # noqa: S608
+                            ).fetchall()
+                        }
+                        if _col in _tcols:
+                            conn.execute(
+                                f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
+                                (_auid, _aname),
+                            )
 
     # Idempotent: backfill granted_by username→UUID for instances that already ran the migration.
     # The migration SAVEPOINT runs once (guarded by "id" not in au_cols); this catches rows
