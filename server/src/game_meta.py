@@ -11,32 +11,32 @@ import database as db
 import titledb
 
 
-def game_display_name(conn, title_id: str, username: str) -> str | None:
+def game_display_name(conn, title_id: str, user_id: str) -> str | None:
     row = conn.execute(
         "SELECT label FROM labels WHERE entity_type='game' AND entity_id=?", (title_id,)
     ).fetchone()
     if row:
         return row["label"]
-    if username:
-        rom_id = db.get_romm_rom_id(conn, username, title_id)
+    if user_id:
+        rom_id = db.get_romm_rom_id(conn, user_id, title_id)
         if rom_id:
-            cache = db.get_romm_game_cache(conn, username, rom_id)
+            cache = db.get_romm_game_cache(conn, user_id, rom_id)
             if cache and cache.get("name"):
                 return cache["name"]
     return titledb.resolve_game_name(title_id)
 
 
-def game_icon_url(conn, title_id: str, username: str) -> str | None:
-    if username:
-        rom_id = db.get_romm_rom_id(conn, username, title_id)
+def game_icon_url(conn, title_id: str, user_id: str) -> str | None:
+    if user_id:
+        rom_id = db.get_romm_rom_id(conn, user_id, title_id)
         if rom_id:
-            cache = db.get_romm_game_cache(conn, username, rom_id)
+            cache = db.get_romm_game_cache(conn, user_id, rom_id)
             if cache and cache.get("icon_url"):
                 return cache["icon_url"]
     return titledb.get_icon_url(title_id)
 
 
-def bulk_game_meta(conn, title_ids: list[str], username: str) -> dict[str, dict]:
+def bulk_game_meta(conn, title_ids: list[str], user_id: str) -> dict[str, dict]:
     """Fetch display_name and icon_url for multiple title_ids in 3 queries instead of 2N.
 
     Returns dict[title_id -> {"display_name": str|None, "icon_url": str|None}].
@@ -56,11 +56,11 @@ def bulk_game_meta(conn, title_ids: list[str], username: str) -> dict[str, dict]
         result[row["entity_id"]]["display_name"] = row["label"]
 
     # 2. RomM: title→rom_id then rom→cache (two IN queries)
-    if username:
+    if user_id:
         upper_ids = [tid.upper() for tid in ids]
         map_rows = conn.execute(
-            f"SELECT title_id, rom_id FROM romm_title_map WHERE username=? AND title_id IN ({placeholders})",
-            [username, *upper_ids],
+            f"SELECT title_id, rom_id FROM romm_title_map WHERE user_id=? AND title_id IN ({placeholders})",
+            [user_id, *upper_ids],
         ).fetchall()
         tid_to_romid = {row["title_id"]: row["rom_id"] for row in map_rows}
 
@@ -68,8 +68,8 @@ def bulk_game_meta(conn, title_ids: list[str], username: str) -> dict[str, dict]
             rom_ids = list(tid_to_romid.values())
             rom_ph = ",".join("?" * len(rom_ids))
             cache_rows = conn.execute(
-                f"SELECT rom_id, name, icon_url FROM romm_game_cache WHERE username=? AND rom_id IN ({rom_ph})",
-                [username, *rom_ids],
+                f"SELECT rom_id, name, icon_url FROM romm_game_cache WHERE user_id=? AND rom_id IN ({rom_ph})",
+                [user_id, *rom_ids],
             ).fetchall()
             romid_to_cache = {row["rom_id"]: dict(row) for row in cache_rows}
 

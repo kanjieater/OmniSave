@@ -12,6 +12,7 @@ import logging
 import re
 import re as _re
 import secrets
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -69,6 +70,8 @@ def seed_default_credentials(conn) -> None:
         db.set_config(conn, "admin_password_hash", _hash_password("admin"))
     if not db.get_config(conn, "admin_created_at"):
         db.set_config(conn, "admin_created_at", datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    if not db.get_config(conn, "admin_user_id"):
+        db.set_config(conn, "admin_user_id", str(uuid.uuid4()))
 
 
 def init(conn, archive_dir: Path | None = None) -> None:
@@ -81,8 +84,9 @@ def init(conn, archive_dir: Path | None = None) -> None:
 
 def _check_reset_flag() -> None:
     if _RESET_FLAG.exists():
-        admin_username = db.get_config(_conn, "admin_username") or "admin"
-        db.delete_auth_sessions_for_user(_conn, admin_username)
+        admin_user_id = db.get_config(_conn, "admin_user_id") or ""
+        if admin_user_id:
+            db.delete_auth_sessions_for_user(_conn, admin_user_id)
         db.set_config(_conn, "admin_password_hash", _hash_password("admin"))
         _RESET_FLAG.unlink(missing_ok=True)
         log.warning("admin credentials reset via reset flag — password reset to 'admin'")
@@ -320,24 +324,41 @@ def _extract_token(request: Request) -> str:
     return request.cookies.get("os_session", "")
 
 
-def _token_valid(request: Request) -> bool:
-    return _current_username(request) is not None
-
-
-def _current_username(request: Request) -> str | None:
+def _current_user(request: Request) -> dict | None:
+    """Return {id, username} for the authenticated session; None if unauthenticated.
+    Admin sessions have no auth_users row — username resolved from server_config."""
     token = _extract_token(request)
     if not token:
         return None
     row = db.get_auth_user_by_token(_conn, token)
-    return row["username"] if row else None
+    if not row:
+        return None
+    if row["username"] is None:
+        admin_username = db.get_config(_conn, "admin_username") or "admin"
+        return {"id": row["id"], "username": admin_username}
+    return row
+
+
+def _current_username(request: Request) -> str | None:
+    user = _current_user(request)
+    return user["username"] if user else None
+
+
+def _current_user_id(request: Request) -> str:
+    user = _current_user(request)
+    return user["id"] if user else ""
+
+
+def _token_valid(request: Request) -> bool:
+    return _current_user(request) is not None
 
 
 def _is_admin(request: Request) -> bool:
-    username = _current_username(request)
-    if not username:
+    user = _current_user(request)
+    if not user:
         return False
     admin_username = db.get_config(_conn, "admin_username") or "admin"
-    return secrets.compare_digest(username, admin_username)
+    return secrets.compare_digest(user["username"], admin_username)
 
 
 def _auth_err(request: Request) -> JSONResponse | None:
@@ -385,7 +406,8 @@ def login(body: LoginBody, response: Response):
         if not _verify_password(body.password, stored_hash):
             return JSONResponse({"error": "invalid credentials"}, status_code=401)
         token = "sk_live_" + secrets.token_urlsafe(32)
-        db.insert_auth_session(_conn, admin_username, token)
+        admin_user_id = db.get_config(_conn, "admin_user_id") or ""
+        db.insert_auth_session(_conn, admin_user_id, token)
         response.set_cookie("os_session", token, httponly=True, samesite="lax")
         log.info("login: admin")
         return {"ok": True, "admin_token": token}
@@ -394,7 +416,7 @@ def login(body: LoginBody, response: Response):
     if not row or not _verify_password(body.password, row["password_hash"]):
         return JSONResponse({"error": "invalid credentials"}, status_code=401)
     token = "sk_live_" + secrets.token_urlsafe(32)
-    db.insert_auth_session(_conn, body.username, token)
+    db.insert_auth_session(_conn, row["id"], token)
     response.set_cookie("os_session", token, httponly=True, samesite="lax")
     log.info("login: user=%s", body.username)
     return {"ok": True, "admin_token": token}
@@ -415,11 +437,11 @@ def rotate(request: Request, response: Response):
     if err:
         return err
     old_token = _extract_token(request)
-    username = _current_username(request)
+    user_id = _current_user_id(request)
     token = "sk_live_" + secrets.token_urlsafe(32)
-    if username:
+    if user_id:
         db.delete_auth_session_by_token(_conn, old_token)
-        db.insert_auth_session(_conn, username, token)
+        db.insert_auth_session(_conn, user_id, token)
     response.set_cookie("os_session", token, httponly=True, samesite="lax")
     log.info("token rotated")
     return {"admin_token": token}
@@ -503,8 +525,8 @@ def pair_by_code(body: PairByCodeBody, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
-    if not username:
+    user_id = _current_user_id(request)
+    if not user_id:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     _conn.execute("BEGIN IMMEDIATE")
@@ -513,23 +535,23 @@ def pair_by_code(body: PairByCodeBody, request: Request):
         if not device_id:
             _conn.execute("ROLLBACK")
             return JSONResponse({"error": "invalid or expired pairing code"}, status_code=400)
-        db.set_device_owner(_conn, device_id, username)
-        db.create_device_token(_conn, device_id, username)
+        db.set_device_owner(_conn, device_id, user_id)
+        db.create_device_token(_conn, device_id, user_id)
         _conn.execute("UPDATE devices SET deleted_at=NULL WHERE device_id=?", (device_id,))
         # Auto-claim first profile if device-config already arrived before pairing completed.
         _first = db.get_auto_claim_profile(_conn, device_id)
         if _first:
             _profile_id, _profile_name = _first
-            db.upsert_device_profile(_conn, device_id, _profile_id, username, _profile_name)
-            db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, username)
-            db.set_user_device_default_profile(_conn, device_id, username, _profile_id)
+            db.upsert_device_profile(_conn, device_id, _profile_id, user_id, _profile_name)
+            db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, user_id)
+            db.set_user_device_default_profile(_conn, device_id, user_id, _profile_id)
         _conn.execute("COMMIT")
     except Exception:
         _conn.execute("ROLLBACK")
         raise
     db.set_device_config_pending(_conn, device_id)
     device = db.get_device(_conn, device_id)
-    log.info("pair-by-code: device=%s owner=%s", device_id, username)
+    log.info("pair-by-code: device=%s owner=%s", device_id, user_id)
     return {
         "device_id": device_id,
         "display_name": device["display_name"] or None if device else None,
@@ -542,31 +564,31 @@ def accept_share(body: AcceptShareBody, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
-    if not username:
+    user_id = _current_user_id(request)
+    if not user_id:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     result = db.claim_share_code(_conn, body.code)
     if not result:
         return JSONResponse({"error": "invalid or expired share code"}, status_code=400)
     device_id, granted_by = result
-    if granted_by == username:
+    if granted_by == user_id:
         return JSONResponse({"error": "cannot accept your own share code"}, status_code=400)
 
-    db.grant_device_access(_conn, device_id, username, granted_by)
+    db.grant_device_access(_conn, device_id, user_id, granted_by)
 
     # Auto-claim first globally-unclaimed profile; co-claims first profile when all taken
     # so the user always lands with a default (family-trust model — shared save visibility).
-    if not db.get_user_has_claim_on_device(_conn, device_id, username):
+    if not db.get_user_has_claim_on_device(_conn, device_id, user_id):
         _first = db.get_auto_claim_profile(_conn, device_id)
         if _first:
             _profile_id, _profile_name = _first
-            db.upsert_device_profile(_conn, device_id, _profile_id, username, _profile_name)
-            db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, username)
-            db.set_user_device_default_profile(_conn, device_id, username, _profile_id)
+            db.upsert_device_profile(_conn, device_id, _profile_id, user_id, _profile_name)
+            db.backfill_owner_on_profile_claim(_conn, device_id, _profile_id, user_id)
+            db.set_user_device_default_profile(_conn, device_id, user_id, _profile_id)
 
     device = db.get_device(_conn, device_id)
-    log.info("accept-share: device=%s user=%s granted_by=%s", device_id, username, granted_by)
+    log.info("accept-share: device=%s user=%s granted_by=%s", device_id, user_id, granted_by)
     return {
         "device_id": device_id,
         "display_name": device["display_name"] or None if device else None,
@@ -579,15 +601,15 @@ def generate_share_code(device_id: str, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     device = db.get_device(_conn, device_id)
     if not device:
         return JSONResponse({"error": "device not found"}, status_code=404)
-    if device.get("owner_user_id") != username and not _is_admin(request):
+    if device.get("owner_user_id") != user_id and not _is_admin(request):
         return JSONResponse({"error": "only the device owner can share"}, status_code=403)
 
-    code = db.create_share_code(_conn, device_id, username)
-    log.info("share-code generated: device=%s by=%s", device_id, username)
+    code = db.create_share_code(_conn, device_id, user_id)
+    log.info("share-code generated: device=%s by=%s", device_id, user_id)
     return {"code": code, "expires_in": 900}
 
 
@@ -597,11 +619,11 @@ def list_device_access(device_id: str, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     device = db.get_device(_conn, device_id)
     if not device:
         return JSONResponse({"error": "device not found"}, status_code=404)
-    if device.get("owner_user_id") != username and not _is_admin(request):
+    if device.get("owner_user_id") != user_id and not _is_admin(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     return {"access": db.list_device_access(_conn, device_id)}
 
@@ -612,11 +634,11 @@ def revoke_device_access(device_id: str, user_id: str, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    caller_id = _current_user_id(request)
     device = db.get_device(_conn, device_id)
     if not device:
         return JSONResponse({"error": "device not found"}, status_code=404)
-    if device.get("owner_user_id") != username and not _is_admin(request):
+    if device.get("owner_user_id") != caller_id and not _is_admin(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     db.revoke_device_access(_conn, device_id, user_id)
     return Response(status_code=204)
@@ -627,11 +649,12 @@ class PairDeviceBody(BaseModel):
 
 
 def _valid_user_id(user_id: str) -> bool:
-    """Check user_id resolves to admin or an auth_users entry."""
-    admin_username = db.get_config(_conn, "admin_username") or "admin"
-    if user_id == admin_username:
+    """Check user_id is a known UUID (admin or auth_users)."""
+    admin_user_id = db.get_config(_conn, "admin_user_id") or ""
+    if admin_user_id and user_id == admin_user_id:
         return True
-    return db.get_auth_user(_conn, user_id) is not None
+    row = _conn.execute("SELECT 1 FROM auth_users WHERE id=?", (user_id,)).fetchone()
+    return row is not None
 
 
 @router.post("/devices/{device_id}/token")
@@ -653,7 +676,7 @@ def pair_device(
         if not _valid_user_id(user_id):
             return JSONResponse({"error": "unknown user_id"}, status_code=400)
     else:
-        user_id = _current_username(request) or ""
+        user_id = _current_user_id(request)
         if not user_id:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -683,7 +706,7 @@ def revoke_device(device_id: str, request: Request):
     row = db.get_device_auth(_conn, device_id)
     if not row:
         return JSONResponse({"error": "device not paired"}, status_code=404)
-    if not _is_admin(request) and row["user_id"] != _current_username(request):
+    if not _is_admin(request) and row["user_id"] != _current_user_id(request):
         return JSONResponse({"error": "device belongs to another user"}, status_code=403)
     db.revoke_device_token(_conn, device_id)
     log.info("device token revoked: %s", device_id)
@@ -701,7 +724,7 @@ def device_token_status(device_id: str, request: Request):
     if not row:
         return {"has_token": False, "user_id": None, "last_seen": None}
     # Non-admin can only see their own device pairing
-    if not _is_admin(request) and row["user_id"] != _current_username(request):
+    if not _is_admin(request) and row["user_id"] != _current_user_id(request):
         return {"has_token": True, "user_id": None, "last_seen": None}
     return {"has_token": True, "user_id": row["user_id"], "last_seen": row["last_seen"]}
 
@@ -720,7 +743,7 @@ def list_device_profiles(device_id: str, request: Request):
         return err
     if not db.get_device(_conn, device_id):
         return JSONResponse({"error": "device not found"}, status_code=404)
-    current_user = _current_username(request) or ""
+    current_user = _current_user_id(request)
     profiles = db.list_device_profiles(_conn, device_id, current_user)
     result = []
     for p in profiles:
@@ -767,7 +790,7 @@ def claim_profile(
         if not _valid_user_id(user_id):
             return JSONResponse({"error": "unknown user_id"}, status_code=400)
     else:
-        user_id = _current_username(request) or ""
+        user_id = _current_user_id(request)
         if not user_id:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -778,7 +801,7 @@ def claim_profile(
     )
     # When admin explicitly assigns this profile to another user, remove admin's own
     # auto-claim on that profile so ownership is unambiguous (admin was a placeholder).
-    assigner = _current_username(request) or ""
+    assigner = _current_user_id(request)
     if _is_admin(request) and user_id != assigner:
         if _conn.execute(
             "SELECT 1 FROM device_profile_map WHERE device_id=? AND profile_id=? AND user_id=?",
@@ -807,7 +830,7 @@ def unclaim_profile(
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    caller_id = _current_user_id(request)
     # Admin with explicit target_user_id: target that user directly, even if admin also has a claim.
     if _is_admin(request) and target_user_id:
         row = _conn.execute(
@@ -821,7 +844,7 @@ def unclaim_profile(
         # With multi-claim schema, filter by user_id so only this user's claim is checked.
         row = _conn.execute(
             "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=? AND user_id=?",
-            (device_id, profile_id, username),
+            (device_id, profile_id, caller_id),
         ).fetchone()
         if not row:
             if _is_admin(request):
@@ -870,7 +893,7 @@ def dashboard(request: Request):
     if err:
         return err
 
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
 
     total_games = _conn.execute(
         "SELECT COUNT(DISTINCT title_id) FROM sync_transactions"
@@ -879,7 +902,7 @@ def dashboard(request: Request):
         "  (COALESCE(user_key,'') != '' AND (source_device_id, user_key) IN ("
         "   SELECT device_id, profile_id FROM device_profile_map WHERE user_id=?))"
         "  OR (COALESCE(user_key,'') = '' AND owner_user_id = ?))",
-        (username, username),
+        (user_id, user_id),
     ).fetchone()[0]
     # total_devices computed below after device_rows is fetched via get_devices_for_user
     active_errors = _conn.execute(
@@ -890,7 +913,7 @@ def dashboard(request: Request):
         "  (COALESCE(st.user_key,'') != '' AND (st.source_device_id, st.user_key) IN ("
         "   SELECT device_id, profile_id FROM device_profile_map WHERE user_id=?))"
         "  OR (COALESCE(st.user_key,'') = '' AND st.owner_user_id = ?))",
-        (username, username),
+        (user_id, user_id),
     ).fetchone()[0]
     pending_titles = _conn.execute(
         "SELECT COUNT(DISTINCT title_id) FROM sync_transactions"
@@ -898,7 +921,7 @@ def dashboard(request: Request):
         " AND target_device_id IN ("
         "   SELECT device_id FROM device_access WHERE user_id=?"
         "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
-        (username, username),
+        (user_id, user_id),
     ).fetchone()[0]
 
     game_rows = _conn.execute(
@@ -910,7 +933,7 @@ def dashboard(request: Request):
         "   SELECT device_id, profile_id FROM device_profile_map WHERE user_id=?))"
         "  OR (COALESCE(user_key,'') = '' AND owner_user_id = ?))"
         " GROUP BY title_id ORDER BY last_activity DESC LIMIT 10",
-        (username, username),
+        (user_id, user_id),
     ).fetchall()
 
     pending_by_dev = {
@@ -922,7 +945,7 @@ def dashboard(request: Request):
             "   SELECT device_id FROM device_access WHERE user_id=?"
             "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)"
             " GROUP BY target_device_id",
-            (username, username),
+            (user_id, user_id),
         ).fetchall()
     }
     failed_count_by_dev_dash = {
@@ -939,7 +962,7 @@ def dashboard(request: Request):
             "     AND c.direction='outbound'"
             "     AND c.state IN ('COMPLETED','READY_FOR_RESTORE','DELIVERING'))"
             " GROUP BY f.target_device_id",
-            (username, username),
+            (user_id, user_id),
         ).fetchall()
     }
 
@@ -950,10 +973,10 @@ def dashboard(request: Request):
         "   SELECT device_id FROM device_access WHERE user_id=?"
         "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
         " ORDER BY id DESC LIMIT 20",
-        (username, username, username),
+        (user_id, user_id, user_id),
     ).fetchall()
 
-    device_rows = list(db.get_devices_for_user(_conn, username))
+    device_rows = list(db.get_devices_for_user(_conn, user_id))
     total_devices = sum(1 for r in device_rows if not r.get("is_deleted"))
 
     return JSONResponse(
@@ -967,10 +990,10 @@ def dashboard(request: Request):
             "recent_games": [
                 {
                     "title_id": r["title_id"],
-                    "display_name": _game_display_name(_conn, r["title_id"], username),
-                    "icon_url": _game_icon_url(_conn, r["title_id"], username),
+                    "display_name": _game_display_name(_conn, r["title_id"], user_id),
+                    "icon_url": _game_icon_url(_conn, r["title_id"], user_id),
                     "last_activity": r["last_activity"],
-                    "head_sequence": _head_sequence(_conn, r["title_id"], owner_user_id=username),
+                    "head_sequence": _head_sequence(_conn, r["title_id"], owner_user_id=user_id),
                     "status": _game_status(_conn, r["title_id"]),
                     "snapshot_count": r["snapshot_count"],
                 }
@@ -993,7 +1016,7 @@ def dashboard(request: Request):
                     "event_type": r["event_type"],
                     "summary": r["message"],
                     "title_id": r["title_id"],
-                    "icon_url": _game_icon_url(_conn, r["title_id"], username)
+                    "icon_url": _game_icon_url(_conn, r["title_id"], user_id)
                     if r["title_id"]
                     else None,
                     "device_id": r["device_id"],
@@ -1015,7 +1038,7 @@ def list_games(request: Request):
     if err:
         return err
 
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     rows = _conn.execute(
         "SELECT * FROM ("
         "  SELECT title_id, MAX(updated_at) AS last_activity, COUNT(*) AS snapshot_count"
@@ -1031,7 +1054,7 @@ def list_games(request: Request):
         "      WHERE direction='inbound' AND owner_user_id=?"
         "    )"
         ") ORDER BY last_activity IS NULL, last_activity DESC",
-        (username, username, username),
+        (user_id, user_id, user_id),
     ).fetchall()
     dev_counts = {
         r["title_id"]: r["dc"]
@@ -1039,7 +1062,7 @@ def list_games(request: Request):
             "SELECT title_id, COUNT(DISTINCT source_device_id) AS dc"
             " FROM sync_transactions WHERE direction='inbound' AND owner_user_id=?"
             " GROUP BY title_id",
-            (username,),
+            (user_id,),
         ).fetchall()
     }
 
@@ -1048,8 +1071,8 @@ def list_games(request: Request):
             "games": [
                 {
                     "title_id": r["title_id"],
-                    "display_name": _game_display_name(_conn, r["title_id"], username),
-                    "icon_url": _game_icon_url(_conn, r["title_id"], username),
+                    "display_name": _game_display_name(_conn, r["title_id"], user_id),
+                    "icon_url": _game_icon_url(_conn, r["title_id"], user_id),
                     "snapshot_count": r["snapshot_count"],
                     "device_count": dev_counts.get(r["title_id"], 0),
                     "last_activity": r["last_activity"],
@@ -1069,7 +1092,7 @@ def game_detail(title_id: str, request: Request):
     if not _TITLE_RE.match(title_id):
         return JSONResponse({"error": "invalid title_id"}, status_code=400)
 
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     # Visibility is purely claim-based (T1): saves are visible only when the user has
     # claimed the device profile that created them. owner_user_id drives delivery; the
     # claim table drives UI visibility. No owned_devices fallback (T2).
@@ -1086,7 +1109,7 @@ def game_detail(title_id: str, request: Request):
         "   SELECT device_id, profile_id FROM device_profile_map WHERE user_id=?))"
         "  OR (COALESCE(user_key,'') = '' AND owner_user_id = ?))"
         " ORDER BY created_at DESC, snapshot_sequence DESC NULLS LAST",
-        (title_id, username, username),
+        (title_id, user_id, user_id),
     ).fetchall()
 
     if not snaps:
@@ -1108,7 +1131,7 @@ def game_detail(title_id: str, request: Request):
                 "  SELECT device_id FROM device_profile_map WHERE user_id=?"
                 "  UNION SELECT device_id FROM device_access WHERE user_id=?"
                 "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
-                (title_id, username, title_id, title_id, title_id, username, username, username),
+                (title_id, user_id, title_id, title_id, title_id, user_id, user_id, user_id),
             ).fetchone()
             if not has_access:
                 return JSONResponse({"error": "not found"}, status_code=404)
@@ -1116,25 +1139,25 @@ def game_detail(title_id: str, request: Request):
     all_dev_rows = list(db.get_all_devices(_conn))
     dev_names = {r["device_id"]: (r["display_name"] or None) for r in all_dev_rows}
     dev_client_type = {r["device_id"]: (r["client_type"] or "") for r in all_dev_rows}
-    head_seq = _head_sequence(_conn, title_id, owner_user_id=username)
+    head_seq = _head_sequence(_conn, title_id, owner_user_id=user_id)
 
     claimed_devices = {
         r["device_id"]
         for r in _conn.execute(
-            "SELECT device_id FROM device_profile_map WHERE user_id=?", (username,)
+            "SELECT device_id FROM device_profile_map WHERE user_id=?", (user_id,)
         ).fetchall()
     }
     shared_devices = {
         r["device_id"]
         for r in _conn.execute(
-            "SELECT device_id FROM device_access WHERE user_id=?", (username,)
+            "SELECT device_id FROM device_access WHERE user_id=?", (user_id,)
         ).fetchall()
     }
     owned_devices = {
         r["device_id"]
         for r in _conn.execute(
             "SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL",
-            (username,),
+            (user_id,),
         ).fetchall()
     }
     visible_devices = claimed_devices | shared_devices | owned_devices
@@ -1146,7 +1169,7 @@ def game_detail(title_id: str, request: Request):
         "  SELECT device_id FROM device_profile_map WHERE user_id=?"
         "  UNION SELECT device_id FROM device_access WHERE user_id=?"
         "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
-        (title_id, username, username, username),
+        (title_id, user_id, user_id, user_id),
     ).fetchall():
         device_ids.add(row["target_device_id"])
 
@@ -1156,7 +1179,7 @@ def game_detail(title_id: str, request: Request):
         " WHERE title_id=? AND direction='outbound'"
         " AND target_device_id IN (SELECT device_id FROM devices"
         "   WHERE owner_user_id=? AND client_type='romm' AND deleted_at IS NULL)",
-        (title_id, username),
+        (title_id, user_id),
     ).fetchall():
         device_ids.add(row["target_device_id"])
 
@@ -1165,7 +1188,7 @@ def game_detail(title_id: str, request: Request):
     for row in _conn.execute(
         "SELECT device_id FROM devices"
         " WHERE owner_user_id=? AND client_type='romm' AND deleted_at IS NULL",
-        (username,),
+        (user_id,),
     ).fetchall():
         device_ids.add(row["device_id"])
 
@@ -1177,7 +1200,7 @@ def game_detail(title_id: str, request: Request):
         "  SELECT device_id FROM device_profile_map WHERE user_id=?"
         "  UNION SELECT device_id FROM device_access WHERE user_id=?"
         "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)",
-        (title_id, username, username, username),
+        (title_id, user_id, user_id, user_id),
     ).fetchall():
         device_ids.add(row["device_id"])
 
@@ -1248,7 +1271,7 @@ def game_detail(title_id: str, request: Request):
         # VIEW MODEL ONLY — do not use for sync decisions
         state = _effective_sync_state(
             _conn,
-            username,
+            user_id,
             did,
             dev_client_type.get(did, ""),
             title_id,
@@ -1270,9 +1293,9 @@ def game_detail(title_id: str, request: Request):
     return JSONResponse(
         {
             "title_id": title_id,
-            "display_name": _game_display_name(_conn, title_id, username),
-            "icon_url": _game_icon_url(_conn, title_id, username),
-            "rom_id": db.get_romm_rom_id(_conn, username, title_id),
+            "display_name": _game_display_name(_conn, title_id, user_id),
+            "icon_url": _game_icon_url(_conn, title_id, user_id),
+            "rom_id": db.get_romm_rom_id(_conn, user_id, title_id),
             "status": _game_status(_conn, title_id),
             "head_sequence": head_seq,
             "snapshots": [
@@ -1308,7 +1331,7 @@ def list_events(request: Request, limit: int = 100):
     if err:
         return err
     limit = min(max(limit, 1), 500)
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     rows = _conn.execute(
         "SELECT id, event_type, message, title_id, device_id, occurred_at FROM events"
         " WHERE (owner_user_id=?"
@@ -1316,7 +1339,7 @@ def list_events(request: Request, limit: int = 100):
         "  SELECT device_id FROM device_access WHERE user_id=?"
         "  UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
         " ORDER BY id DESC LIMIT ?",
-        (username, username, username, limit),
+        (user_id, user_id, user_id, limit),
     ).fetchall()
     return JSONResponse(
         {
@@ -1326,7 +1349,7 @@ def list_events(request: Request, limit: int = 100):
                     "event_type": r["event_type"],
                     "summary": r["message"],
                     "title_id": r["title_id"],
-                    "icon_url": _game_icon_url(_conn, r["title_id"], username)
+                    "icon_url": _game_icon_url(_conn, r["title_id"], user_id)
                     if r["title_id"]
                     else None,
                     "device_id": r["device_id"],
@@ -1346,10 +1369,10 @@ def get_daily_playtime(request: Request, title_id: str | None = None):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
-    rows = db.get_daily_playtime(_conn, username, application_id=title_id)
+    user_id = _current_user_id(request)
+    rows = db.get_daily_playtime(_conn, user_id, application_id=title_id)
     all_ids = list({g["title_id"] for day in rows for g in day["games"]})
-    meta = game_meta.bulk_game_meta(_conn, all_ids, username)
+    meta = game_meta.bulk_game_meta(_conn, all_ids, user_id)
     for day in rows:
         for game in day["games"]:
             app_id = game["title_id"]
@@ -1367,7 +1390,7 @@ def list_errors(request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     rows = _conn.execute(
         "SELECT transaction_id, direction, title_id, source_device_id,"
         " target_device_id, state, updated_at"
@@ -1377,7 +1400,7 @@ def list_errors(request: Request):
         "   SELECT device_id FROM device_access WHERE user_id=?"
         "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)))"
         " ORDER BY updated_at DESC",
-        (username, username, username),
+        (user_id, user_id, user_id),
     ).fetchall()
     result = []
     for r in rows:
@@ -1392,10 +1415,10 @@ def list_errors(request: Request):
                 "direction": r["direction"],
                 "title_id": r["title_id"],
                 "device_id": dev_id,
-                "game_name": _game_display_name(_conn, r["title_id"], username)
+                "game_name": _game_display_name(_conn, r["title_id"], user_id)
                 if r["title_id"]
                 else None,
-                "icon_url": _game_icon_url(_conn, r["title_id"], username)
+                "icon_url": _game_icon_url(_conn, r["title_id"], user_id)
                 if r["title_id"]
                 else None,
                 "device_name": dev_row["display_name"] or None if dev_row else None,
@@ -1492,8 +1515,8 @@ def list_devices(request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
-    rows = list(db.get_devices_for_user(_conn, username))
+    user_id = _current_user_id(request)
+    rows = list(db.get_devices_for_user(_conn, user_id))
 
     pending_by_dev = {
         r["target_device_id"]: r["n"]
@@ -1503,7 +1526,7 @@ def list_devices(request: Request):
             " AND target_device_id IN (SELECT device_id FROM device_access WHERE user_id=?"
             "   UNION SELECT device_id FROM devices WHERE owner_user_id=? AND deleted_at IS NULL)"
             " GROUP BY target_device_id",
-            (username, username),
+            (user_id, user_id),
         ).fetchall()
     }
     failed_count_by_dev = {
@@ -1519,7 +1542,7 @@ def list_devices(request: Request):
             "     AND c.direction='outbound'"
             "     AND c.state IN ('COMPLETED','READY_FOR_RESTORE','DELIVERING'))"
             " GROUP BY f.target_device_id",
-            (username, username),
+            (user_id, user_id),
         ).fetchall()
     }
     return JSONResponse(
@@ -1553,13 +1576,13 @@ def delete_device(device_id: str, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     row = _conn.execute(
         "SELECT owner_user_id FROM devices WHERE device_id=?", (device_id,)
     ).fetchone()
     if not row:
         return JSONResponse({"error": "device not found"}, status_code=404)
-    if row["owner_user_id"] != username and not _is_admin(request):
+    if row["owner_user_id"] != user_id and not _is_admin(request):
         return JSONResponse({"error": "only the device owner can remove it"}, status_code=403)
     # Revoke token first so the device can't re-register itself via device-config
     db.revoke_device_token(_conn, device_id)
@@ -1579,19 +1602,19 @@ def set_default_profile(device_id: str, body: DefaultProfileBody, request: Reque
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     device = db.get_device(_conn, device_id)
     if not device:
         return JSONResponse({"error": "device not found"}, status_code=404)
-    if not db.user_has_device_access(_conn, device_id, username) and not _is_admin(request):
+    if not db.user_has_device_access(_conn, device_id, user_id) and not _is_admin(request):
         return JSONResponse({"error": "device not found"}, status_code=404)
-    is_owner = device.get("owner_user_id") == username or _is_admin(request)
+    is_owner = device.get("owner_user_id") == user_id or _is_admin(request)
     if is_owner:
         db.set_device_default_profile(_conn, device_id, body.profile_uid or None)
     else:
-        db.set_user_device_default_profile(_conn, device_id, username, body.profile_uid or None)
+        db.set_user_device_default_profile(_conn, device_id, user_id, body.profile_uid or None)
     log.info(
-        "default profile set: device=%s profile=%s by=%s", device_id, body.profile_uid, username
+        "default profile set: device=%s profile=%s by=%s", device_id, body.profile_uid, user_id
     )
     return {"ok": True}
 
@@ -1601,15 +1624,15 @@ def device_games(device_id: str, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     try:
-        return _device_games_inner(device_id, username)
+        return _device_games_inner(device_id, user_id)
     except Exception as exc:
-        log.exception("device_games: CRASH device=%s user=%s: %s", device_id, username, exc)
+        log.exception("device_games: CRASH device=%s user=%s: %s", device_id, user_id, exc)
         raise
 
 
-def _device_games_inner(device_id: str, username: str):
+def _device_games_inner(device_id: str, user_id: str):
     rows = _conn.execute(
         "SELECT DISTINCT title_id FROM sync_transactions"
         " WHERE owner_user_id=?"
@@ -1620,7 +1643,7 @@ def _device_games_inner(device_id: str, username: str):
         " UNION"
         " SELECT title_id FROM device_installed_games WHERE device_id=?"
         " ORDER BY title_id",
-        (username, device_id, device_id, device_id),
+        (user_id, device_id, device_id, device_id),
     ).fetchall()
     prefs_json = db.get_config(_conn, f"sync_prefs:{device_id}")
     prefs = json.loads(prefs_json) if prefs_json else {}
@@ -1629,10 +1652,10 @@ def _device_games_inner(device_id: str, username: str):
     games = []
     for r in rows:
         title_id = r["title_id"]
-        head_seq = _head_sequence(_conn, title_id, owner_user_id=username)
+        head_seq = _head_sequence(_conn, title_id, owner_user_id=user_id)
         sync_info = _effective_sync_state(
             _conn,
-            username,
+            user_id,
             device_id,
             device_client_type,
             title_id,
@@ -1651,14 +1674,14 @@ def _device_games_inner(device_id: str, username: str):
                 " WHERE title_id=? AND direction='outbound' AND state='COMPLETED'"
                 " AND target_device_id IN"
                 "  (SELECT device_id FROM devices WHERE owner_user_id=? AND client_type='romm')",
-                (title_id, username),
+                (title_id, user_id),
             ).fetchone()
             last_synced_at = fallback["ts"] if fallback else None
         games.append(
             {
                 "title_id": title_id,
-                "display_name": _game_display_name(_conn, title_id, username),
-                "icon_url": _game_icon_url(_conn, title_id, username),
+                "display_name": _game_display_name(_conn, title_id, user_id),
+                "icon_url": _game_icon_url(_conn, title_id, user_id),
                 "sync_enabled": prefs.get(title_id, True),
                 "sync_state": sync_info["sync_state"],
                 "pending_delivery": _has_pending_delivery(_conn, device_id, title_id),
@@ -1727,7 +1750,7 @@ def push_snapshot(transaction_id: UUID, body: PushBody, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     txn_id = str(transaction_id)
     txn = db.get_transaction(_conn, txn_id)
     if not txn:
@@ -1759,8 +1782,8 @@ def push_snapshot(transaction_id: UUID, body: PushBody, request: Request):
         # Resolve target profile: explicit override → device default → None
         target_profile = (
             push_target.target_profile_uid
-            or db.get_last_inbound_user_key(_conn, device_id, txn["title_id"], username)
-            or db.get_user_device_default_profile(_conn, device_id, username)
+            or db.get_last_inbound_user_key(_conn, device_id, txn["title_id"], user_id)
+            or db.get_user_device_default_profile(_conn, device_id, user_id)
         )
         db.upsert_device(_conn, device_id)
         db.supersede_active_outbound(
@@ -1796,11 +1819,11 @@ def device_restore_all(device_id: str, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request) or ""
+    user_id = _current_user_id(request)
     if not _DEVICE_RE.match(device_id):
         return JSONResponse({"error": "invalid device_id"}, status_code=400)
 
-    target_profile = db.get_user_device_default_profile(_conn, device_id, username)
+    target_profile = db.get_user_device_default_profile(_conn, device_id, user_id)
 
     # Only restore titles the device actually has installed — prevents inject failures
     # for games that exist on another device but not this one.
@@ -1984,14 +2007,14 @@ def get_romm_settings(request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request)
-    enabled_val = db.get_user_config(_conn, username, "romm_enabled")
-    host = db.get_user_config(_conn, username, "romm_host") or ""
-    has_key = bool(db.get_user_config(_conn, username, "romm_api_key"))
-    source_id = db.get_user_config(_conn, username, "romm_source_id") or f"romm:{username}"
-    romm_username = db.get_user_config(_conn, username, "romm_username") or None
-    romm_connect_status = db.get_user_config(_conn, username, "romm_connect_status") or ""
-    romm_connect_detail = db.get_user_config(_conn, username, "romm_connect_detail") or ""
+    user_id = _current_user_id(request)
+    enabled_val = db.get_user_config(_conn, user_id, "romm_enabled")
+    host = db.get_user_config(_conn, user_id, "romm_host") or ""
+    has_key = bool(db.get_user_config(_conn, user_id, "romm_api_key"))
+    source_id = db.get_user_config(_conn, user_id, "romm_source_id") or f"romm:{user_id}"
+    romm_username = db.get_user_config(_conn, user_id, "romm_username") or None
+    romm_connect_status = db.get_user_config(_conn, user_id, "romm_connect_status") or ""
+    romm_connect_detail = db.get_user_config(_conn, user_id, "romm_connect_detail") or ""
     return JSONResponse(
         {
             "enabled": enabled_val == "1",
@@ -2010,24 +2033,24 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
     err = _auth_err(request)
     if err:
         return err
-    username = _current_username(request)
+    user_id = _current_user_id(request)
     # Read current device_id BEFORE any writes so we can retire it if it changes
-    old_device_id = db.get_user_config(_conn, username, "romm_source_id")
-    romm_device_id = old_device_id or f"romm:{username}"
+    old_device_id = db.get_user_config(_conn, user_id, "romm_source_id")
+    romm_device_id = old_device_id or f"romm:{user_id}"
     if body.source_id is not None and body.source_id.strip():
         romm_device_id = body.source_id.strip()
-        db.set_user_config(_conn, username, "romm_source_id", romm_device_id)
+        db.set_user_config(_conn, user_id, "romm_source_id", romm_device_id)
     if body.enabled is not None:
-        db.set_user_config(_conn, username, "romm_enabled", "1" if body.enabled else "0")
+        db.set_user_config(_conn, user_id, "romm_enabled", "1" if body.enabled else "0")
         db.upsert_virtual_device(
-            _conn, romm_device_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=username
+            _conn, romm_device_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=user_id
         )
         if body.enabled:
             _conn.execute(
                 "UPDATE devices SET deleted_at=NULL WHERE device_id=? AND client_type='romm'",
                 (romm_device_id,),
             )
-            db.sync_romm_catalog_to_device(_conn, username, romm_device_id)
+            db.sync_romm_catalog_to_device(_conn, user_id, romm_device_id)
             # Only trigger index here when this is a pure toggle-on (no credentials
             # being updated). If host/api_key are also in the request, the credential
             # verification path (below) handles the index trigger after auth succeeds.
@@ -2042,42 +2065,42 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
                 (db._now(), romm_device_id),
             )
     if body.host is not None:
-        db.set_user_config(_conn, username, "romm_host", body.host.rstrip("/"))
+        db.set_user_config(_conn, user_id, "romm_host", body.host.rstrip("/"))
     if body.api_key is not None:
-        db.set_user_config(_conn, username, "romm_api_key", body.api_key)
+        db.set_user_config(_conn, user_id, "romm_api_key", body.api_key)
     db.upsert_virtual_device(
-        _conn, romm_device_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=username
+        _conn, romm_device_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=user_id
     )
     # Retire the previous device if the source_id changed (avoids duplicates)
     if old_device_id and old_device_id != romm_device_id:
         _conn.execute(
             "UPDATE devices SET deleted_at=?"
             " WHERE device_id=? AND owner_user_id=? AND client_type='romm'",
-            (db._now(), old_device_id, username),
+            (db._now(), old_device_id, user_id),
         )
-    has_host = bool(db.get_user_config(_conn, username, "romm_host"))
-    has_key = bool(db.get_user_config(_conn, username, "romm_api_key"))
+    has_host = bool(db.get_user_config(_conn, user_id, "romm_host"))
+    has_key = bool(db.get_user_config(_conn, user_id, "romm_api_key"))
     fresh_username: str | None = None
     fresh_status = ""
     fresh_detail = ""
     if body.host is not None or body.api_key is not None:
         # Credentials changed — verify before exposing the device.
-        host = db.get_user_config(_conn, username, "romm_host") or ""
-        key = db.get_user_config(_conn, username, "romm_api_key") or ""
+        host = db.get_user_config(_conn, user_id, "romm_host") or ""
+        key = db.get_user_config(_conn, user_id, "romm_api_key") or ""
         if host and key:
-            romm_meta.refresh_username_cache(_conn, username, host, key)
-        fresh_username = db.get_user_config(_conn, username, "romm_username") or None
-        fresh_status = db.get_user_config(_conn, username, "romm_connect_status") or ""
-        fresh_detail = db.get_user_config(_conn, username, "romm_connect_detail") or ""
-        if has_host and has_key and db.get_user_config(_conn, username, "romm_enabled") != "0":
+            romm_meta.refresh_username_cache(_conn, user_id, host, key)
+        fresh_username = db.get_user_config(_conn, user_id, "romm_username") or None
+        fresh_status = db.get_user_config(_conn, user_id, "romm_connect_status") or ""
+        fresh_detail = db.get_user_config(_conn, user_id, "romm_connect_detail") or ""
+        if has_host and has_key and db.get_user_config(_conn, user_id, "romm_enabled") != "0":
             if fresh_username:
                 # Auto-enable when credentials verify — removes need for a separate toggle.
-                db.set_user_config(_conn, username, "romm_enabled", "1")
+                db.set_user_config(_conn, user_id, "romm_enabled", "1")
                 _conn.execute(
                     "UPDATE devices SET deleted_at=NULL WHERE device_id=? AND client_type='romm'",
                     (romm_device_id,),
                 )
-                db.sync_romm_catalog_to_device(_conn, username, romm_device_id)
+                db.sync_romm_catalog_to_device(_conn, user_id, romm_device_id)
                 import romm_index as _romm_index
 
                 _romm_index.request_index_refresh()
@@ -2089,9 +2112,9 @@ def put_romm_settings(body: RommSettingsBody, request: Request):
                     "UPDATE devices SET deleted_at=? WHERE device_id=? AND client_type='romm'",
                     (db._now(), romm_device_id),
                 )
-    elif has_host and has_key and db.get_user_config(_conn, username, "romm_enabled") != "0":
+    elif has_host and has_key and db.get_user_config(_conn, user_id, "romm_enabled") != "0":
         # Credentials unchanged (only enabled/source_id changed) — restore if previously verified.
-        existing = db.get_user_config(_conn, username, "romm_username") or None
+        existing = db.get_user_config(_conn, user_id, "romm_username") or None
         if existing:
             _conn.execute(
                 "UPDATE devices SET deleted_at=NULL WHERE device_id=? AND client_type='romm'",
@@ -2127,22 +2150,21 @@ def change_credentials(body: ChangeCredentialsBody, request: Request, response: 
         stored_hash = db.get_config(_conn, "admin_password_hash") or ""
         if not _verify_password(body.current_password, stored_hash):
             return JSONResponse({"error": "current password incorrect"}, status_code=403)
+        admin_user_id = db.get_config(_conn, "admin_user_id") or ""
         if body.new_username:
-            old_admin = db.get_config(_conn, "admin_username") or "admin"
-            db.rename_auth_user(_conn, old_admin, body.new_username)
             db.set_config(_conn, "admin_username", body.new_username)
             log.info("admin username changed")
         if body.new_password:
             db.set_config(_conn, "admin_password_hash", _hash_password(body.new_password))
-            cur_admin = db.get_config(_conn, "admin_username") or "admin"
             token = "sk_live_" + secrets.token_urlsafe(32)
-            db.delete_auth_sessions_for_user(_conn, cur_admin)
-            db.insert_auth_session(_conn, cur_admin, token)
+            db.delete_auth_sessions_for_user(_conn, admin_user_id)
+            db.insert_auth_session(_conn, admin_user_id, token)
             response.set_cookie("os_session", token, httponly=True, samesite="lax")
             log.info("admin password changed")
     else:
         username = _current_username(request)
-        if not username:
+        user_id = _current_user_id(request)
+        if not username or not user_id:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         row = db.get_auth_user(_conn, username)
         if not row or not _verify_password(body.current_password, row["password_hash"]):
@@ -2155,7 +2177,7 @@ def change_credentials(body: ChangeCredentialsBody, request: Request, response: 
             log.info("user password changed: %s", username)
         if body.new_username:
             try:
-                db.rename_auth_user(_conn, username, body.new_username)
+                db.rename_auth_user(_conn, user_id, body.new_username)
                 log.info("user renamed: %s → %s", username, body.new_username)
             except Exception:
                 return JSONResponse({"error": "username already exists"}, status_code=409)

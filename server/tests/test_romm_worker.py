@@ -830,3 +830,24 @@ def test_catalog_backstop_throttled(conn, tmp_path, monkeypatch):
     romm_worker._reconcile_romm_catalog_backstop(conn, USER)
 
     assert not fetch_calls, "throttled — must not fetch within interval"
+
+
+def test_catalog_backstop_no_refresh_when_unchanged(conn, tmp_path, monkeypatch):
+    """When catalog is identical on second call, snapshot is updated but no refresh requested."""
+    _setup_romm(monkeypatch, tmp_path, conn)
+    import romm_index
+
+    refresh_calls: list = []
+    monkeypatch.setattr(romm_index, "request_index_refresh", lambda: refresh_calls.append(1))
+    monkeypatch.setattr(romm_index, "_fetch_switch_roms", lambda: [{"id": 1}, {"id": 2}])
+
+    romm_worker._catalog_check_ts.clear()
+    romm_worker._catalog_last_seen.clear()
+    romm_worker._reconcile_romm_catalog_backstop(conn, USER)  # seeds snapshot
+
+    # Expire throttle and call again with same catalog
+    romm_worker._catalog_check_ts[USER] = 0.0
+    romm_worker._reconcile_romm_catalog_backstop(conn, USER)
+
+    assert not refresh_calls, "catalog unchanged — must not request refresh"
+    assert romm_worker._catalog_last_seen[USER] == frozenset({1, 2})

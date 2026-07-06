@@ -5,7 +5,7 @@ Covers: inbound initiation, manifest POST, window idempotency,
 """
 
 import sync_api
-from helpers import CHECKPOINT_SIZE, DEVICE_A, DEVICE_B, TITLE_1, TITLE_2, WINDOW_SIZE, auth_header, compute_ledger, do_upload, pair_device, start_inbound, sync_hdrs
+from helpers import CHECKPOINT_SIZE, DEVICE_A, DEVICE_B, TITLE_1, TITLE_2, WINDOW_SIZE, auth_header, compute_ledger, do_upload, get_uid, pair_device, start_inbound, sync_hdrs
 
 SAVE_DATA = b"X" * 1024  # small save, fits in one checkpoint
 
@@ -485,22 +485,23 @@ def test_start_inbound_auto_claims_profile(client, conn):
     )
     assert r.status_code == 200
 
+    admin_uid = get_uid(conn, "admin")
     claim = conn.execute(
         "SELECT user_id FROM device_profile_map WHERE device_id=? AND profile_id=?",
         (DEVICE_A, profile_id),
     ).fetchone()
-    assert claim is not None and claim["user_id"] == "admin"
+    assert claim is not None and claim["user_id"] == admin_uid
 
     txn_id = r.json()["transaction_id"]
     row = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()
-    assert row["owner_user_id"] == "admin"
+    assert row["owner_user_id"] == admin_uid
 
     pre = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id='pre-txn-111'"
     ).fetchone()
-    assert pre["owner_user_id"] == "admin"
+    assert pre["owner_user_id"] == admin_uid
 
 def test_auto_claim_db_error_rolls_back(client, conn, monkeypatch):
     """Exception inside auto-claim transaction triggers ROLLBACK: no partial commit."""

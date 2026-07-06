@@ -14,7 +14,7 @@ import romm_vsc
 TITLE = "0100F2C0115B6000"
 ROM_ID = 42
 SAVE_BYTES = b"PK\x03\x04" + b"X" * 200  # fake save.zip payload
-USER = "admin"
+USER = "10000000-0000-4000-8000-000000000001"
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -28,13 +28,13 @@ def no_romm(monkeypatch):
     monkeypatch.setattr(romm_meta, "fetch_rom_metadata", lambda rom_id: None)
 
 
-def _setup_romm(monkeypatch, tmp_path, conn=None, username=USER):
+def _setup_romm(monkeypatch, tmp_path, conn=None, user_id=USER):
     """Configure RomM per-user in user_config so _load_user_creds succeeds."""
     monkeypatch.setattr(romm_meta, "_db_path", tmp_path / "test.db")
     if conn is not None:
-        db.set_user_config(conn, username, "romm_host", "http://romm.local")
-        db.set_user_config(conn, username, "romm_api_key", "key")
-        db.set_user_config(conn, username, "romm_enabled", "1")
+        db.set_user_config(conn, user_id, "romm_host", "http://romm.local")
+        db.set_user_config(conn, user_id, "romm_api_key", "key")
+        db.set_user_config(conn, user_id, "romm_enabled", "1")
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
@@ -208,8 +208,8 @@ def test_stamp_and_record_stamps_both_tables(conn):
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
     txn_id = str(uuid.uuid4())
 
-    romm_vsc.stamp_device_head(conn, title_id=TITLE, username=USER, snapshot_sequence=3)
-    romm_vsc.record_romm_delivery(conn, username=USER, rom_id=ROM_ID,
+    romm_vsc.stamp_device_head(conn, title_id=TITLE, user_id=USER, snapshot_sequence=3)
+    romm_vsc.record_romm_delivery(conn, user_id=USER, rom_id=ROM_ID,
                                    romm_save_id=77, transaction_id=txn_id)
 
     assert db.has_romm_sync(conn, USER, ROM_ID, 77, "outbound")
@@ -228,13 +228,13 @@ def test_record_romm_delivery_idempotent(conn):
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
     txn_id = str(uuid.uuid4())
 
-    romm_vsc.record_romm_delivery(conn, username=USER, rom_id=ROM_ID,
+    romm_vsc.record_romm_delivery(conn, user_id=USER, rom_id=ROM_ID,
                                    romm_save_id=88, transaction_id=txn_id)
-    romm_vsc.record_romm_delivery(conn, username=USER, rom_id=ROM_ID,
+    romm_vsc.record_romm_delivery(conn, user_id=USER, rom_id=ROM_ID,
                                    romm_save_id=88, transaction_id=txn_id)
 
     n = conn.execute(
-        "SELECT COUNT(*) FROM romm_save_sync WHERE username=? AND direction='outbound'", (USER,)
+        "SELECT COUNT(*) FROM romm_save_sync WHERE user_id=? AND direction='outbound'", (USER,)
     ).fetchone()[0]
     assert n == 1
 
@@ -243,8 +243,8 @@ def test_stamp_device_head_is_monotonic(conn):
     """device_title_head only advances — a lower seq does not overwrite a higher one."""
     db.upsert_romm_title_map(conn, USER, TITLE, ROM_ID)
 
-    romm_vsc.stamp_device_head(conn, title_id=TITLE, username=USER, snapshot_sequence=5)
-    romm_vsc.stamp_device_head(conn, title_id=TITLE, username=USER, snapshot_sequence=3)
+    romm_vsc.stamp_device_head(conn, title_id=TITLE, user_id=USER, snapshot_sequence=5)
+    romm_vsc.stamp_device_head(conn, title_id=TITLE, user_id=USER, snapshot_sequence=3)
 
     vsc_id = romm_vsc.get_user_romm_device_id(conn, USER)
     row = conn.execute(
@@ -267,8 +267,8 @@ def test_worker_complete_outbound_after_delivery(conn):
         (outbound_id, TITLE, "dev-a", vsc_device_id),
     )
 
-    romm_vsc.stamp_device_head(conn, title_id=TITLE, username=USER, snapshot_sequence=2)
-    romm_vsc.record_romm_delivery(conn, username=USER, rom_id=ROM_ID,
+    romm_vsc.stamp_device_head(conn, title_id=TITLE, user_id=USER, snapshot_sequence=2)
+    romm_vsc.record_romm_delivery(conn, user_id=USER, rom_id=ROM_ID,
                                    romm_save_id=99, transaction_id=outbound_id)
     db.complete_outbound(conn, vsc_device_id, outbound_id)
 
@@ -557,7 +557,7 @@ def test_romm_filename_romm_cache_priority(conn, monkeypatch):
     import titledb as _titledb
     monkeypatch.setattr(_titledb, "resolve_game_name", lambda tid, conn=None: "Titledb Name")
     db.upsert_romm_game_cache(conn, USER, ROM_ID, "Trip World DX (World) (Limited Run Games)", None)
-    result = romm_vsc._romm_filename(TITLE, conn, username=USER, rom_id=ROM_ID)
+    result = romm_vsc._romm_filename(TITLE, conn, user_id=USER, rom_id=ROM_ID)
     assert result == "Trip World DX (World) (Limited Run Games).zip"
 
 
@@ -566,7 +566,7 @@ def test_romm_filename_romm_cache_empty_falls_back_to_titledb(conn, monkeypatch)
     import titledb as _titledb
     monkeypatch.setattr(_titledb, "resolve_game_name", lambda tid, conn=None: "Titledb Name")
     monkeypatch.setattr(romm_meta, "fetch_rom_metadata", lambda rom_id: None)
-    result = romm_vsc._romm_filename(TITLE, conn, username=USER, rom_id=ROM_ID)
+    result = romm_vsc._romm_filename(TITLE, conn, user_id=USER, rom_id=ROM_ID)
     assert result == "Titledb Name.zip"
 
 
@@ -576,7 +576,7 @@ def test_romm_filename_live_fetch_on_cache_miss(conn, monkeypatch):
     monkeypatch.setattr(_titledb, "resolve_game_name", lambda tid, conn=None: "Titledb Name")
     monkeypatch.setattr(romm_meta, "fetch_rom_metadata",
                         lambda rid: {"name": "Live RomM Name", "icon_url": None})
-    result = romm_vsc._romm_filename(TITLE, conn, username=USER, rom_id=ROM_ID)
+    result = romm_vsc._romm_filename(TITLE, conn, user_id=USER, rom_id=ROM_ID)
     assert result == "Live RomM Name.zip"
     # Result should now be cached
     cached = db.get_romm_game_cache(conn, USER, ROM_ID)
@@ -590,7 +590,7 @@ def test_romm_filename_skips_user_label(conn, monkeypatch):
     import titledb as _titledb
     # Titledb returns None so we fall back to omnisave-latest, NOT the user label
     monkeypatch.setattr(_titledb, "resolve_game_name", lambda tid, conn=None: None)
-    result = romm_vsc._romm_filename(TITLE, conn, username=USER, rom_id=ROM_ID)
+    result = romm_vsc._romm_filename(TITLE, conn, user_id=USER, rom_id=ROM_ID)
     assert result == "omnisave-latest.zip"
     assert "My Short Label" not in result
 
@@ -830,7 +830,7 @@ def test_pull_first_encounter_baselines_not_ingests(conn, tmp_path, tmp_dirs, mo
     assert txns == 0, "first encounter must not create inbound transactions"
     assert db.has_romm_sync(conn, USER, ROM_ID, 42, "inbound"), "existing save must be marked as seen"
     row = conn.execute(
-        "SELECT pull_initialized FROM romm_title_map WHERE username=? AND rom_id=?", (USER, ROM_ID)
+        "SELECT pull_initialized FROM romm_title_map WHERE user_id=? AND rom_id=?", (USER, ROM_ID)
     ).fetchone()
     assert row["pull_initialized"] == 1, "pull_initialized must advance to 1 after baseline"
 
@@ -850,7 +850,7 @@ def test_pull_zero_saves_first_encounter_advances_state(conn, tmp_path, tmp_dirs
     romm_vsc._pull_for_user(staging, archive, USER)
 
     row = conn.execute(
-        "SELECT pull_initialized FROM romm_title_map WHERE username=? AND rom_id=?", (USER, ROM_ID)
+        "SELECT pull_initialized FROM romm_title_map WHERE user_id=? AND rom_id=?", (USER, ROM_ID)
     ).fetchone()
     assert row["pull_initialized"] == 1, "pull_initialized must advance even when ROM has zero saves"
 
@@ -875,7 +875,7 @@ def test_pull_first_encounter_skips_non_zip_in_baseline(conn, tmp_path, tmp_dirs
     assert not db.has_romm_sync(conn, USER, ROM_ID, 1, "inbound"), "non-zip must NOT be baselined"
     assert db.has_romm_sync(conn, USER, ROM_ID, 2, "inbound"), "zip save must be baselined"
     row = conn.execute(
-        "SELECT pull_initialized FROM romm_title_map WHERE username=? AND rom_id=?", (USER, ROM_ID)
+        "SELECT pull_initialized FROM romm_title_map WHERE user_id=? AND rom_id=?", (USER, ROM_ID)
     ).fetchone()
     assert row["pull_initialized"] == 1
 

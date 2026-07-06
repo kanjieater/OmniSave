@@ -5,6 +5,15 @@ import math
 import xxhash
 
 
+def get_uid(conn, username: str) -> str:
+    """Return the stable UUID for a user. Handles admin (stored in server_config) and auth_users."""
+    import database as db
+    if username == "admin":
+        return db.get_config(conn, "admin_user_id") or ""
+    row = conn.execute("SELECT id FROM auth_users WHERE username=?", (username,)).fetchone()
+    return row["id"] if row else ""
+
+
 def login_admin(client, username: str = "admin", password: str = "admin") -> str:
     """Log in and return the session token."""
     r = client.post("/api/v1/ui/auth/login", json={"username": username, "password": password})

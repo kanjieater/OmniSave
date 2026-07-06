@@ -7,7 +7,8 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from helpers import login_admin, auth_header
+import database as _db
+from helpers import get_uid, login_admin, auth_header
 
 TITLE_1 = "0100F2C0115B6000"
 TITLE_2 = "0100EC001DE7E000"
@@ -30,23 +31,29 @@ def _hdr(token: str) -> dict:
 ADMIN_USER = "admin"
 
 
+def _get_admin_uid(conn) -> str:
+    return get_uid(conn, "admin")
+
+
 def _seed_event(conn, event_type: str = "TEST", message: str = "msg",
                 title_id=None, device_id=None, transaction_id=None,
-                owner_user_id: str = ADMIN_USER) -> None:
+                owner_user_id: str = None) -> None:
+    uid = owner_user_id if owner_user_id is not None else _get_admin_uid(conn)
     conn.execute(
         "INSERT INTO events"
         " (occurred_at, event_type, title_id, device_id, transaction_id, message, owner_user_id)"
         " VALUES (?,?,?,?,?,?,?)",
-        (_now(), event_type, title_id, device_id, transaction_id, message, owner_user_id),
+        (_now(), event_type, title_id, device_id, transaction_id, message, uid),
     )
 
 
-def _seed_device(conn, device_id: str, display_name: str = "", user_id: str = ADMIN_USER) -> None:
+def _seed_device(conn, device_id: str, display_name: str = "", user_id: str = None) -> None:
+    uid = user_id if user_id is not None else _get_admin_uid(conn)
     now = _now()
     conn.execute(
         "INSERT INTO devices (device_id, display_name, hardware_type, last_seen, created_at, owner_user_id)"
         " VALUES (?, ?, '', ?, ?, ?)",
-        (device_id, display_name, now, now, user_id),
+        (device_id, display_name, now, now, uid),
     )
 
 
@@ -64,8 +71,9 @@ def _seed_txn(
     target_device_id: str = None,
     sha256: str = None,
     snapshot_path: str = None,
-    owner_user_id: str = ADMIN_USER,
+    owner_user_id: str = None,
 ) -> str:
+    uid = owner_user_id if owner_user_id is not None else _get_admin_uid(conn)
     txn_id = transaction_id or str(uuid.uuid4())
     now = _now()
     conn.execute(
@@ -77,7 +85,7 @@ def _seed_txn(
         (
             txn_id, title_id, source_device_id, direction, state,
             snapshot_sequence, parent_sequence_num, has_conflict,
-            target_device_id, sha256, snapshot_path, owner_user_id, now, now,
+            target_device_id, sha256, snapshot_path, uid, now, now,
         ),
     )
     return txn_id
@@ -214,7 +222,7 @@ def test_dashboard_recent_events_present(client, conn):
     conn.execute(
         "INSERT INTO events (occurred_at, event_type, title_id, device_id, transaction_id, message, owner_user_id)"
         " VALUES (?,?,?,?,?,?,?)",
-        (_now(), "TEST_EVENT", None, None, None, "hello", ADMIN_USER),
+        (_now(), "TEST_EVENT", None, None, None, "hello", _get_admin_uid(conn)),
     )
 
     r = client.get("/api/v1/ui/dashboard", headers=_hdr(token))
@@ -276,7 +284,7 @@ def test_romm_virtual_device_client_type_romm(client, conn):
     import database as db
     romm_id = "romm:test.host"
     # owner_user_id must be set so device appears only for admin, not all users
-    db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc", client_type="romm", owner_user_id="admin")
+    db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=_get_admin_uid(conn))
     db.set_config(conn, "romm_source_id", romm_id)
     conn.commit()
     token = _login(client)
@@ -302,12 +310,13 @@ def test_romm_device_not_visible_without_owner(client, conn):
 # ── Device profiles & push-modal defaults ────────────────────────────────────
 
 
-def _seed_profile(conn, device_id, profile_id, user_id=ADMIN_USER, profile_name=""):
+def _seed_profile(conn, device_id, profile_id, user_id=None, profile_name=""):
+    uid = user_id if user_id is not None else _get_admin_uid(conn)
     now = _now()
     conn.execute(
         "INSERT OR IGNORE INTO device_profile_map"
         " (device_id, profile_id, user_id, profile_name, created_at) VALUES (?,?,?,?,?)",
-        (device_id, profile_id, user_id, profile_name, now),
+        (device_id, profile_id, uid, profile_name, now),
     )
     conn.execute(
         "INSERT OR IGNORE INTO device_known_profiles"
@@ -339,7 +348,7 @@ def test_device_profiles_single(client, conn):
 def test_device_profiles_multi(client, conn):
     """Device with two profiles: endpoint returns both; default marked correctly."""
     _seed_device(conn, DEVICE_A)
-    _seed_profile(conn, DEVICE_A, "AAAA000000000001", user_id=ADMIN_USER, profile_name="x")
+    _seed_profile(conn, DEVICE_A, "AAAA000000000001", user_id=_get_admin_uid(conn), profile_name="x")
     _seed_profile(conn, DEVICE_A, "BBBB000000000002", user_id="other", profile_name="lil")
     _set_default_profile(conn, DEVICE_A, "AAAA000000000001")
     conn.commit()
@@ -354,7 +363,7 @@ def test_device_profiles_romm_empty(client, conn):
     """RomM virtual device has no Nintendo profiles; endpoint returns empty list."""
     import database as db
     romm_id = "romm:admin"
-    db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=ADMIN_USER)
+    db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=_get_admin_uid(conn))
     db.set_config(conn, "romm_source_id", romm_id)
     conn.commit()
     token = _login(client)
@@ -366,13 +375,14 @@ def test_romm_owner_user_id_in_device_list(client, conn):
     """RomM device must expose owner_user_id so UI can label it without OmniSave session user."""
     import database as db
     romm_id = "romm:admin"
-    db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=ADMIN_USER)
+    admin_uid = _get_admin_uid(conn)
+    db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc", client_type="romm", owner_user_id=admin_uid)
     db.set_config(conn, "romm_source_id", romm_id)
     conn.commit()
     token = _login(client)
     data = client.get("/api/v1/ui/devices", headers=_hdr(token)).json()
     entry = next(d for d in data["devices"] if d["device_id"] == romm_id)
-    assert entry["owner_user_id"] == ADMIN_USER
+    assert entry["owner_user_id"] == admin_uid
 
 
 def test_push_uses_device_default_profile(client, conn):
@@ -400,7 +410,7 @@ def test_push_uses_device_default_profile(client, conn):
 def test_push_explicit_profile_overrides_default(client, conn):
     """Explicit target_profile_uid in push body must override the device default."""
     _seed_device(conn, DEVICE_A)
-    _seed_profile(conn, DEVICE_A, "AAAA000000000001", user_id=ADMIN_USER, profile_name="x")
+    _seed_profile(conn, DEVICE_A, "AAAA000000000001", user_id=_get_admin_uid(conn), profile_name="x")
     _seed_profile(conn, DEVICE_A, "BBBB000000000002", user_id="other", profile_name="lil")
     _set_default_profile(conn, DEVICE_A, "AAAA000000000001")
     txn_id = _seed_txn(conn, source_device_id=DEVICE_A, state="READY_FOR_RESTORE", snapshot_sequence=1)
@@ -451,7 +461,7 @@ def test_devices_list_default_profile_name_from_profile_map_fallback(client, con
     conn.execute(
         "INSERT OR IGNORE INTO device_profile_map"
         " (device_id, profile_id, user_id, profile_name, created_at) VALUES (?,?,?,?,?)",
-        (DEVICE_A, "AAAA000000000001", ADMIN_USER, "og-user", now),
+        (DEVICE_A, "AAAA000000000001", _get_admin_uid(conn), "og-user", now),
     )
     _set_default_profile(conn, DEVICE_A, "AAAA000000000001")
     conn.commit()
@@ -895,12 +905,12 @@ def test_game_detail_matrix_last_synced_at_romm_fallback(client, conn):
     conn.execute(
         "INSERT INTO devices (device_id, display_name, hardware_type, client_type, last_seen, created_at, owner_user_id)"
         " VALUES (?, 'RomM', '', 'romm', ?, ?, ?)",
-        (ROMM_ID, now, now, ADMIN_USER),
+        (ROMM_ID, now, now, _get_admin_uid(conn)),
     )
     conn.execute(
         "INSERT OR IGNORE INTO device_profile_map (device_id, profile_id, user_id, profile_name, created_at)"
         " VALUES (?, ?, ?, '', ?)",
-        (ROMM_ID, f"seed-{ROMM_ID}", ADMIN_USER, now),
+        (ROMM_ID, f"seed-{ROMM_ID}", _get_admin_uid(conn), now),
     )
     _seed_txn(conn, source_device_id=DEVICE_A, state="READY_FOR_RESTORE", snapshot_sequence=1)
     _seed_txn(conn, direction="outbound", source_device_id=DEVICE_A,
@@ -1003,8 +1013,7 @@ def test_events_limit_clamped_max_to_500(client, conn):
 
 def test_events_includes_romm_push(client, conn):
     token = _login(client)
-    _seed_event(conn, event_type="ROMM_PUSH", message="title=X romm_save_id=1",
-                owner_user_id=ADMIN_USER)
+    _seed_event(conn, event_type="ROMM_PUSH", message="title=X romm_save_id=1")
     events = client.get("/api/v1/ui/events", headers=_hdr(token)).json()["events"]
     assert any(e["event_type"] == "ROMM_PUSH" for e in events)
 
@@ -1586,7 +1595,7 @@ def test_device_games_romm_shows_catalog_entries(client, conn):
     import database as _db
     romm_id = "romm:admin"
     _db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc",
-                               client_type="romm", owner_user_id=ADMIN_USER)
+                               client_type="romm", owner_user_id=_get_admin_uid(conn))
     conn.execute(
         "INSERT INTO device_installed_games (device_id, title_id) VALUES (?,?)",
         (romm_id, TITLE_1),
@@ -1610,8 +1619,9 @@ def test_device_games_romm_no_delivery_when_no_prior_outbound(client, conn):
     The user must opt in via Restore All; fanout only applies to future uploads."""
     import database as _db
     romm_id = "romm:admin"
+    admin_uid = _get_admin_uid(conn)
     _db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc",
-                               client_type="romm", owner_user_id=ADMIN_USER)
+                               client_type="romm", owner_user_id=admin_uid)
     conn.execute(
         "INSERT INTO device_installed_games (device_id, title_id) VALUES (?,?)",
         (romm_id, TITLE_1),
@@ -1619,7 +1629,7 @@ def test_device_games_romm_no_delivery_when_no_prior_outbound(client, conn):
     _seed_device(conn, DEVICE_A)
     _seed_txn(conn, title_id=TITLE_1, source_device_id=DEVICE_A,
               state="READY_FOR_RESTORE", snapshot_sequence=1)
-    _db.upsert_romm_title_map(conn, ADMIN_USER, TITLE_1, 42)
+    _db.upsert_romm_title_map(conn, admin_uid, TITLE_1, 42)
     conn.commit()
     token = _login(client)
     r = client.get(f"/api/v1/ui/devices/{romm_id}/games", headers=_hdr(token))
@@ -1636,7 +1646,7 @@ def test_dashboard_romm_pull_source_not_counted_as_pending(client, conn):
     import database as _db
     romm_id = "romm:admin"
     _db.upsert_virtual_device(conn, romm_id, "RomM", "romm-vsc",
-                               client_type="romm", owner_user_id=ADMIN_USER)
+                               client_type="romm", owner_user_id=_get_admin_uid(conn))
     conn.execute(
         "INSERT INTO device_installed_games (device_id, title_id) VALUES (?,?)",
         (romm_id, TITLE_1),
@@ -2226,8 +2236,9 @@ def test_game_icon_url_from_romm_cache(client, conn):
     _seed_device(conn, DEVICE_A)
     _seed_txn(conn, title_id=TITLE_1, source_device_id=DEVICE_A, state="READY_FOR_RESTORE",
                snapshot_sequence=1)
-    db.upsert_romm_title_map(conn, ADMIN_USER, TITLE_1, 42)
-    db.upsert_romm_game_cache(conn, ADMIN_USER, 42, "Test Game", "http://icon.png")
+    admin_uid = _get_admin_uid(conn)
+    db.upsert_romm_title_map(conn, admin_uid, TITLE_1, 42)
+    db.upsert_romm_game_cache(conn, admin_uid, 42, "Test Game", "http://icon.png")
     r = client.get(f"/api/v1/ui/games/{TITLE_1}", headers=_hdr(token))
     assert r.status_code == 200
     assert r.json()["icon_url"] == "http://icon.png"
@@ -2250,7 +2261,7 @@ def test_dashboard_icon_url_field_present(client, conn):
 
 
 def test_romm_title_map_migration_adds_username(tmp_path):
-    """Legacy romm_title_map (no username col) is hard-reset to new schema with username+mapped_at.
+    """Legacy romm_title_map (no user_id col) is hard-reset to new schema with user_id+mapped_at.
     Legacy rows are intentionally dropped (pre-release; no data to preserve)."""
     import sqlite3
     import database as db
@@ -2268,7 +2279,7 @@ def test_romm_title_map_migration_adds_username(tmp_path):
 
     conn = db.open_db(db_path)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(romm_title_map)").fetchall()}
-    assert "username" in cols
+    assert "user_id" in cols
     assert "mapped_at" in cols
     # Legacy row was dropped (hard-reset; no data to preserve)
     count = conn.execute("SELECT COUNT(*) FROM romm_title_map").fetchone()[0]
@@ -2365,37 +2376,38 @@ def test_verify_password_malformed_hash_returns_false():
     assert _ui._verify_password("anypassword", "not-a-valid-hash-format") is False
 
 
-def test_admin_rename_cascades_owned_data(client, conn):
-    """Admin rename cascades ownership across all data tables and preserves session."""
+def test_admin_rename_does_not_cascade_ownership(client, conn):
+    """Rename only updates auth_users.username; UUID ownership columns are stable."""
     token = _login(client)
     now = _now()
+    admin_uid = _get_admin_uid(conn)
 
-    _seed_device(conn, DEVICE_A)  # covers devices.owner_user_id
+    _seed_device(conn, DEVICE_A)
     conn.execute(
         "INSERT OR IGNORE INTO device_profile_map (device_id, profile_id, user_id, profile_name, created_at)"
         " VALUES (?,?,?,?,?)",
-        (DEVICE_A, "cascade-probe-profile", ADMIN_USER, "", _now()),
+        (DEVICE_A, "cascade-probe-profile", admin_uid, "", now),
     )
     conn.execute(
-        "INSERT INTO user_config (username, key, value) VALUES (?,?,?)",
-        (ADMIN_USER, "rename_cascade_probe", "1"),
+        "INSERT INTO user_config (user_id, key, value) VALUES (?,?,?)",
+        (admin_uid, "rename_cascade_probe", "1"),
     )
     conn.execute(
-        "INSERT INTO romm_title_map (username, title_id, rom_id, mapped_at) VALUES (?,?,?,?)",
-        (ADMIN_USER, TITLE_1, 42, now),
+        "INSERT INTO romm_title_map (user_id, title_id, rom_id, mapped_at) VALUES (?,?,?,?)",
+        (admin_uid, TITLE_1, 42, now),
     )
     conn.execute(
-        "INSERT INTO romm_game_cache (username, rom_id, name, icon_url, fetched_at) VALUES (?,?,?,?,?)",
-        (ADMIN_USER, 42, "Game", None, now),
+        "INSERT INTO romm_game_cache (user_id, rom_id, name, icon_url, fetched_at) VALUES (?,?,?,?,?)",
+        (admin_uid, 42, "Game", None, now),
     )
     conn.execute(
-        "INSERT INTO romm_save_sync (username, rom_id, romm_save_id, direction, transaction_id, synced_at)"
+        "INSERT INTO romm_save_sync (user_id, rom_id, romm_save_id, direction, transaction_id, synced_at)"
         " VALUES (?,?,?,?,?,?)",
-        (ADMIN_USER, 42, 99, "inbound", None, now),
+        (admin_uid, 42, 99, "inbound", None, now),
     )
     conn.execute(
         "INSERT INTO device_auth (device_id, device_token, user_id, created_at) VALUES (?,?,?,?)",
-        (DEVICE_A, "tok-cascade", ADMIN_USER, now),
+        (DEVICE_A, "tok-cascade", admin_uid, now),
     )
     _seed_txn(conn, title_id=TITLE_1, source_device_id=DEVICE_A)
     _seed_event(conn, device_id=DEVICE_A)
@@ -2408,29 +2420,27 @@ def test_admin_rename_cascades_owned_data(client, conn):
     )
     assert r.status_code == 200, r.text
 
-    checks = [
+    # admin username stored in server_config (admin is not in auth_users); UUID stable
+    assert _db.get_config(conn, "admin_username") == "admin_renamed"
+
+    uuid_checks = [
         ("devices", "owner_user_id"),
-        ("user_config", "username"),
-        ("romm_title_map", "username"),
-        ("romm_game_cache", "username"),
-        ("romm_save_sync", "username"),
+        ("user_config", "user_id"),
+        ("romm_title_map", "user_id"),
+        ("romm_game_cache", "user_id"),
+        ("romm_save_sync", "user_id"),
         ("device_auth", "user_id"),
         ("device_profile_map", "user_id"),
         ("events", "owner_user_id"),
         ("sync_transactions", "owner_user_id"),
-        ("auth_sessions", "username"),
+        ("auth_sessions", "user_id"),
     ]
-    for table, col in checks:
-        old = conn.execute(
+    for table, col in uuid_checks:
+        n = conn.execute(
             f"SELECT COUNT(*) AS n FROM {table} WHERE {col}=?",  # noqa: S608
-            (ADMIN_USER,),
+            (admin_uid,),
         ).fetchone()["n"]
-        assert old == 0, f"{table}.{col} still has old admin username"
-        new = conn.execute(
-            f"SELECT COUNT(*) AS n FROM {table} WHERE {col}=?",  # noqa: S608
-            ("admin_renamed",),
-        ).fetchone()["n"]
-        assert new > 0, f"{table}.{col} was not updated to new admin username"
+        assert n > 0, f"{table}.{col} UUID was not preserved after rename"
 
     # Session token must still resolve after rename.
     r2 = client.get("/api/v1/ui/auth/status", headers=_hdr(token))
@@ -2894,9 +2904,10 @@ def test_put_romm_settings_toggle_on_triggers_index(client, conn, monkeypatch):
     """Toggle-on (no credentials in request) triggers index refresh when creds already stored."""
     import romm_index as _romm_index
     import database as _db
-    _db.set_user_config(conn, ADMIN_USER, "romm_host", "http://romm.local")
-    _db.set_user_config(conn, ADMIN_USER, "romm_api_key", "goodkey")
-    _db.set_user_config(conn, ADMIN_USER, "romm_enabled", "0")
+    admin_uid = _get_admin_uid(conn)
+    _db.set_user_config(conn, admin_uid, "romm_host", "http://romm.local")
+    _db.set_user_config(conn, admin_uid, "romm_api_key", "goodkey")
+    _db.set_user_config(conn, admin_uid, "romm_enabled", "0")
     conn.commit()
     called = []
     monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: called.append("refresh"))
@@ -2916,9 +2927,10 @@ def test_put_romm_settings_toggle_off_does_not_trigger_index(client, conn, monke
     """Disabling RomM must NOT trigger an index refresh."""
     import romm_index as _romm_index
     import database as _db
-    _db.set_user_config(conn, ADMIN_USER, "romm_host", "http://romm.local")
-    _db.set_user_config(conn, ADMIN_USER, "romm_api_key", "goodkey")
-    _db.set_user_config(conn, ADMIN_USER, "romm_enabled", "1")
+    admin_uid = _get_admin_uid(conn)
+    _db.set_user_config(conn, admin_uid, "romm_host", "http://romm.local")
+    _db.set_user_config(conn, admin_uid, "romm_api_key", "goodkey")
+    _db.set_user_config(conn, admin_uid, "romm_enabled", "1")
     conn.commit()
     called = []
     monkeypatch.setattr(_romm_index, "request_index_refresh", lambda: called.append("refresh"))
@@ -2946,7 +2958,7 @@ def test_put_romm_settings_syncs_catalog_immediately(client, conn, monkeypatch):
     monkeypatch.setattr(_romm_index, "maybe_run_index", lambda: None)
 
     # Seed catalog as if a prior index run already ran
-    _db.upsert_romm_title_map(conn, ADMIN_USER, TITLE_1, 42)
+    _db.upsert_romm_title_map(conn, _get_admin_uid(conn), TITLE_1, 42)
     conn.commit()
 
     token = _login(client)
@@ -3107,38 +3119,34 @@ def test_device_restore_all_queues_outbound(client, conn):
 
 
 def test_rename_user_propagates_ownership_to_all_tables(client, conn):
-    """Renaming a user must update every table that stores username as an identity
-    key. Regression for: saves/devices disappeared after rename because
-    rename_auth_user only updated auth_users + auth_sessions."""
+    """Rename preserves UUID ownership across all tables — data stays accessible after rename."""
     admin_token = _login(client)
 
-    # Create user alice and get her session token
+    # Create alice and get her UUID + session token
     client.post("/api/v1/ui/users", json={"username": "alice", "password": "pw"}, headers=_hdr(admin_token))
     alice_token = client.post("/api/v1/ui/auth/login", json={"username": "alice", "password": "pw"}).json()["admin_token"]
+    alice_uid = get_uid(conn, "alice")
 
-    # Seed owned data for alice directly in DB
-    _seed_device(conn, DEVICE_A, user_id="alice")
-    _seed_event(conn, owner_user_id="alice", device_id=DEVICE_A)
+    # Seed owned data for alice using her UUID
+    _seed_device(conn, DEVICE_A, user_id=alice_uid)
+    _seed_event(conn, owner_user_id=alice_uid, device_id=DEVICE_A)
     _seed_txn(conn, source_device_id=DEVICE_A, direction="inbound",
               state="READY_FOR_RESTORE", snapshot_sequence=1,
-              sha256="a" * 64, snapshot_path="/fake/save.zip", owner_user_id="alice")
+              sha256="a" * 64, snapshot_path="/fake/save.zip", owner_user_id=alice_uid)
 
-    # user_config: simulates a stored RomM URL preference
+    now = _now()
     conn.execute(
-        "INSERT INTO user_config (username, key, value) VALUES (?, ?, ?)",
-        ("alice", "romm_url", "http://romm.local"),
-    )
-
-    # RomM tables
-    conn.execute(
-        "INSERT INTO romm_title_map (username, title_id, rom_id, mapped_at) VALUES (?,?,?,?)",
-        ("alice", TITLE_1, 42, "2024-01-01T00:00:00Z"),
+        "INSERT INTO user_config (user_id, key, value) VALUES (?, ?, ?)",
+        (alice_uid, "romm_url", "http://romm.local"),
     )
     conn.execute(
-        "INSERT INTO romm_save_sync"
-        " (username, rom_id, romm_save_id, direction, transaction_id, synced_at)"
+        "INSERT INTO romm_title_map (user_id, title_id, rom_id, mapped_at) VALUES (?,?,?,?)",
+        (alice_uid, TITLE_1, 42, now),
+    )
+    conn.execute(
+        "INSERT INTO romm_save_sync (user_id, rom_id, romm_save_id, direction, transaction_id, synced_at)"
         " VALUES (?,?,?,?,?,?)",
-        ("alice", 42, 99, "inbound", None, "2024-01-01T00:00:00Z"),
+        (alice_uid, 42, 99, "inbound", None, now),
     )
     conn.commit()
 
@@ -3151,42 +3159,37 @@ def test_rename_user_propagates_ownership_to_all_tables(client, conn):
     assert r.status_code == 200, r.text
 
     # ── B. request consistency — same token, no re-auth ──────────────────────
-    # Session token must still resolve (auth_sessions.username updated)
+    # Session token must still resolve (auth_sessions.user_id is UUID, stable)
     r = client.get("/api/v1/ui/devices", headers=_hdr(alice_token))
     assert r.status_code == 200, "session token broken after rename"
     device_ids = [d["device_id"] for d in r.json()["devices"]]
     assert DEVICE_A in device_ids, "device disappeared after rename"
 
-    # Game title must appear (sync_transactions.owner_user_id updated)
+    # Game title must appear (sync_transactions.owner_user_id is UUID, stable)
     r = client.get("/api/v1/ui/games", headers=_hdr(alice_token))
     assert r.status_code == 200
     title_ids = [g["title_id"] for g in r.json()["games"]]
     assert TITLE_1.upper() in title_ids, "game title disappeared after rename"
 
-    # ── C. config survival ────────────────────────────────────────────────────
-    row = conn.execute(
-        "SELECT value FROM user_config WHERE username=? AND key=?", ("bob", "romm_url")
-    ).fetchone()
-    assert row is not None, "user_config lost after rename"
-    assert row["value"] == "http://romm.local"
+    # ── A. UUID stability — auth_users.username updated; UUID in all tables stable ──
+    assert conn.execute(
+        "SELECT username FROM auth_users WHERE id=?", (alice_uid,)
+    ).fetchone()["username"] == "bob"
 
-    # ── A. persistence — old username owns nothing ────────────────────────────
-    zero_checks = [
+    uuid_checks = [
         ("devices", "owner_user_id"),
         ("sync_transactions", "owner_user_id"),
         ("events", "owner_user_id"),
-        ("device_auth", "user_id"),
-        ("device_profile_map", "user_id"),
-        ("user_config", "username"),
-        ("romm_title_map", "username"),
-        ("romm_game_cache", "username"),
-        ("romm_save_sync", "username"),
+        ("user_config", "user_id"),
+        ("romm_title_map", "user_id"),
+        ("romm_save_sync", "user_id"),
     ]
-    for table, col in zero_checks:
+    for table, col in uuid_checks:
         count = conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE {col}=?", ("alice",)  # noqa: S608
+            f"SELECT COUNT(*) FROM {table} WHERE {col}=?",  # noqa: S608
+            (alice_uid,),
         ).fetchone()[0]
-        assert count == 0, f"{table}.{col} still references 'alice' after rename"
+        assert count > 0, f"{table}.{col} UUID lost after rename"
 
 
 def test_rename_user_to_existing_username_returns_409_and_rolls_back(client, conn):
@@ -3206,3 +3209,176 @@ def test_rename_user_to_existing_username_returns_409_and_rolls_back(client, con
     # Rollback: src still exists, taken still exists, neither was corrupted
     assert client.post("/api/v1/ui/auth/login", json={"username": "src", "password": "pw"}).status_code == 200
     assert client.post("/api/v1/ui/auth/login", json={"username": "taken", "password": "pw"}).status_code == 200
+
+
+# ── Default profile (non-owner shared user) ────────────────────────────────────
+
+
+def test_non_owner_set_device_default_profile(client, conn):
+    """Shared (non-owner) user sets their personal default profile via device_access row."""
+    token = _login(client)
+    client.post("/api/v1/ui/users", json={"username": "alice", "password": "pw"}, headers=_hdr(token))
+    alice_uid = get_uid(conn, "alice")
+    alice_token = client.post("/api/v1/ui/auth/login", json={"username": "alice", "password": "pw"}).json()["admin_token"]
+
+    _seed_device(conn, DEVICE_A)
+    now = _now()
+    conn.execute(
+        "INSERT INTO device_access (device_id, user_id, granted_by, created_at)"
+        " VALUES (?, ?, ?, ?)",
+        (DEVICE_A, alice_uid, "admin", now),
+    )
+    conn.commit()
+
+    profile_uid = "AAAA000011112222"
+    r = client.put(
+        f"/api/v1/ui/devices/{DEVICE_A}/default-profile",
+        json={"profile_uid": profile_uid},
+        headers=_hdr(alice_token),
+    )
+    assert r.status_code == 200, r.text
+
+    row = conn.execute(
+        "SELECT default_profile_uid FROM device_access WHERE device_id=? AND user_id=?",
+        (DEVICE_A, alice_uid),
+    ).fetchone()
+    assert row["default_profile_uid"] == profile_uid
+
+
+# ── UUID identity migration ────────────────────────────────────────────────────
+
+
+def test_uuid_migration_from_legacy_schema(tmp_path):
+    """Legacy DB (auth_users without id) gets UUID backfill; ownership tables migrated."""
+    import sqlite3
+    import database as db
+
+    db_path = tmp_path / "legacy_uuid.db"
+    raw = sqlite3.connect(str(db_path))
+    raw.executescript("""
+        CREATE TABLE auth_users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        INSERT INTO auth_users(username) VALUES ('alice');
+        INSERT INTO auth_users(username) VALUES ('bob');
+
+        CREATE TABLE server_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+        CREATE TABLE user_config (
+            username TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (username, key)
+        );
+        INSERT INTO user_config(username, key, value) VALUES ('alice', 'romm_url', 'http://romm.local');
+
+        CREATE TABLE romm_title_map (
+            username TEXT NOT NULL,
+            title_id TEXT NOT NULL,
+            rom_id INTEGER NOT NULL,
+            mapped_at TEXT,
+            PRIMARY KEY (username, title_id)
+        );
+        INSERT INTO romm_title_map(username, title_id, rom_id) VALUES ('alice', '0100F2C0115B6000', 42);
+
+        CREATE TABLE romm_game_cache (
+            username TEXT NOT NULL,
+            rom_id INTEGER NOT NULL,
+            name TEXT,
+            icon_url TEXT,
+            fetched_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (username, rom_id)
+        );
+        INSERT INTO romm_game_cache(username, rom_id, name, fetched_at)
+            VALUES ('alice', 42, 'Game', '2024-01-01T00:00:00Z');
+
+        CREATE TABLE romm_save_sync (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            rom_id INTEGER NOT NULL,
+            romm_save_id INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            transaction_id TEXT,
+            synced_at TEXT NOT NULL,
+            UNIQUE(username, rom_id, romm_save_id, direction)
+        );
+        INSERT INTO romm_save_sync(username, rom_id, romm_save_id, direction, synced_at)
+            VALUES ('alice', 42, 99, 'inbound', '2024-01-01T00:00:00Z');
+    """)
+    raw.close()
+
+    conn = db.open_db(db_path)
+
+    # auth_users.id added and UUIDs assigned
+    au_cols = {r[1] for r in conn.execute("PRAGMA table_info(auth_users)").fetchall()}
+    assert "id" in au_cols
+    alice_row = conn.execute("SELECT id FROM auth_users WHERE username='alice'").fetchone()
+    bob_row = conn.execute("SELECT id FROM auth_users WHERE username='bob'").fetchone()
+    assert alice_row["id"] and len(alice_row["id"]) == 36
+    assert bob_row["id"] and len(bob_row["id"]) == 36
+    assert alice_row["id"] != bob_row["id"]
+    alice_uid = alice_row["id"]
+
+    # admin_user_id created (server_config had no entry — sc_exists + not admin_id_row branch)
+    assert db.get_config(conn, "admin_user_id") is not None
+
+    # user_config: username → user_id, data preserved
+    uc_cols = {r[1] for r in conn.execute("PRAGMA table_info(user_config)").fetchall()}
+    assert "user_id" in uc_cols and "username" not in uc_cols
+    uc_row = conn.execute("SELECT user_id FROM user_config WHERE key='romm_url'").fetchone()
+    assert uc_row["user_id"] == alice_uid
+
+    # romm_title_map: username → user_id, data preserved
+    rtm_cols = {r[1] for r in conn.execute("PRAGMA table_info(romm_title_map)").fetchall()}
+    assert "user_id" in rtm_cols and "username" not in rtm_cols
+    rtm_row = conn.execute("SELECT user_id FROM romm_title_map WHERE rom_id=42").fetchone()
+    assert rtm_row["user_id"] == alice_uid
+
+    # romm_game_cache: username → user_id, data preserved
+    rgc_cols = {r[1] for r in conn.execute("PRAGMA table_info(romm_game_cache)").fetchall()}
+    assert "user_id" in rgc_cols and "username" not in rgc_cols
+    rgc_row = conn.execute("SELECT user_id FROM romm_game_cache WHERE rom_id=42").fetchone()
+    assert rgc_row["user_id"] == alice_uid
+
+    # romm_save_sync: username → user_id, data preserved
+    rss_cols = {r[1] for r in conn.execute("PRAGMA table_info(romm_save_sync)").fetchall()}
+    assert "user_id" in rss_cols and "username" not in rss_cols
+    rss_row = conn.execute("SELECT user_id FROM romm_save_sync WHERE rom_id=42").fetchone()
+    assert rss_row["user_id"] == alice_uid
+
+    conn.close()
+
+
+def test_uuid_migration_rollback_on_error(tmp_path):
+    """UUID migration rolls back on error — auth_users.id column absent after failed open_db."""
+    import sqlite3
+    import pytest
+    import database as db_module
+
+    db_path = tmp_path / "legacy_rollback.db"
+    raw = sqlite3.connect(str(db_path))
+    raw.executescript("""
+        CREATE TABLE auth_users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL DEFAULT ''
+        );
+        INSERT INTO auth_users(username) VALUES ('user1');
+        CREATE TABLE user_config (
+            username TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (username, key)
+        );
+        CREATE TABLE user_config_new (x INTEGER);
+    """)
+    raw.close()
+
+    with pytest.raises(Exception):
+        db_module.open_db(db_path)
+
+    raw2 = sqlite3.connect(str(db_path))
+    au_cols = {r[1] for r in raw2.execute("PRAGMA table_info(auth_users)").fetchall()}
+    raw2.close()
+    assert "id" not in au_cols, "SAVEPOINT rollback must have undone ALTER TABLE"

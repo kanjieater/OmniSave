@@ -34,20 +34,20 @@ log = logging.getLogger(__name__)
 # ── Device ID ─────────────────────────────────────────────────────────────────
 
 
-def get_user_romm_device_id(conn, username: str) -> str:
+def get_user_romm_device_id(conn, user_id: str) -> str:
     """Return the stable virtual device_id for this user's RomM VSC."""
-    return db.get_user_config(conn, username, "romm_source_id") or f"romm:{username}"
+    return db.get_user_config(conn, user_id, "romm_source_id") or f"romm:{user_id}"
 
 
 # ── Per-user credential loader ─────────────────────────────────────────────────
 
 
-def _load_user_creds(conn, username: str) -> bool:
-    """Set thread-local RomM creds for username. Returns False if not configured/enabled."""
-    if db.get_user_config(conn, username, "romm_enabled") == "0":
+def _load_user_creds(conn, user_id: str) -> bool:
+    """Set thread-local RomM creds for user_id. Returns False if not configured/enabled."""
+    if db.get_user_config(conn, user_id, "romm_enabled") == "0":
         return False
-    host = db.get_user_config(conn, username, "romm_host") or ""
-    key = db.get_user_config(conn, username, "romm_api_key") or ""
+    host = db.get_user_config(conn, user_id, "romm_host") or ""
+    key = db.get_user_config(conn, user_id, "romm_api_key") or ""
     if not host or not key:
         return False
     romm_meta.set_request_creds(host, key)
@@ -59,15 +59,13 @@ def _load_user_creds(conn, username: str) -> bool:
 _UNSAFE_FILENAME_RE = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 
 
-def _romm_filename(title_id: str, conn, username: str = "", rom_id: int | None = None) -> str:
-    if rom_id is not None and username:
-        cached = db.get_romm_game_cache(conn, username, rom_id)
+def _romm_filename(title_id: str, conn, user_id: str = "", rom_id: int | None = None) -> str:
+    if rom_id is not None and user_id:
+        cached = db.get_romm_game_cache(conn, user_id, rom_id)
         if not (cached and cached.get("name")):
             meta = romm_meta.fetch_rom_metadata(rom_id)
             if meta and meta.get("name"):
-                db.upsert_romm_game_cache(
-                    conn, username, rom_id, meta["name"], meta.get("icon_url")
-                )
+                db.upsert_romm_game_cache(conn, user_id, rom_id, meta["name"], meta.get("icon_url"))
                 cached = {"name": meta["name"]}
         if cached and cached.get("name"):
             safe = _UNSAFE_FILENAME_RE.sub("", cached["name"]).strip()[:120]
@@ -81,48 +79,48 @@ def _romm_filename(title_id: str, conn, username: str = "", rom_id: int | None =
     return f"{safe}.zip" if safe else "omnisave-latest.zip"
 
 
-def stamp_device_head(conn, *, title_id: str, username: str, snapshot_sequence: int) -> None:
+def stamp_device_head(conn, *, title_id: str, user_id: str, snapshot_sequence: int) -> None:
     """Stamp device_title_head for this user's RomM VSC device.
 
     Required after every successful RomM delivery. Monotonic — never regresses.
     """
     db.upsert_device_title_head(
-        conn, title_id, get_user_romm_device_id(conn, username), snapshot_sequence
+        conn, title_id, get_user_romm_device_id(conn, user_id), snapshot_sequence
     )
 
 
 def record_romm_delivery(
-    conn, *, username: str, rom_id: int, romm_save_id: int, transaction_id: "str | None"
+    conn, *, user_id: str, rom_id: int, romm_save_id: int, transaction_id: "str | None"
 ) -> None:
     """Write romm_save_sync outbound record + inbound loop guard.
 
     Required after every successful RomM delivery. Idempotent — INSERT OR IGNORE.
     transaction_id is the inbound txn for push() path, outbound txn for worker path.
     """
-    db.record_romm_sync(conn, username, rom_id, romm_save_id, "outbound", transaction_id)
-    db.record_romm_sync(conn, username, rom_id, romm_save_id, "inbound", None)
+    db.record_romm_sync(conn, user_id, rom_id, romm_save_id, "outbound", transaction_id)
+    db.record_romm_sync(conn, user_id, rom_id, romm_save_id, "inbound", None)
 
 
-def push(title_id: str, transaction_id: str, archive_path: str, username: str) -> None:
+def push(title_id: str, transaction_id: str, archive_path: str, user_id: str) -> None:
     """Upload save.zip for title_id to the given user's RomM. Best-effort; never raises."""
     if not romm_meta._db_path:
         return
     try:
         conn = db.open_db(romm_meta._db_path)
         try:
-            if not _load_user_creds(conn, username):
+            if not _load_user_creds(conn, user_id):
                 return
-            rom_id = db.get_romm_rom_id(conn, username, title_id)
+            rom_id = db.get_romm_rom_id(conn, user_id, title_id)
             if rom_id is None:
                 return
             existing = conn.execute(
-                "SELECT 1 FROM romm_save_sync WHERE username=? AND direction='outbound' AND transaction_id=?",
-                (username, transaction_id),
+                "SELECT 1 FROM romm_save_sync WHERE user_id=? AND direction='outbound' AND transaction_id=?",
+                (user_id, transaction_id),
             ).fetchone()
             if existing:
                 return
-            device_id = db.get_user_config(conn, username, "romm_device_id") or ""
-            filename = _romm_filename(title_id, conn, username, rom_id)
+            device_id = db.get_user_config(conn, user_id, "romm_device_id") or ""
+            filename = _romm_filename(title_id, conn, user_id, rom_id)
             result, _ = romm_meta.upload_save(
                 rom_id, pathlib.Path(archive_path), device_id, filename=filename
             )
@@ -136,12 +134,12 @@ def push(title_id: str, transaction_id: str, archive_path: str, username: str) -
             stamp_device_head(
                 conn,
                 title_id=title_id,
-                username=username,
+                user_id=user_id,
                 snapshot_sequence=seq_row["snapshot_sequence"],
             )
             record_romm_delivery(
                 conn,
-                username=username,
+                user_id=user_id,
                 rom_id=rom_id,
                 romm_save_id=romm_save_id,
                 transaction_id=transaction_id,
@@ -152,18 +150,18 @@ def push(title_id: str, transaction_id: str, archive_path: str, username: str) -
                 title_id,
                 transaction_id[:8],
                 romm_save_id,
-                username,
+                user_id,
             )
         finally:
             conn.close()
     except Exception as exc:
-        log.warning("romm_vsc: push error title=%s user=%s: %s", title_id, username, exc)
+        log.warning("romm_vsc: push error title=%s user=%s: %s", title_id, user_id, exc)
 
 
-def push_async(title_id: str, transaction_id: str, archive_path: str, username: str) -> None:
+def push_async(title_id: str, transaction_id: str, archive_path: str, user_id: str) -> None:
     threading.Thread(
         target=push,
-        args=(title_id, transaction_id, archive_path, username),
+        args=(title_id, transaction_id, archive_path, user_id),
         daemon=True,
         name=f"romm-push-{transaction_id[:8]}",
     ).start()
@@ -172,17 +170,17 @@ def push_async(title_id: str, transaction_id: str, archive_path: str, username: 
 # ── Pull (RomM → OmniSave) ────────────────────────────────────────────────────
 
 
-def _pull_for_user(staging_dir, archive_dir, username: str) -> None:
+def _pull_for_user(staging_dir, archive_dir, user_id: str) -> None:
     """Ingest new RomM saves for a single user. Best-effort; never raises."""
     try:
         import processing
 
         conn = db.open_db(romm_meta._db_path)
         try:
-            if not _load_user_creds(conn, username):
+            if not _load_user_creds(conn, user_id):
                 return
-            source_device_id = get_user_romm_device_id(conn, username)
-            title_map = db.get_romm_title_map(conn, username)
+            source_device_id = get_user_romm_device_id(conn, user_id)
+            title_map = db.get_romm_title_map(conn, user_id)
             for entry in title_map:
                 title_id = entry["title_id"]
                 rom_id = entry["rom_id"]
@@ -197,15 +195,15 @@ def _pull_for_user(staging_dir, archive_dir, username: str) -> None:
                         fname = (save.get("file_name") or "").lower()
                         if ext != "zip" and not fname.endswith(".zip"):
                             continue
-                        db.record_romm_sync(conn, username, rom_id, save["id"], "inbound", None)
+                        db.record_romm_sync(conn, user_id, rom_id, save["id"], "inbound", None)
                         baselined += 1
-                    db.mark_romm_pull_initialized(conn, username, rom_id)
+                    db.mark_romm_pull_initialized(conn, user_id, rom_id)
                     conn.commit()
                     log.info(
                         "romm_vsc: rom_id=%d baselined %d existing save(s) — future saves will sync, user=%s",
                         rom_id,
                         baselined,
-                        username,
+                        user_id,
                     )
                     continue
                 for save in saves:
@@ -215,7 +213,7 @@ def _pull_for_user(staging_dir, archive_dir, username: str) -> None:
                     if ext != "zip" and not fname.endswith(".zip"):
                         log.debug("romm_vsc: skip non-zip save_id=%d title=%s", save_id, title_id)
                         continue
-                    if db.has_romm_sync(conn, username, rom_id, save_id, "inbound"):
+                    if db.has_romm_sync(conn, user_id, rom_id, save_id, "inbound"):
                         continue
                     # Skip if no real (non-romm) Switch has this title installed.
                     # Without this guard, ingest fans out only to romm:user → push-back loop.
@@ -231,7 +229,7 @@ def _pull_for_user(staging_dir, archive_dir, username: str) -> None:
                             "romm_vsc: skip inbound save_id=%d title=%s — no Switch installed, user=%s",
                             save_id,
                             title_id,
-                            username,
+                            user_id,
                         )
                         continue
                     content = romm_meta.download_save_content(save_id)
@@ -244,10 +242,10 @@ def _pull_for_user(staging_dir, archive_dir, username: str) -> None:
                         staging_dir,
                         archive_dir,
                         conn,
-                        owner_user_id=username,
+                        owner_user_id=user_id,
                     )
                     if txn_id:
-                        db.record_romm_sync(conn, username, rom_id, save_id, "inbound", txn_id)
+                        db.record_romm_sync(conn, user_id, rom_id, save_id, "inbound", txn_id)
                         db.log_event(
                             conn,
                             "ROMM_PULL_IMPORTED",
@@ -260,13 +258,13 @@ def _pull_for_user(staging_dir, archive_dir, username: str) -> None:
                             save_id,
                             title_id,
                             txn_id[:8],
-                            username,
+                            user_id,
                         )
                     time.sleep(0.1)
         finally:
             conn.close()
     except Exception as exc:
-        log.warning("romm_vsc: pull error user=%s: %s", username, exc)
+        log.warning("romm_vsc: pull error user=%s: %s", user_id, exc)
 
 
 def pull(staging_dir, archive_dir) -> None:
@@ -279,13 +277,13 @@ def pull(staging_dir, archive_dir) -> None:
             users = db.get_romm_users(conn)
         finally:
             conn.close()
-        for username in users:
-            _pull_for_user(staging_dir, archive_dir, username)
+        for user in users:
+            _pull_for_user(staging_dir, archive_dir, user["user_id"])
     except Exception as exc:
         log.warning("romm_vsc: pull error: %s", exc)
 
 
-def push_head(title_id: str, username: str) -> None:
+def push_head(title_id: str, user_id: str) -> None:
     """Push current HEAD READY_FOR_RESTORE snapshot for title_id to one user's RomM."""
     if not romm_meta._db_path:
         return
@@ -302,9 +300,9 @@ def push_head(title_id: str, username: str) -> None:
             conn.close()
         if not row or not row["snapshot_path"]:
             return
-        push(title_id, row["transaction_id"], row["snapshot_path"], username)
+        push(title_id, row["transaction_id"], row["snapshot_path"], user_id)
     except Exception as exc:
-        log.warning("romm_vsc: push_head error title=%s user=%s: %s", title_id, username, exc)
+        log.warning("romm_vsc: push_head error title=%s user=%s: %s", title_id, user_id, exc)
 
 
 def _push_head_all_users(title_id: str) -> None:
@@ -314,8 +312,8 @@ def _push_head_all_users(title_id: str) -> None:
             users = db.get_romm_users(conn)
         finally:
             conn.close()
-        for username in users:
-            push_head(title_id, username)
+        for user in users:
+            push_head(title_id, user["user_id"])
     except Exception as exc:
         log.warning("romm_vsc: push_head_all_users error title=%s: %s", title_id, exc)
 

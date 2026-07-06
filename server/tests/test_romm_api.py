@@ -11,7 +11,7 @@ import database as db
 import romm_api
 import romm_meta
 import romm_vsc
-from helpers import login_admin, auth_header
+from helpers import get_uid, login_admin, auth_header
 from main import app
 
 TITLE_A = "0100F2C0115B6000"
@@ -92,7 +92,7 @@ def test_list_mappings_with_entries(client, conn, token, monkeypatch):
         json={"rom_id": ROM_ID},
         headers=_auth(token),
     )
-    db.upsert_romm_game_cache(conn, "admin", ROM_ID, "Pokémon Scarlet", "http://icon")
+    db.upsert_romm_game_cache(conn, get_uid(conn, "admin"), ROM_ID, "Pokémon Scarlet", "http://icon")
 
     resp = client.get("/api/v1/romm/titles", headers=_auth(token))
     assert resp.status_code == 200
@@ -125,7 +125,7 @@ def test_resolve_romm_cached(client, conn, token, monkeypatch):
         json={"rom_id": ROM_ID},
         headers=_auth(token),
     )
-    db.upsert_romm_game_cache(conn, "admin", ROM_ID, "Pokémon Scarlet", "http://icon")
+    db.upsert_romm_game_cache(conn, get_uid(conn, "admin"), ROM_ID, "Pokémon Scarlet", "http://icon")
 
     resp = client.get(f"/api/v1/romm/titles/{TITLE_A}", headers=_auth(token))
     assert resp.status_code == 200
@@ -172,7 +172,7 @@ def test_put_mapping_syncs_romm_catalog(client, conn, token, monkeypatch):
     import romm_vsc as _romm_vsc
     monkeypatch.setattr(romm_meta, "fetch_and_cache", lambda rom_id, c, u: None)
     monkeypatch.setattr(_romm_vsc, "push_head_async", lambda tid: None)
-    romm_device_id = _romm_vsc.get_user_romm_device_id(conn, "admin")
+    romm_device_id = _romm_vsc.get_user_romm_device_id(conn, get_uid(conn, "admin"))
 
     client.put(
         f"/api/v1/romm/titles/{TITLE_A}/mapping",
@@ -189,7 +189,7 @@ def test_delete_mapping_removes_from_romm_catalog(client, conn, token, monkeypat
     import romm_vsc as _romm_vsc
     monkeypatch.setattr(romm_meta, "fetch_and_cache", lambda rom_id, c, u: None)
     monkeypatch.setattr(_romm_vsc, "push_head_async", lambda tid: None)
-    romm_device_id = _romm_vsc.get_user_romm_device_id(conn, "admin")
+    romm_device_id = _romm_vsc.get_user_romm_device_id(conn, get_uid(conn, "admin"))
 
     client.put(
         f"/api/v1/romm/titles/{TITLE_A}/mapping",
@@ -272,7 +272,8 @@ def test_title_id_case_normalization(client, conn, token, monkeypatch):
     )
     assert resp.status_code == 200
 
-    db.upsert_romm_game_cache(conn, "admin", ROM_ID, "Test Game", None)
+    admin_uid = get_uid(conn, "admin")
+    db.upsert_romm_game_cache(conn, admin_uid, ROM_ID, "Test Game", None)
 
     # GET with uppercase — must resolve the same mapping
     resp = client.get(f"/api/v1/romm/titles/{TITLE_A}", headers=_auth(token))
@@ -281,8 +282,8 @@ def test_title_id_case_normalization(client, conn, token, monkeypatch):
     assert resp.json()["romm_name"] == "Test Game"
 
     # DB stores uppercase canonical form
-    assert db.get_romm_rom_id(conn, "admin", TITLE_A) == ROM_ID
-    assert db.get_romm_rom_id(conn, "admin", TITLE_A_LOWER) == ROM_ID
+    assert db.get_romm_rom_id(conn, admin_uid, TITLE_A) == ROM_ID
+    assert db.get_romm_rom_id(conn, admin_uid, TITLE_A_LOWER) == ROM_ID
 
 
 # ── DB helper edge cases ──────────────────────────────────────────────────────
@@ -589,7 +590,7 @@ def test_put_mapping_remaps_rom_id_atomically(client, conn, monkeypatch):
     )
     assert r.status_code == 200
 
-    mappings = db.get_romm_title_map(conn, "admin")
+    mappings = db.get_romm_title_map(conn, get_uid(conn, "admin"))
     mapped_titles = {m["title_id"] for m in mappings}
     assert TITLE_B.upper() in mapped_titles, "new title must be mapped"
     assert TITLE_A.upper() not in mapped_titles, "old title must be unmapped"

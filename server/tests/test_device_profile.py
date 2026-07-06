@@ -19,6 +19,7 @@ from helpers import (
     TITLE_1,
     auth_header,
     do_upload,
+    get_uid,
     login_admin,
     pair_device,
 )
@@ -387,26 +388,28 @@ def test_claim_multiple_profiles_same_user(client):
     assert r2.status_code == 200
 
 
-def test_admin_can_claim_for_other_user(client):
+def test_admin_can_claim_for_other_user(client, conn):
     _seed(client, user_key=PROF_A, user_display="Alice")
     admin_token = _login(client)
     _create_user(client, admin_token, "player")
+    player_uid = get_uid(conn, "player")
     r = client.put(
         f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROF_A}",
-        json={"user_id": "player"},
+        json={"user_id": player_uid},
         headers=_hdr(admin_token),
     )
     assert r.status_code == 200
     # Verify owner is player
     list_r = client.get(f"/api/v1/ui/devices/{DEVICE_A}/profiles", headers=_hdr(admin_token))
     claimed = next(p for p in list_r.json()["profiles"] if p["profile_id"] == PROF_A)
-    assert claimed["user_id"] == "player"
+    assert claimed["user_id"] == player_uid
 
 
-def test_non_admin_cannot_claim_for_other_user(client):
+def test_non_admin_cannot_claim_for_other_user(client, conn):
     _seed(client, user_key=PROF_A, user_display="Alice")
     admin_token = _login(client)
     player_token = _create_user(client, admin_token, "player")
+    player_uid = get_uid(conn, "player")
     # Non-admin sends body.user_id=admin — should be ignored, claims for self
     r = client.put(
         f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROF_A}",
@@ -416,7 +419,7 @@ def test_non_admin_cannot_claim_for_other_user(client):
     assert r.status_code == 200
     list_r = client.get(f"/api/v1/ui/devices/{DEVICE_A}/profiles", headers=_hdr(admin_token))
     claimed = next(p for p in list_r.json()["profiles"] if p["profile_id"] == PROF_A)
-    assert claimed["user_id"] == "player"
+    assert claimed["user_id"] == player_uid
 
 
 # ── HTTP: DELETE /ui/devices/{id}/profiles/{profile_id} ──────────────────────
@@ -502,7 +505,8 @@ def test_device_config_auto_claims_profile_when_device_has_owner(client, conn):
         headers={"X-Device-ID": DEVICE_A},
     )
     owner = db.get_profile_owner(conn, DEVICE_A, PROF_A)
-    assert owner == "admin", f"expected auto-claim to 'admin', got {owner!r}"
+    admin_uid = get_uid(conn, "admin")
+    assert owner == admin_uid, f"expected auto-claim to {admin_uid!r}, got {owner!r}"
 
 
 def test_device_config_auto_claim_does_not_evict_existing_claimant(client, conn):
@@ -513,9 +517,11 @@ def test_device_config_auto_claim_does_not_evict_existing_claimant(client, conn)
     Both claims coexist; co-claiming grants shared save visibility by design.
     """
     _create_user(client, _login(client), "otheruser")
+    otheruser_uid = get_uid(conn, "otheruser")
+    admin_uid = get_uid(conn, "admin")
     pair_device(client, DEVICE_A)
     db.upsert_known_profile(conn, DEVICE_A, PROF_A, "Alice")
-    db.upsert_device_profile(conn, DEVICE_A, PROF_A, "otheruser", "Alice")
+    db.upsert_device_profile(conn, DEVICE_A, PROF_A, otheruser_uid, "Alice")
 
     client.post(
         "/api/v1/sync/device-config",
@@ -528,8 +534,8 @@ def test_device_config_auto_claim_does_not_evict_existing_claimant(client, conn)
         (DEVICE_A, PROF_A),
     ).fetchall()
     claimants = {r["user_id"] for r in rows}
-    assert "otheruser" in claimants, "otheruser's claim must not be evicted"
-    assert "admin" in claimants, "device owner must have been co-claimed as default"
+    assert otheruser_uid in claimants, "otheruser's claim must not be evicted"
+    assert admin_uid in claimants, "device owner must have been co-claimed as default"
 
 
 def test_device_config_auto_claim_skips_unpaired_device(client, conn):

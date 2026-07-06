@@ -4,7 +4,7 @@ Covers: pairing codes, share codes, device_access visibility, migration backfill
 """
 
 import database as db
-from helpers import DEVICE_A, DEVICE_B, auth_header, login_admin, pair_device
+from helpers import DEVICE_A, DEVICE_B, auth_header, get_uid, login_admin, pair_device
 
 
 def _create_user(client, username, password="pw"):
@@ -52,7 +52,7 @@ def test_pair_by_code_sets_owner(client, conn):
     assert r.json()["device_id"] == db.normalize_device_id(DEVICE_A)
 
     device = db.get_device(conn, db.normalize_device_id(DEVICE_A))
-    assert device["owner_user_id"] == "alice"
+    assert device["owner_user_id"] == get_uid(conn, "alice")
 
 
 def test_pairing_code_single_use(client):
@@ -120,7 +120,7 @@ def test_share_code_grants_access(client, conn):
 
     # verify access row exists
     access = db.list_device_access(conn, device_id)
-    assert any(a["user_id"] == "bob" for a in access)
+    assert any(a["user_id"] == get_uid(conn, "bob") for a in access)
 
 
 def test_share_code_single_use(client, conn):
@@ -316,7 +316,7 @@ def test_auto_claim_fires_for_single_profile_device(client, conn):
         json={"known_profiles": [{"profile_id": _PROFILE_SOLO, "profile_name": "Alice"}]},
         headers={"X-Device-ID": DEVICE_A},
     )
-    assert db.get_profile_owner(conn, device_id, _PROFILE_SOLO) == "alice"
+    assert db.get_profile_owner(conn, device_id, _PROFILE_SOLO) == get_uid(conn, "alice")
 
 
 def test_auto_claim_fires_for_multi_profile_device_owner(client, conn):
@@ -341,7 +341,7 @@ def test_auto_claim_fires_for_multi_profile_device_owner(client, conn):
         ]},
         headers={"X-Device-ID": DEVICE_A},
     )
-    assert db.get_profile_owner(conn, device_id, _PROFILE_A) == "alice"
+    assert db.get_profile_owner(conn, device_id, _PROFILE_A) == get_uid(conn, "alice")
     assert db.get_profile_owner(conn, device_id, _PROFILE_B) is None
 
 
@@ -368,7 +368,7 @@ def test_accept_share_auto_claims_next_unclaimed_on_multi_profile_device(client,
         ]},
         headers={"X-Device-ID": DEVICE_A},
     )
-    assert db.get_profile_owner(conn, device_id, _PROFILE_A) == "alice"
+    assert db.get_profile_owner(conn, device_id, _PROFILE_A) == get_uid(conn, "alice")
 
     # Bob accepts share → auto-claims next unclaimed profile (B)
     r = client.post(f"/api/v1/ui/devices/{device_id}/share", headers=auth_header(alice_tok))
@@ -379,10 +379,10 @@ def test_accept_share_auto_claims_next_unclaimed_on_multi_profile_device(client,
         headers=auth_header(bob_tok),
     )
     assert r.status_code == 200
-    assert db.get_user_has_claim_on_device(conn, device_id, "bob")
+    assert db.get_user_has_claim_on_device(conn, device_id, get_uid(conn, "bob"))
     bob_claim = conn.execute(
-        "SELECT profile_id FROM device_profile_map WHERE device_id=? AND user_id='bob'",
-        (device_id,),
+        "SELECT profile_id FROM device_profile_map WHERE device_id=? AND user_id=?",
+        (device_id, get_uid(conn, "bob")),
     ).fetchone()
     assert bob_claim is not None and bob_claim["profile_id"] == _PROFILE_B
 
@@ -409,7 +409,7 @@ def test_accept_share_auto_claims_on_single_profile_device(client, conn):
         json={"known_profiles": [{"profile_id": _PROFILE_SOLO, "profile_name": "Solo"}]},
         headers={"X-Device-ID": DEVICE_A},
     )
-    assert db.get_profile_owner(conn, device_id, _PROFILE_SOLO) == "alice"
+    assert db.get_profile_owner(conn, device_id, _PROFILE_SOLO) == get_uid(conn, "alice")
 
     r = client.post(f"/api/v1/ui/devices/{device_id}/share", headers=auth_header(alice_tok))
     bob_tok = _login(client, "bob")
@@ -420,10 +420,10 @@ def test_accept_share_auto_claims_on_single_profile_device(client, conn):
     )
     assert r.status_code == 200
     # All profiles claimed — bob co-claims the sole profile so user always has a default
-    assert db.get_user_has_claim_on_device(conn, device_id, "bob")
+    assert db.get_user_has_claim_on_device(conn, device_id, get_uid(conn, "bob"))
     bob_claim = conn.execute(
-        "SELECT profile_id FROM device_profile_map WHERE device_id=? AND user_id='bob'",
-        (device_id,),
+        "SELECT profile_id FROM device_profile_map WHERE device_id=? AND user_id=?",
+        (device_id, get_uid(conn, "bob")),
     ).fetchone()
     assert bob_claim is not None and bob_claim["profile_id"] == _PROFILE_SOLO
 
@@ -491,7 +491,8 @@ def test_revoke_access_removes_visibility(client, conn):
     client.post("/api/v1/ui/devices/accept-share", json={"code": r.json()["code"]}, headers=auth_header(bob_tok))
 
     # alice revokes bob
-    r = client.delete(f"/api/v1/ui/devices/{device_id}/access/bob", headers=auth_header(alice_tok))
+    bob_uid = get_uid(conn, "bob")
+    r = client.delete(f"/api/v1/ui/devices/{device_id}/access/{bob_uid}", headers=auth_header(alice_tok))
     assert r.status_code == 204
 
     r = client.get("/api/v1/ui/devices", headers=auth_header(bob_tok))

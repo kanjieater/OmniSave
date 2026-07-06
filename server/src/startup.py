@@ -359,8 +359,8 @@ def _repair_romm_push_head_device_title_head(conn) -> int:
             t.title_id,
             COALESCE(
                 (SELECT value FROM user_config
-                 WHERE username=rss.username AND key='romm_source_id'),
-                'romm:' || rss.username
+                 WHERE user_id=rss.user_id AND key='romm_source_id'),
+                'romm:' || rss.user_id
             ),
             MAX(t.snapshot_sequence),
             MAX(rss.synced_at)
@@ -368,7 +368,7 @@ def _repair_romm_push_head_device_title_head(conn) -> int:
         JOIN sync_transactions t ON t.transaction_id=rss.transaction_id
         WHERE rss.direction='outbound'
           AND t.snapshot_sequence IS NOT NULL
-        GROUP BY t.title_id, rss.username
+        GROUP BY t.title_id, rss.user_id
         ON CONFLICT (title_id, device_id) DO UPDATE
             SET last_seq = MAX(last_seq, excluded.last_seq),
                 updated_at = MAX(updated_at, excluded.updated_at)
