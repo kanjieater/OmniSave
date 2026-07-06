@@ -110,11 +110,15 @@ cmd_up() {
     CONTAINER_NAME="${CONTAINER_NAME:-omnisave}"
     SAFE_CONTAINER_NAME=$(printf '%s' "$CONTAINER_NAME" | sed 's/[&\\/]/\\&/g')
     sed -i "s/^  omnisave:/  ${SAFE_CONTAINER_NAME}:/" "${OMNISAVE_ROOT}/compose.yml"
+    sed -i "s/container_name: omnisave$/container_name: ${SAFE_CONTAINER_NAME}/" "${OMNISAVE_ROOT}/compose.yml"
+    PORT_PUBLISH=$(grep "^OMNISAVE_PORT_PUBLISH=" "${ENV_FILE}" | cut -d= -f2)
+    PORT_PUBLISH="${PORT_PUBLISH:-8991}"
+    sed -i "s/\"8991:8991\"/\"${PORT_PUBLISH}:8991\"/" "${OMNISAVE_ROOT}/compose.yml"
 
     GIT_SHA=$(git -C "$REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
     git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || GIT_SHA="${GIT_SHA}-dirty"
     export GIT_SHA
-    compose up -d --build
+    compose up -d --build --remove-orphans
 
     # Guard: fail loudly if another container on the same network shares our alias.
     # Checks cross-container collisions only — Docker normally gives each container
