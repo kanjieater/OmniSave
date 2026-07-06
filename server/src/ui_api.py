@@ -395,6 +395,7 @@ async def auth_status(request: Request):
         "bootstrapped": True,
         "authenticated": bool(username),
         "username": username,
+        "user_id": _current_user_id(request) or "",
         "is_admin": _is_admin(request),
         "server_now": int(datetime.now(UTC).timestamp() * 1000),
     }
@@ -628,7 +629,20 @@ def list_device_access(device_id: str, request: Request):
         return JSONResponse({"error": "device not found"}, status_code=404)
     if device.get("owner_user_id") != user_id and not _is_admin(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
-    return {"access": db.list_device_access(_conn, device_id)}
+    admin_uid = db.get_config(_conn, "admin_user_id") or ""
+    admin_name = db.get_config(_conn, "admin_username") or "admin"
+
+    def _uid_to_username(uid: str) -> str:
+        if uid == admin_uid:
+            return admin_name
+        row = _conn.execute("SELECT username FROM auth_users WHERE id=?", (uid,)).fetchone()
+        return row["username"] if row else uid
+
+    entries = [
+        {**e, "username": _uid_to_username(e["user_id"])}
+        for e in db.list_device_access(_conn, device_id)
+    ]
+    return {"access": entries}
 
 
 @router.delete("/devices/{device_id}/access/{user_id}")
@@ -748,13 +762,25 @@ def list_device_profiles(device_id: str, request: Request):
         return JSONResponse({"error": "device not found"}, status_code=404)
     current_user = _current_user_id(request)
     profiles = db.list_device_profiles(_conn, device_id, current_user)
+    is_admin = _is_admin(request)
+    admin_uid = db.get_config(_conn, "admin_user_id") or ""
+    admin_name = db.get_config(_conn, "admin_username") or "admin"
+
+    def _uid_to_username(uid: str) -> str | None:
+        if not uid or uid == "__claimed__":
+            return None
+        if uid == admin_uid:
+            return admin_name
+        row = _conn.execute("SELECT username FROM auth_users WHERE id=?", (uid,)).fetchone()
+        return row["username"] if row else None
+
     result = []
     for p in profiles:
         if p["profile_id"] == "0000000000000000":
             continue  # Nintendo sentinel for "no account" — not a real profile
         user_id = p["user_id"]
         # Non-admin: mask other users' user_id (just show "claimed")
-        if user_id and not p["is_mine"] and not _is_admin(request):
+        if user_id and not p["is_mine"] and not is_admin:
             user_id = "__claimed__"
         result.append(
             {
@@ -762,6 +788,7 @@ def list_device_profiles(device_id: str, request: Request):
                 "profile_name": p["profile_name"],
                 "display_hint": p["display_hint"],
                 "user_id": user_id,
+                "username": _uid_to_username(user_id),
                 "is_mine": p["is_mine"],
             }
         )

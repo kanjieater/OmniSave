@@ -82,8 +82,8 @@ function AccessList({ deviceId }: { deviceId: string }) {
     <div className="border-t border-[var(--color-border-subtle)] divide-y divide-[var(--color-border-subtle)]">
       {entries.map((e) => (
         <div key={e.user_id} className="flex items-center gap-[var(--spacing-3)] px-[var(--spacing-4)] py-[var(--spacing-2)]">
-          <span className="font-mono text-xs text-[var(--color-text-secondary)] flex-1">
-            {e.user_id}
+          <span className="text-xs text-[var(--color-text-secondary)] flex-1">
+            {e.username}
           </span>
           <Button
             variant="ghost"
@@ -91,7 +91,7 @@ function AccessList({ deviceId }: { deviceId: string }) {
             onClick={() => revoke.mutate(e.user_id)}
             disabled={revoke.isPending}
             className="shrink-0 text-[var(--color-text-muted)] hover:text-[var(--color-error)] hover:bg-[var(--color-error-subtle)]"
-            aria-label={`Revoke access for ${e.user_id}`}
+            aria-label={`Revoke access for ${e.username}`}
           >
             <UserMinus size={13} />
           </Button>
@@ -245,7 +245,7 @@ function ProfilesInCard({ device }: { device: Device }) {
                   <>
                     {isClaimed && (
                       <span className="text-xs text-[var(--color-text-muted)] shrink-0">
-                        {isAdmin && p.user_id !== '__claimed__' ? p.user_id : 'Claimed'}
+                        {isAdmin && p.username ? p.username : 'Claimed'}
                       </span>
                     )}
                     {isAdmin && isClaimed && (
@@ -498,7 +498,7 @@ export function AcceptShareCode() {
 // ── My Clients ────────────────────────────────────────────────────────────────
 
 export function MyDevicesSection() {
-  const { username } = useAuth()
+  const { userId } = useAuth()
   const location = useLocation()
   const sectionRef = React.useRef<HTMLElement>(null)
   const [flashing, setFlashing] = React.useState(false)
@@ -538,7 +538,7 @@ export function MyDevicesSection() {
       ) : (
         <div className="flex flex-col gap-[var(--spacing-3)]">
           {devices.map((d) => (
-            <DeviceCard key={d.device_id} device={d} isOwner={d.owner_user_id === username} />
+            <DeviceCard key={d.device_id} device={d} isOwner={d.owner_user_id === userId} />
           ))}
         </div>
       )}
