@@ -114,6 +114,9 @@ cmd_up() {
     PORT_PUBLISH=$(grep "^OMNISAVE_PORT_PUBLISH=" "${ENV_FILE}" | cut -d= -f2)
     PORT_PUBLISH="${PORT_PUBLISH:-8991}"
     sed -i "s/\"8991:8991\"/\"${PORT_PUBLISH}:8991\"/" "${OMNISAVE_ROOT}/compose.yml"
+    if [ "$PROD" != "1" ]; then
+        sed -i "s/pull_policy: always/pull_policy: if_not_present/" "${OMNISAVE_ROOT}/compose.yml"
+    fi
 
     GIT_SHA=$(git -C "$REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
     git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || GIT_SHA="${GIT_SHA}-dirty"

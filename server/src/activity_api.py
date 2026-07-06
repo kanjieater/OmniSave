@@ -104,9 +104,7 @@ def post_events(body: PlayEventsBody, request: Request):
                 e.application_id,
             )
             continue
-        if e.application_id is not None and not db._is_retail_app_id(
-            e.application_id, client_type
-        ):
+        if e.application_id is not None and not db.is_retail_app_id(e.application_id, client_type):
             log.warning(
                 "activity: device=%s dropping event: non-retail application_id %r",
                 trusted.device_id,

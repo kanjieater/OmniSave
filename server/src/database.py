@@ -13,16 +13,12 @@ log = logging.getLogger(__name__)
 NULL_PROFILE_ID = "0000000000000000"
 
 
-def _is_retail_app_id(app_id: str, client_type: str) -> bool:
-    """Return True if app_id is a retail title for the given platform.
-
-    Switch retail titles always start with 0100. Homebrew, applets, and system
-    titles use other prefixes and must be excluded from playtime reporting.
-    Non-Switch clients have no such constraint.
-    """
+def is_retail_app_id(app_id: str, client_type: str) -> bool:
+    """True if app_id is a retail title (Switch: must start with 0100; other clients: always true)."""
     if client_type == "switch":
         return app_id.upper().startswith("0100")
     return True
+
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -2775,7 +2771,7 @@ def get_daily_playtime(
         session_acc = {}
         focus_mono = None
         focus_wall = None
-        is_retail = _is_retail_app_id(app, current_client_type)
+        is_retail = is_retail_app_id(app, current_client_type)
 
     def _reset() -> None:
         nonlocal \

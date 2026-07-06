@@ -5,6 +5,10 @@ services:
   omnisave:
     container_name: omnisave
     image: ghcr.io/kanjieater/omnisave:latest
+    build:
+      context: ${OMNISAVE_REPO}/server
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     pull_policy: always
     restart: unless-stopped
     logging:

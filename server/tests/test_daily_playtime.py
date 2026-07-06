@@ -6,7 +6,7 @@ consecutive UNFOCUSED collapse, zero-duration exclusion, reboot/crash handling,
 and device isolation.
 """
 
-from helpers import DEVICE_A, DEVICE_B, auth_header, login_admin, post_activity_events
+from helpers import DEVICE_A, DEVICE_B, auth_header, login_admin, pair_device, post_activity_events
 
 APP = "0100F2C0115B6000"
 OTHER_APP = "0100EC001DE7E000"
@@ -655,12 +655,7 @@ def test_owned_device_session_visible_without_profile_event(client):
 
 
 def test_homebrew_title_excluded(client):
-    """Non-0100 title IDs (homebrew, applets) must not appear in playtime output.
-
-    The state machine receives the full event stream (including PROFILE events
-    for attribution). is_retail is set on session open and blocks _emit() for
-    non-retail apps, so homebrew time never reaches accumulated[].
-    """
+    """Homebrew events dropped at ingest must not appear in playtime output."""
     token = login_admin(client)
     post_activity_events(client, DEVICE_A, [
         *_session(_BASE_TS, start_mono=100, dur_mono=3600, app=HOMEBREW_APP),
@@ -676,6 +671,22 @@ def test_homebrew_title_excluded(client):
         g["total_sec"] for d in days for g in d["games"] if g["title_id"] == APP
     )
     assert retail_sec == 1800
+
+
+def test_homebrew_state_machine_filter(client, conn):
+    """State machine is_retail=False suppresses sessions already in the DB (historical data)."""
+    import database as db
+    pair_device(client, DEVICE_A)
+    token = login_admin(client)
+    db.insert_play_events(conn, DEVICE_A, "admin", [
+        _started(_BASE_TS, 100, HOMEBREW_APP),
+        _focused(_BASE_TS, 101, HOMEBREW_APP),
+        _unfocused(_BASE_TS + 3600, 3701, HOMEBREW_APP),
+        _exited(_BASE_TS + 3600, 3702, HOMEBREW_APP),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    assert r.status_code == 200
+    assert r.json()["days"] == []
 
 
 # ── Sub-minute day-level minutes ──────────────────────────────────────────────
