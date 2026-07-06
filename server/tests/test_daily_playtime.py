@@ -6,10 +6,11 @@ consecutive UNFOCUSED collapse, zero-duration exclusion, reboot/crash handling,
 and device isolation.
 """
 
-from helpers import DEVICE_A, DEVICE_B, auth_header, login_admin, post_activity_events
+from helpers import DEVICE_A, DEVICE_B, auth_header, login_admin, pair_device, post_activity_events
 
 APP = "0100F2C0115B6000"
 OTHER_APP = "0100EC001DE7E000"
+HOMEBREW_APP = "053EEFBFD7D71000"
 
 # Base wall-clock timestamp: 2025-01-16 12:00:00 UTC
 _BASE_TS = 1737028800
@@ -538,8 +539,9 @@ def test_started_while_focused_emits_and_opens_new(client):
     assert days[0]["minutes"] == 90   # APP 30 min + OTHER_APP 60 min
 
 
-def test_reboot_boundary_discards_pre_reboot_open_session(client):
-    """Backward mono signals reboot; _reset() discards accumulated open session (line 2722).
+def test_reboot_boundary_preserves_completed_pre_reboot_intervals(client):
+    """Backward mono signals reboot; completed FOCUSED→UNFOCUSED intervals before
+    the reboot are emitted, only the open FOCUSED interval (if any) is discarded.
 
     Pre-reboot events are POSTed first (lower insertion id), post-reboot events second
     (higher id). ORDER BY id yields high-mono pre-reboot events before low-mono
@@ -551,11 +553,11 @@ def test_reboot_boundary_discards_pre_reboot_open_session(client):
         _started(_BASE_TS, mono=1000),
         _profile_active(_BASE_TS, mono=1001),
         _focused(_BASE_TS, mono=1002),
-        _unfocused(_BASE_TS + 1800, mono=2800),   # 30 min interval (no EXIT → open session)
+        _unfocused(_BASE_TS + 1800, mono=2800),   # 30 min complete interval
     ])
     # Post-reboot batch — lower mono, inserted second → backward jump detected
     post_activity_events(client, DEVICE_A, [
-        _started(_BASE_TS + 7200, mono=100),       # mono=100 < prev_mono=2800 → _reset()
+        _started(_BASE_TS + 7200, mono=100),       # mono=100 < prev_mono=2800 → _emit()+_reset()
         _profile_active(_BASE_TS + 7200, mono=101),
         _focused(_BASE_TS + 7200, mono=101),
         _unfocused(_BASE_TS + 10800, mono=3701),   # 60 min
@@ -564,7 +566,7 @@ def test_reboot_boundary_discards_pre_reboot_open_session(client):
     r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
     days = r.json()["days"]
     total = sum(d["minutes"] for d in days)
-    assert total == 60   # pre-reboot open session discarded; only post-reboot 60 min
+    assert total == 89   # pre-reboot 29m (1798s mono) preserved + post-reboot 60 min
 
 
 def test_unmapped_active_profile_non_owner_excluded(client):
@@ -647,6 +649,44 @@ def test_owned_device_session_visible_without_profile_event(client):
     days = r.json()["days"]
     assert len(days) == 1
     assert days[0]["minutes"] == 60
+
+
+# ── Homebrew / non-retail title filtering ────────────────────────────────────
+
+
+def test_homebrew_title_excluded(client):
+    """Homebrew events dropped at ingest must not appear in playtime output."""
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        *_session(_BASE_TS, start_mono=100, dur_mono=3600, app=HOMEBREW_APP),
+        *_session(_BASE_TS, start_mono=4000, dur_mono=1800, app=APP),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    assert r.status_code == 200
+    days = r.json()["days"]
+    all_title_ids = [g["title_id"] for d in days for g in d["games"]]
+    assert HOMEBREW_APP not in all_title_ids
+    assert APP in all_title_ids
+    retail_sec = next(
+        g["total_sec"] for d in days for g in d["games"] if g["title_id"] == APP
+    )
+    assert retail_sec == 1800
+
+
+def test_homebrew_state_machine_filter(client, conn):
+    """State machine is_retail=False suppresses sessions already in the DB (historical data)."""
+    import database as db
+    pair_device(client, DEVICE_A)
+    token = login_admin(client)
+    db.insert_play_events(conn, DEVICE_A, "admin", [
+        _started(_BASE_TS, 100, HOMEBREW_APP),
+        _focused(_BASE_TS, 101, HOMEBREW_APP),
+        _unfocused(_BASE_TS + 3600, 3701, HOMEBREW_APP),
+        _exited(_BASE_TS + 3600, 3702, HOMEBREW_APP),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    assert r.status_code == 200
+    assert r.json()["days"] == []
 
 
 # ── Sub-minute day-level minutes ──────────────────────────────────────────────

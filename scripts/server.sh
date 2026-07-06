@@ -1,34 +1,57 @@
 #!/bin/bash
 set -euo pipefail
 
-OMNISAVE_ROOT="${OMNISAVE_ROOT:-/mnt/srv/omnisavedev}"
+# Parse --prod flag before any other arg.
+# --prod is the ONLY way to target the production instance (/mnt/srv/omnisave).
+# Without it, all commands operate on dev (/mnt/srv/omnisavedev).
+PROD=0
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--prod" ]; then
+        PROD=1
+    else
+        ARGS+=("$arg")
+    fi
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
+if [ "$PROD" = "1" ]; then
+    OMNISAVE_ROOT="/mnt/srv/omnisave"
+else
+    OMNISAVE_ROOT="/mnt/srv/omnisavedev"
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE_SRC="${REPO_ROOT}/deploy/compose.yml"
 ENV_FILE="${OMNISAVE_ROOT}/.env"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") <command>
+Usage: $(basename "$0") [--prod] <command>
+
+Flags:
+  --prod  Target the PRODUCTION instance (/mnt/srv/omnisave).
+          Omit to target dev (/mnt/srv/omnisavedev) — the safe default.
 
 Commands:
-  init    Create ${OMNISAVE_ROOT}/{data,config} and install compose + .env
+  init    Create ${OMNISAVE_ROOT}/data and install compose + .env
   up      Build and start the server (detached)
   down    Stop the server
   logs    Follow container logs
   ps      Show compose status
 
-Environment:
-  OMNISAVE_ROOT        Install path (default: /mnt/srv/omnisave)
-  OMNISAVE_REPO        Git checkout (in ${ENV_FILE})
-  OMNISAVE_HOST        Server hostname (in ${ENV_FILE} only)
-  OMNISAVE_PUBLIC_URL  Optional public URL (in ${ENV_FILE} only)
-  OMNISAVE_SWITCHES         Switch FTP hosts for deploy.sh (in .env only)
+Environment (in ${ENV_FILE}):
+  OMNISAVE_REPO        Git checkout path
+  OMNISAVE_HOST        Server hostname
+  OMNISAVE_PUBLIC_URL  Optional public URL
+  OMNISAVE_SWITCHES         Switch FTP hosts for deploy.sh
   OMNISAVE_DOCKER_NETWORK   External network (default: selfhost)
   OMNISAVE_PORT_PUBLISH     Host port mapped to the container
 
 Examples:
-  $(basename "$0") init
-  $(basename "$0") up
+  $(basename "$0") init          # dev
+  $(basename "$0") up            # dev
+  $(basename "$0") --prod up     # PRODUCTION — requires explicit user approval
   $(basename "$0") logs
 EOF
 }
@@ -52,7 +75,7 @@ cmd_init() {
         sudo chown "$(id -u):$(id -g)" "${OMNISAVE_ROOT}"
     fi
 
-    mkdir -p "${OMNISAVE_ROOT}/data" "${OMNISAVE_ROOT}/config"
+    mkdir -p "${OMNISAVE_ROOT}/data"
     cp "${COMPOSE_SRC}" "${OMNISAVE_ROOT}/compose.yml"
     cp "${REPO_ROOT}/deploy/compose.no-network.yml" "${OMNISAVE_ROOT}/"
 
@@ -87,11 +110,18 @@ cmd_up() {
     CONTAINER_NAME="${CONTAINER_NAME:-omnisave}"
     SAFE_CONTAINER_NAME=$(printf '%s' "$CONTAINER_NAME" | sed 's/[&\\/]/\\&/g')
     sed -i "s/^  omnisave:/  ${SAFE_CONTAINER_NAME}:/" "${OMNISAVE_ROOT}/compose.yml"
+    sed -i "s/container_name: omnisave$/container_name: ${SAFE_CONTAINER_NAME}/" "${OMNISAVE_ROOT}/compose.yml"
+    PORT_PUBLISH=$(grep "^OMNISAVE_PORT_PUBLISH=" "${ENV_FILE}" | cut -d= -f2)
+    PORT_PUBLISH="${PORT_PUBLISH:-8991}"
+    sed -i "s/\"8991:8991\"/\"${PORT_PUBLISH}:8991\"/" "${OMNISAVE_ROOT}/compose.yml"
+    if [ "$PROD" != "1" ]; then
+        sed -i "s/pull_policy: always/pull_policy: if_not_present/" "${OMNISAVE_ROOT}/compose.yml"
+    fi
 
     GIT_SHA=$(git -C "$REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
     git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || GIT_SHA="${GIT_SHA}-dirty"
     export GIT_SHA
-    compose up -d --build
+    compose up -d --build --remove-orphans
 
     # Guard: fail loudly if another container on the same network shares our alias.
     # Checks cross-container collisions only — Docker normally gives each container
@@ -126,7 +156,6 @@ cmd_up() {
     echo ""
     echo "Server running."
     echo "  data:   ${OMNISAVE_ROOT}/data"
-    echo "  config: ${OMNISAVE_ROOT}/config"
     compose logs --tail=20
 }
 

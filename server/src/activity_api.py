@@ -87,6 +87,7 @@ def post_events(body: PlayEventsBody, request: Request):
     if isinstance(trusted, JSONResponse):
         return trusted
 
+    client_type = db.get_device_client_type(_conn, trusted.device_id)
     valid_events = []
     for e in body.events:
         if e.event_type in _APP_EVENT_TYPES and not e.application_id:
@@ -99,6 +100,13 @@ def post_events(body: PlayEventsBody, request: Request):
         if e.application_id is not None and not _ID_RE.match(e.application_id):
             log.warning(
                 "activity: device=%s dropping event: invalid application_id %r",
+                trusted.device_id,
+                e.application_id,
+            )
+            continue
+        if e.application_id is not None and not db.is_retail_app_id(e.application_id, client_type):
+            log.warning(
+                "activity: device=%s dropping event: non-retail application_id %r",
                 trusted.device_id,
                 e.application_id,
             )
