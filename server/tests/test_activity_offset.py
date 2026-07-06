@@ -5,7 +5,7 @@ from helpers import DEVICE_A, DEVICE_B, pair_device, post_activity_events
 
 _EVT = {
     "event_type": "APPLICATION_STARTED",
-    "application_id": "demo-app",
+    "application_id": "0100F2C0115B6000",
     "profile_id": "user-1",
     "event_timestamp": 1700000000,
     "monotonic_timestamp": 12345,

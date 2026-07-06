@@ -12,6 +12,18 @@ log = logging.getLogger(__name__)
 # Never a real user; must be excluded from all profile-claim and auto-claim logic.
 NULL_PROFILE_ID = "0000000000000000"
 
+
+def _is_retail_app_id(app_id: str, client_type: str) -> bool:
+    """Return True if app_id is a retail title for the given platform.
+
+    Switch retail titles always start with 0100. Homebrew, applets, and system
+    titles use other prefixes and must be excluded from playtime reporting.
+    Non-Switch clients have no such constraint.
+    """
+    if client_type == "switch":
+        return app_id.upper().startswith("0100")
+    return True
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 
@@ -2074,6 +2086,14 @@ def get_device_auth(conn, device_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def get_device_client_type(conn, device_id: str) -> str:
+    row = conn.execute(
+        "SELECT client_type FROM devices WHERE device_id=?",
+        (device_id,),
+    ).fetchone()
+    return row["client_type"] if row else ""
+
+
 def touch_device_last_seen(conn, device_id: str) -> None:
     """Update last_seen. Called ONLY after a valid authenticated sync. Never for anonymous."""
     conn.execute(
@@ -2673,6 +2693,21 @@ def get_daily_playtime(
     ):
         profile_map[(row["device_id"], row["profile_id"])] = row["user_id"]
 
+    device_client_type: dict[str, str] = {
+        row["device_id"]: row["client_type"]
+        for row in conn.execute(
+            """
+            SELECT device_id, client_type FROM devices
+            WHERE device_id IN (
+                SELECT DISTINCT device_id FROM device_play_events
+                WHERE owner_user_id = ?
+                   OR device_id IN (SELECT device_id FROM device_profile_map WHERE user_id = ?)
+            )
+            """,
+            (owner_user_id, owner_user_id),
+        )
+    }
+
     rows = conn.execute(
         """
         SELECT event_type, application_id, profile_id,
@@ -2701,8 +2736,12 @@ def get_daily_playtime(
     prev_device: str | None = None
     current_device: str = ""
     current_device_owner: str = ""
+    is_retail: bool = True
+    current_client_type: str = ""
 
     def _emit() -> None:
+        if not is_retail:
+            return
         # Owned devices are attributed even without a PROFILE event (first boot, profile not yet registered).
         if not has_profile and current_device_owner != owner_user_id:
             return
@@ -2727,7 +2766,8 @@ def get_daily_playtime(
             session_profile_id, \
             session_acc, \
             focus_mono, \
-            focus_wall
+            focus_wall, \
+            is_retail
         state = "IN_SESSION"
         session_app = app
         has_profile = False
@@ -2735,6 +2775,7 @@ def get_daily_playtime(
         session_acc = {}
         focus_mono = None
         focus_wall = None
+        is_retail = _is_retail_app_id(app, current_client_type)
 
     def _reset() -> None:
         nonlocal \
@@ -2745,7 +2786,8 @@ def get_daily_playtime(
             session_acc, \
             focus_mono, \
             focus_wall, \
-            prev_mono
+            prev_mono, \
+            is_retail
         state = "IDLE"
         session_app = ""
         has_profile = False
@@ -2754,6 +2796,7 @@ def get_daily_playtime(
         focus_mono = None
         focus_wall = None
         prev_mono = None
+        is_retail = True
 
     for row in rows:
         et = row["event_type"]
@@ -2769,6 +2812,7 @@ def get_daily_playtime(
             _reset()
             prev_device = device
             current_device = device
+            current_client_type = device_client_type.get(device, "")
 
         current_device_owner = row["device_owner"]
 

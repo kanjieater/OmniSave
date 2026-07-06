@@ -7,9 +7,10 @@ unauthenticated access, and batch-size cap.
 import database as db
 from helpers import DEVICE_A, DEVICE_B, pair_device, post_activity_events
 
+APP = "0100F2C0115B6000"
 _EVT = {
     "event_type": "APPLICATION_STARTED",
-    "application_id": "demo-app",
+    "application_id": APP,
     "profile_id": "user-1",
     "event_timestamp": 1700000000,
     "monotonic_timestamp": 12345,
@@ -30,7 +31,7 @@ def test_events_stored(client, conn):
     ).fetchall()
     assert len(rows) == 1
     assert rows[0]["event_type"] == "APPLICATION_STARTED"
-    assert rows[0]["application_id"] == "demo-app"
+    assert rows[0]["application_id"] == APP
     assert rows[0]["profile_id"] == "user-1"
     assert rows[0]["event_timestamp"] == 1700000000
     assert rows[0]["monotonic_timestamp"] == 12345
@@ -162,6 +163,15 @@ def test_invalid_profile_id_dropped(client):
     assert r.json()["received"] == 2
 
 
+def test_non_retail_application_id_dropped(client):
+    """Homebrew/system title IDs (non-0100 prefix) are dropped for Switch devices."""
+    evt = {**_EVT, "application_id": "053EEFBFD7D71000", "monotonic_timestamp": 999}
+    r = post_activity_events(client, DEVICE_A, [evt])
+    assert r.status_code == 200
+    assert r.json()["accepted"] == 0
+    assert r.json()["received"] == 1
+
+
 def test_application_id_too_long_dropped(client):
     """application_id > 64 chars is dropped; batch succeeds."""
     evt = {**_EVT, "application_id": "a" * 65}
@@ -270,7 +280,7 @@ def test_get_play_events_by_device(client, conn):
 def test_get_play_events_by_application_id(client, conn):
     import database as db
     post_activity_events(client, DEVICE_A, [_EVT])
-    rows = db.get_play_events(conn, application_id="demo-app")
+    rows = db.get_play_events(conn, application_id=APP)
     assert len(rows) == 1
     rows_none = db.get_play_events(conn, application_id="no-such-app")
     assert rows_none == []

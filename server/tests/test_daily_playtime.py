@@ -10,6 +10,7 @@ from helpers import DEVICE_A, DEVICE_B, auth_header, login_admin, post_activity_
 
 APP = "0100F2C0115B6000"
 OTHER_APP = "0100EC001DE7E000"
+HOMEBREW_APP = "053EEFBFD7D71000"
 
 # Base wall-clock timestamp: 2025-01-16 12:00:00 UTC
 _BASE_TS = 1737028800
@@ -648,6 +649,33 @@ def test_owned_device_session_visible_without_profile_event(client):
     days = r.json()["days"]
     assert len(days) == 1
     assert days[0]["minutes"] == 60
+
+
+# ── Homebrew / non-retail title filtering ────────────────────────────────────
+
+
+def test_homebrew_title_excluded(client):
+    """Non-0100 title IDs (homebrew, applets) must not appear in playtime output.
+
+    The state machine receives the full event stream (including PROFILE events
+    for attribution). is_retail is set on session open and blocks _emit() for
+    non-retail apps, so homebrew time never reaches accumulated[].
+    """
+    token = login_admin(client)
+    post_activity_events(client, DEVICE_A, [
+        *_session(_BASE_TS, start_mono=100, dur_mono=3600, app=HOMEBREW_APP),
+        *_session(_BASE_TS, start_mono=4000, dur_mono=1800, app=APP),
+    ])
+    r = client.get("/api/v1/ui/playtime/daily", headers=auth_header(token))
+    assert r.status_code == 200
+    days = r.json()["days"]
+    all_title_ids = [g["title_id"] for d in days for g in d["games"]]
+    assert HOMEBREW_APP not in all_title_ids
+    assert APP in all_title_ids
+    retail_sec = next(
+        g["total_sec"] for d in days for g in d["games"] if g["title_id"] == APP
+    )
+    assert retail_sec == 1800
 
 
 # ── Sub-minute day-level minutes ──────────────────────────────────────────────
