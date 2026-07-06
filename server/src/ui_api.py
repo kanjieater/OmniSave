@@ -364,6 +364,16 @@ def _is_admin(request: Request) -> bool:
     return secrets.compare_digest(user["username"], admin_username)
 
 
+def _uid_to_username(uid: str, admin_uid: str, admin_name: str) -> str | None:
+    """Resolve a user UUID to a display username. Returns None for empty/unclaimed UIDs."""
+    if not uid or uid == "__claimed__":
+        return None
+    if uid == admin_uid:
+        return admin_name
+    row = _conn.execute("SELECT username FROM auth_users WHERE id=?", (uid,)).fetchone()
+    return row["username"] if row else None
+
+
 def _auth_err(request: Request) -> JSONResponse | None:
     if not _token_valid(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -390,13 +400,19 @@ class LoginBody(BaseModel):
 
 @router.get("/auth/status")
 async def auth_status(request: Request):
-    username = _current_username(request) or ""
+    user = _current_user(request)
+    username = user["username"] if user else ""
+    if user:
+        _admin_name = db.get_config(_conn, "admin_username") or "admin"
+        is_admin = secrets.compare_digest(username, _admin_name)
+    else:
+        is_admin = False
     return {
         "bootstrapped": True,
-        "authenticated": bool(username),
+        "authenticated": user is not None,
         "username": username,
-        "user_id": _current_user_id(request) or "",
-        "is_admin": _is_admin(request),
+        "user_id": user["id"] if user else "",
+        "is_admin": is_admin,
         "server_now": int(datetime.now(UTC).timestamp() * 1000),
     }
 
@@ -631,15 +647,8 @@ def list_device_access(device_id: str, request: Request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     admin_uid = db.get_config(_conn, "admin_user_id") or ""
     admin_name = db.get_config(_conn, "admin_username") or "admin"
-
-    def _uid_to_username(uid: str) -> str:
-        if uid == admin_uid:
-            return admin_name
-        row = _conn.execute("SELECT username FROM auth_users WHERE id=?", (uid,)).fetchone()
-        return row["username"] if row else uid
-
     entries = [
-        {**e, "username": _uid_to_username(e["user_id"])}
+        {**e, "username": _uid_to_username(e["user_id"], admin_uid, admin_name) or e["user_id"]}
         for e in db.list_device_access(_conn, device_id)
     ]
     return {"access": entries}
@@ -765,15 +774,6 @@ def list_device_profiles(device_id: str, request: Request):
     is_admin = _is_admin(request)
     admin_uid = db.get_config(_conn, "admin_user_id") or ""
     admin_name = db.get_config(_conn, "admin_username") or "admin"
-
-    def _uid_to_username(uid: str) -> str | None:
-        if not uid or uid == "__claimed__":
-            return None
-        if uid == admin_uid:
-            return admin_name
-        row = _conn.execute("SELECT username FROM auth_users WHERE id=?", (uid,)).fetchone()
-        return row["username"] if row else None
-
     result = []
     for p in profiles:
         if p["profile_id"] == "0000000000000000":
@@ -788,7 +788,7 @@ def list_device_profiles(device_id: str, request: Request):
                 "profile_name": p["profile_name"],
                 "display_hint": p["display_hint"],
                 "user_id": user_id,
-                "username": _uid_to_username(user_id),
+                "username": _uid_to_username(user_id, admin_uid, admin_name),
                 "is_mine": p["is_mine"],
             }
         )
@@ -2209,7 +2209,8 @@ def change_credentials(body: ChangeCredentialsBody, request: Request, response: 
         if body.new_password:
             db.set_auth_user_password(_conn, username, _hash_password(body.new_password))
             token = "sk_live_" + secrets.token_urlsafe(32)
-            db.set_auth_user_session(_conn, username, token)
+            db.delete_auth_sessions_for_user(_conn, user_id)
+            db.insert_auth_session(_conn, user_id, token)
             response.set_cookie("os_session", token, httponly=True, samesite="lax")
             log.info("user password changed: %s", username)
         if body.new_username:

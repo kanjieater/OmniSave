@@ -981,6 +981,18 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 )
                 conn.execute("DROP TABLE romm_save_sync")
                 conn.execute("ALTER TABLE romm_save_sync_new RENAME TO romm_save_sync")
+            # device_share_codes.granted_by / device_access.granted_by — these columns
+            # store who created/approved the share.  COALESCE fallback is intentional:
+            # granted_by is display-only metadata; no access-control path reads it.
+            for _tbl in ("device_share_codes", "device_access"):
+                if _tbl in existing:
+                    conn.execute(
+                        f"UPDATE {_tbl} SET granted_by ="  # noqa: S608
+                        " CASE WHEN granted_by=? THEN ?"
+                        "  ELSE COALESCE((SELECT id FROM auth_users WHERE username=granted_by), granted_by)"
+                        " END",
+                        (old_admin_name, admin_user_id),
+                    )
             conn.execute("RELEASE SAVEPOINT uuid_migration")
             log.info("UUID identity migration: %d user(s) migrated", len(user_uuids))
         except Exception:
@@ -1008,6 +1020,8 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 ("events", "owner_user_id"),
                 ("device_auth", "user_id"),
                 ("device_access", "user_id"),
+                ("device_share_codes", "granted_by"),
+                ("device_access", "granted_by"),
                 ("device_play_events", "owner_user_id"),
                 ("device_profile_map", "user_id"),
                 ("user_config", "user_id"),
@@ -1028,6 +1042,21 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                             f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
                             (_auid, _aname),
                         )
+
+    # Idempotent: backfill granted_by username→UUID for instances that already ran the migration.
+    # The migration SAVEPOINT runs once (guarded by "id" not in au_cols); this catches rows
+    # written pre-upgrade or on instances that upgraded before this fix shipped.
+    for _tbl in ("device_share_codes", "device_access"):
+        if _tbl in existing:
+            _gb_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({_tbl})").fetchall()}  # noqa: S608
+            if "granted_by" in _gb_cols:
+                conn.execute(
+                    f"UPDATE {_tbl} SET granted_by = ("  # noqa: S608
+                    f"  SELECT id FROM auth_users WHERE username = {_tbl}.granted_by"
+                    f") WHERE EXISTS ("
+                    f"  SELECT 1 FROM auth_users WHERE username = {_tbl}.granted_by"
+                    f")"
+                )
 
     # Idempotent — must exist for both fresh installs and post-migration upgrades.
     # Not in SCHEMA because it would fail on legacy DBs before the migration adds auth_users.id.
@@ -1091,6 +1120,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 conn.execute(
                     "DELETE FROM device_title_head"
                     " WHERE device_id LIKE 'romm:%' AND device_id!=?"
+                    "   AND device_id NOT IN ("
+                    "     SELECT device_id FROM devices WHERE client_type='romm' AND deleted_at IS NULL"
+                    "   )"
                     "   AND title_id IN ("
                     "     SELECT title_id FROM sync_transactions WHERE owner_user_id=?"
                     "   )",
@@ -2275,13 +2307,6 @@ def list_auth_users(conn) -> list[dict]:
             "SELECT id, username, created_at FROM auth_users ORDER BY created_at ASC"
         ).fetchall()
     ]
-
-
-def set_auth_user_session(conn, username: str, token: str | None) -> None:
-    conn.execute(
-        "UPDATE auth_users SET session_token=? WHERE username=?",
-        (token, username),
-    )
 
 
 def delete_auth_user(conn, username: str) -> bool:
