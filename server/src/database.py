@@ -825,7 +825,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             for uname, uid in user_uuids.items():
                 conn.execute("UPDATE auth_users SET id=? WHERE username=?", (uid, uname))
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_id ON auth_users(id)")
-            # Simple FK tables: only update values, column names stay the same
+            # Simple FK tables: only update values, column names stay the same.
+            # IMPORTANT: admin backfill runs FIRST so the JOIN loop below never
+            # matches admin rows even if a regular user shares the admin username.
             _SIMPLE_FK = [
                 ("devices", "owner_user_id"),
                 ("sync_transactions", "owner_user_id"),
@@ -835,6 +837,16 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 ("device_play_events", "owner_user_id"),
                 ("device_profile_map", "user_id"),
             ]
+            # Admin rows first: convert admin username string → admin UUID before
+            # the JOIN loop, so a same-named regular user cannot steal admin data.
+            for _tbl, _col in _SIMPLE_FK:
+                if _tbl in existing:
+                    conn.execute(
+                        f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
+                        (admin_user_id, old_admin_name),
+                    )
+            # Regular users: JOIN on auth_users to convert remaining username strings.
+            # Admin rows are already UUIDs at this point and won't be touched.
             for _tbl, _col in _SIMPLE_FK:
                 if _tbl in existing:
                     conn.execute(
@@ -843,13 +855,6 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                         f") WHERE {_col} IS NOT NULL AND EXISTS ("
                         f"  SELECT 1 FROM auth_users WHERE username = {_tbl}.{_col}"
                         f")"
-                    )
-            # Admin rows: admin is in server_config, not auth_users — backfill separately
-            for _tbl, _col in _SIMPLE_FK:
-                if _tbl in existing:
-                    conn.execute(
-                        f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
-                        (admin_user_id, old_admin_name),
                     )
             # auth_sessions: rename username → user_id column
             as_cols = {r[1] for r in conn.execute("PRAGMA table_info(auth_sessions)").fetchall()}
