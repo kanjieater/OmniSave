@@ -73,3 +73,12 @@
 **What each tier catches:**
 * Tier 1: syntax errors, broken imports, logic failures (~27s)
 * Tier 2: coverage gaps, schema drift, diff-cover gate (~30s)
+
+## 13. Startup Repair Functions — Last Resort Only
+
+`_repair_*` functions in `startup.py` run on **every boot forever**. Reserve them strictly for:
+- True schema/data migrations (column additions, table restructures)
+- Corruption recovery (data that cannot be prevented retroactively)
+- Transforming persisted data to a new format required by updated code
+
+**Never add a startup repair for a business-rule bug.** Fix the write path so the bug never occurs again. If a one-time cleanup is needed for an existing instance, provide a one-time admin SQL script — not permanent startup code.

@@ -2994,6 +2994,36 @@ def test_put_romm_settings_source_id(client):
     assert r2.json()["source_id"] == "romm:myhost.local"
 
 
+def test_romm_device_id_stable_after_username_rename(client, conn, monkeypatch):
+    """romm_source_id is pinned on first PUT so renaming the admin username
+    does not shift the virtual device ID."""
+    import romm_meta as _romm_meta
+    import romm_vsc as _romm_vsc
+    monkeypatch.setattr(_romm_meta, "refresh_username_cache", _mock_refresh_ok)
+    token = _login(client)
+
+    client.put(
+        "/api/v1/ui/settings/romm",
+        json={"host": "http://romm.local", "api_key": "secret"},
+        headers=_hdr(token),
+    )
+
+    import database as _db
+    pinned = _db.get_user_config(conn, ADMIN_USER, "romm_source_id")
+    assert pinned == f"romm:{ADMIN_USER}", f"expected romm_source_id to be pinned, got {pinned!r}"
+
+    client.post(
+        "/api/v1/ui/settings/credentials",
+        json={"current_password": "admin", "new_username": "admin_renamed"},
+        headers=_hdr(token),
+    )
+
+    device_id = _romm_vsc.get_user_romm_device_id(conn, "admin_renamed")
+    assert device_id == f"romm:{ADMIN_USER}", (
+        f"device ID shifted after rename: got {device_id!r}, want romm:{ADMIN_USER}"
+    )
+
+
 def test_put_romm_settings_restores_device_when_credentials_unchanged(client, conn, monkeypatch):
     """Changing non-credential settings (e.g. enabled) un-deletes the romm device when
     credentials are already set and a verified username exists (lines 1985-1987)."""
