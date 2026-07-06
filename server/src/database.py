@@ -125,24 +125,24 @@ CREATE TABLE IF NOT EXISTS server_config (
 );
 
 CREATE TABLE IF NOT EXISTS user_config (
-    username TEXT NOT NULL,
-    key      TEXT NOT NULL,
-    value    TEXT NOT NULL,
-    PRIMARY KEY (username, key)
+    user_id TEXT NOT NULL,
+    key     TEXT NOT NULL,
+    value   TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS auth_users (
     username      TEXT PRIMARY KEY,
     password_hash TEXT NOT NULL,
     session_token TEXT,
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    id            TEXT NOT NULL DEFAULT ''
 );
-
 CREATE TABLE IF NOT EXISTS auth_sessions (
-    session_id  TEXT PRIMARY KEY,
-    username    TEXT NOT NULL,
-    token       TEXT UNIQUE NOT NULL,
-    created_at  TEXT NOT NULL
+    session_id TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    token      TEXT UNIQUE NOT NULL,
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS device_auth (
@@ -188,20 +188,20 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_time ON events(occurred_at DESC);
 
 CREATE TABLE IF NOT EXISTS romm_title_map (
-    username  TEXT NOT NULL,
-    title_id  TEXT NOT NULL,
-    rom_id    INTEGER NOT NULL,
+    user_id  TEXT NOT NULL,
+    title_id TEXT NOT NULL,
+    rom_id   INTEGER NOT NULL,
     mapped_at TEXT,
-    PRIMARY KEY (username, title_id)
+    PRIMARY KEY (user_id, title_id)
 );
 
 CREATE TABLE IF NOT EXISTS romm_game_cache (
-    username   TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
     rom_id     INTEGER NOT NULL,
     name       TEXT,
     icon_url   TEXT,
     fetched_at TEXT NOT NULL,
-    PRIMARY KEY (username, rom_id)
+    PRIMARY KEY (user_id, rom_id)
 );
 
 CREATE TABLE IF NOT EXISTS labels (
@@ -213,13 +213,13 @@ CREATE TABLE IF NOT EXISTS labels (
 
 CREATE TABLE IF NOT EXISTS romm_save_sync (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    username       TEXT NOT NULL,
+    user_id        TEXT NOT NULL,
     rom_id         INTEGER NOT NULL,
     romm_save_id   INTEGER NOT NULL,
     direction      TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
     transaction_id TEXT,
     synced_at      TEXT NOT NULL,
-    UNIQUE(username, rom_id, romm_save_id, direction)
+    UNIQUE(user_id, rom_id, romm_save_id, direction)
 );
 
 -- Per-device backup state convergence: one row per committed snapshot per device.
@@ -610,41 +610,42 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     if "user_config" not in existing:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS user_config ("
-            "  username TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,"
-            "  PRIMARY KEY (username, key)"
+            "  user_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,"
+            "  PRIMARY KEY (user_id, key)"
             ")"
         )
 
-    # Hard-reset romm tables that lack the username column (pre-release; no data to preserve)
+    # Hard-reset romm tables that lack either identity column (pre-release; no data to preserve).
+    # Rebuilds with user_id schema. Tables with username are handled later by UUID migration.
     _ROMM_TABLE_DDL = {
         "romm_title_map": (
             "CREATE TABLE romm_title_map ("
-            "  username TEXT NOT NULL, title_id TEXT NOT NULL,"
+            "  user_id TEXT NOT NULL, title_id TEXT NOT NULL,"
             "  rom_id INTEGER NOT NULL, mapped_at TEXT,"
-            "  PRIMARY KEY (username, title_id)"
+            "  PRIMARY KEY (user_id, title_id)"
             ")"
         ),
         "romm_game_cache": (
             "CREATE TABLE romm_game_cache ("
-            "  username TEXT NOT NULL, rom_id INTEGER NOT NULL,"
+            "  user_id TEXT NOT NULL, rom_id INTEGER NOT NULL,"
             "  name TEXT, icon_url TEXT, fetched_at TEXT NOT NULL,"
-            "  PRIMARY KEY (username, rom_id)"
+            "  PRIMARY KEY (user_id, rom_id)"
             ")"
         ),
         "romm_save_sync": (
             "CREATE TABLE romm_save_sync ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL,"
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,"
             "  rom_id INTEGER NOT NULL, romm_save_id INTEGER NOT NULL,"
             "  direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),"
             "  transaction_id TEXT, synced_at TEXT NOT NULL,"
-            "  UNIQUE(username, rom_id, romm_save_id, direction)"
+            "  UNIQUE(user_id, rom_id, romm_save_id, direction)"
             ")"
         ),
     }
     for tbl, ddl in _ROMM_TABLE_DDL.items():
         if tbl in existing:
             cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
-            if "username" not in cols:
+            if "user_id" not in cols and "username" not in cols:
                 conn.execute(f"DROP TABLE {tbl}")
                 conn.execute(ddl)
 
@@ -772,22 +773,370 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             " FROM auth_users WHERE session_token IS NOT NULL AND session_token != ''"
         )
 
-    # Enforce one title_id per rom_id per user in romm_title_map.
-    # The indexer's Pass 2 (name-search) could map a second title_id to an already-mapped
-    # rom_id, producing duplicate catalog entries.  Deduplicate first (keep lowest rowid =
-    # the older/file-matched entry), then add the unique index to prevent recurrence.
+    # Enforce one title_id per rom_id per user in romm_title_map (pre-UUID schema guard).
     if "romm_title_map" in existing:
+        rtm_pre = {r[1] for r in conn.execute("PRAGMA table_info(romm_title_map)").fetchall()}
+        group_col = "username" if "username" in rtm_pre else "user_id"
         conn.execute(
-            "DELETE FROM romm_title_map WHERE rowid NOT IN"
-            " (SELECT MIN(rowid) FROM romm_title_map GROUP BY username, rom_id)"
+            f"DELETE FROM romm_title_map WHERE rowid NOT IN"
+            f" (SELECT MIN(rowid) FROM romm_title_map GROUP BY {group_col}, rom_id)"
         )
         try:
             conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uniq_romm_title_map_rom"
-                " ON romm_title_map(username, rom_id)"
+                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_romm_title_map_rom"
+                f" ON romm_title_map({group_col}, rom_id)"
             )
         except sqlite3.OperationalError:  # pragma: no cover
             pass
+
+    # V-UUID: stable UUID user identity.
+    # Replace username string FK with stable UUID in all ownership tables.
+    # Guard: only runs when auth_users.id column is absent (old schema).
+    au_cols = {r[1] for r in conn.execute("PRAGMA table_info(auth_users)").fetchall()}
+    if au_cols and "id" not in au_cols:
+        users = conn.execute("SELECT username FROM auth_users").fetchall()
+        user_uuids = {r[0]: str(uuid.uuid4()) for r in users}
+
+        sc_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='server_config'"
+        ).fetchone()
+        if sc_exists:
+            admin_id_row = conn.execute(
+                "SELECT value FROM server_config WHERE key='admin_user_id'"
+            ).fetchone()
+            admin_user_id = admin_id_row["value"] if admin_id_row else str(uuid.uuid4())
+            admin_name_row = conn.execute(
+                "SELECT value FROM server_config WHERE key='admin_username'"
+            ).fetchone()
+            old_admin_name = admin_name_row["value"] if admin_name_row else "admin"
+        else:
+            admin_id_row = None
+            admin_user_id = str(uuid.uuid4())
+            old_admin_name = "admin"
+
+        conn.execute("SAVEPOINT uuid_migration")
+        try:
+            if sc_exists and not admin_id_row:
+                conn.execute(
+                    "INSERT OR REPLACE INTO server_config (key,value) VALUES ('admin_user_id',?)",
+                    (admin_user_id,),
+                )
+            conn.execute("ALTER TABLE auth_users ADD COLUMN id TEXT NOT NULL DEFAULT ''")
+            for uname, uid in user_uuids.items():
+                conn.execute("UPDATE auth_users SET id=? WHERE username=?", (uid, uname))
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_id ON auth_users(id)")
+            # Simple FK tables: only update values, column names stay the same
+            _SIMPLE_FK = [
+                ("devices", "owner_user_id"),
+                ("sync_transactions", "owner_user_id"),
+                ("events", "owner_user_id"),
+                ("device_auth", "user_id"),
+                ("device_access", "user_id"),
+                ("device_play_events", "owner_user_id"),
+                ("device_profile_map", "user_id"),
+            ]
+            for _tbl, _col in _SIMPLE_FK:
+                if _tbl in existing:
+                    conn.execute(
+                        f"UPDATE {_tbl} SET {_col} = ("
+                        f"  SELECT id FROM auth_users WHERE username = {_tbl}.{_col}"
+                        f") WHERE {_col} IS NOT NULL AND EXISTS ("
+                        f"  SELECT 1 FROM auth_users WHERE username = {_tbl}.{_col}"
+                        f")"
+                    )
+            # Admin rows: admin is in server_config, not auth_users — backfill separately
+            for _tbl, _col in _SIMPLE_FK:
+                if _tbl in existing:
+                    conn.execute(
+                        f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
+                        (admin_user_id, old_admin_name),
+                    )
+            # auth_sessions: rename username → user_id column
+            as_cols = {r[1] for r in conn.execute("PRAGMA table_info(auth_sessions)").fetchall()}
+            if "username" in as_cols:
+                conn.execute("""
+                    CREATE TABLE auth_sessions_new (
+                        session_id TEXT PRIMARY KEY,
+                        user_id    TEXT NOT NULL,
+                        token      TEXT UNIQUE NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                """)
+                conn.execute(
+                    "INSERT INTO auth_sessions_new (session_id, user_id, token, created_at)"
+                    " SELECT s.session_id,"
+                    "  CASE WHEN s.username=? THEN ?"
+                    "       ELSE (SELECT id FROM auth_users WHERE username=s.username) END,"
+                    "  s.token, s.created_at"
+                    " FROM auth_sessions s"
+                    " WHERE s.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=s.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
+                )
+                conn.execute("DROP TABLE auth_sessions")
+                conn.execute("ALTER TABLE auth_sessions_new RENAME TO auth_sessions")
+            # user_config: rename username → user_id column
+            uc_cols = {r[1] for r in conn.execute("PRAGMA table_info(user_config)").fetchall()}
+            if "username" in uc_cols:
+                conn.execute("""
+                    CREATE TABLE user_config_new (
+                        user_id TEXT NOT NULL,
+                        key     TEXT NOT NULL,
+                        value   TEXT NOT NULL,
+                        PRIMARY KEY (user_id, key)
+                    )
+                """)
+                conn.execute(
+                    "INSERT INTO user_config_new (user_id, key, value)"
+                    " SELECT CASE WHEN uc.username=? THEN ?"
+                    "             ELSE (SELECT id FROM auth_users WHERE username=uc.username) END,"
+                    "  uc.key, uc.value"
+                    " FROM user_config uc"
+                    " WHERE uc.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=uc.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
+                )
+                conn.execute("DROP TABLE user_config")
+                conn.execute("ALTER TABLE user_config_new RENAME TO user_config")
+            # romm_title_map: rename username → user_id column
+            rtm_cols = {r[1] for r in conn.execute("PRAGMA table_info(romm_title_map)").fetchall()}
+            if "username" in rtm_cols:
+                has_pi = "pull_initialized" in rtm_cols
+                conn.execute("""
+                    CREATE TABLE romm_title_map_new (
+                        user_id          TEXT NOT NULL,
+                        title_id         TEXT NOT NULL,
+                        rom_id           INTEGER NOT NULL,
+                        mapped_at        TEXT,
+                        pull_initialized INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (user_id, title_id)
+                    )
+                """)
+                pi_col = "COALESCE(r.pull_initialized,0)" if has_pi else "0"
+                conn.execute(
+                    "INSERT INTO romm_title_map_new (user_id,title_id,rom_id,mapped_at,pull_initialized)"
+                    f" SELECT CASE WHEN r.username=? THEN ?"
+                    f"             ELSE (SELECT id FROM auth_users WHERE username=r.username) END,"
+                    f"  r.title_id, r.rom_id, r.mapped_at, {pi_col}"
+                    " FROM romm_title_map r"
+                    " WHERE r.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=r.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
+                )
+                conn.execute("DROP TABLE romm_title_map")
+                conn.execute("ALTER TABLE romm_title_map_new RENAME TO romm_title_map")
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uniq_romm_title_map_rom"
+                    " ON romm_title_map(user_id, rom_id)"
+                )
+            # romm_game_cache: rename username → user_id column
+            rgc_cols = {r[1] for r in conn.execute("PRAGMA table_info(romm_game_cache)").fetchall()}
+            if "username" in rgc_cols:
+                conn.execute("""
+                    CREATE TABLE romm_game_cache_new (
+                        user_id    TEXT NOT NULL,
+                        rom_id     INTEGER NOT NULL,
+                        name       TEXT,
+                        icon_url   TEXT,
+                        fetched_at TEXT NOT NULL,
+                        PRIMARY KEY (user_id, rom_id)
+                    )
+                """)
+                conn.execute(
+                    "INSERT INTO romm_game_cache_new (user_id,rom_id,name,icon_url,fetched_at)"
+                    " SELECT CASE WHEN r.username=? THEN ?"
+                    "             ELSE (SELECT id FROM auth_users WHERE username=r.username) END,"
+                    "  r.rom_id, r.name, r.icon_url, r.fetched_at"
+                    " FROM romm_game_cache r"
+                    " WHERE r.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=r.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
+                )
+                conn.execute("DROP TABLE romm_game_cache")
+                conn.execute("ALTER TABLE romm_game_cache_new RENAME TO romm_game_cache")
+            # romm_save_sync: rename username → user_id column
+            rss_cols = {r[1] for r in conn.execute("PRAGMA table_info(romm_save_sync)").fetchall()}
+            if "username" in rss_cols:
+                conn.execute("""
+                    CREATE TABLE romm_save_sync_new (
+                        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id        TEXT NOT NULL,
+                        rom_id         INTEGER NOT NULL,
+                        romm_save_id   INTEGER NOT NULL,
+                        direction      TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
+                        transaction_id TEXT,
+                        synced_at      TEXT NOT NULL,
+                        UNIQUE(user_id, rom_id, romm_save_id, direction)
+                    )
+                """)
+                conn.execute(
+                    "INSERT INTO romm_save_sync_new (user_id,rom_id,romm_save_id,direction,transaction_id,synced_at)"
+                    " SELECT CASE WHEN r.username=? THEN ?"
+                    "             ELSE (SELECT id FROM auth_users WHERE username=r.username) END,"
+                    "  r.rom_id, r.romm_save_id, r.direction, r.transaction_id, r.synced_at"
+                    " FROM romm_save_sync r"
+                    " WHERE r.username=?"
+                    "    OR EXISTS (SELECT 1 FROM auth_users WHERE username=r.username)",
+                    (old_admin_name, admin_user_id, old_admin_name),
+                )
+                conn.execute("DROP TABLE romm_save_sync")
+                conn.execute("ALTER TABLE romm_save_sync_new RENAME TO romm_save_sync")
+            # device_share_codes.granted_by / device_access.granted_by — these columns
+            # store who created/approved the share.  COALESCE fallback is intentional:
+            # granted_by is display-only metadata; no access-control path reads it.
+            for _tbl in ("device_share_codes", "device_access"):
+                if _tbl in existing:
+                    conn.execute(
+                        f"UPDATE {_tbl} SET granted_by ="  # noqa: S608
+                        " CASE WHEN granted_by=? THEN ?"
+                        "  ELSE COALESCE((SELECT id FROM auth_users WHERE username=granted_by), granted_by)"
+                        " END",
+                        (old_admin_name, admin_user_id),
+                    )
+            conn.execute("RELEASE SAVEPOINT uuid_migration")
+            log.info("UUID identity migration: %d user(s) migrated", len(user_uuids))
+        except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT uuid_migration")
+            conn.execute("RELEASE SAVEPOINT uuid_migration")
+            raise
+
+    # Admin ownership backfill — idempotent, runs every startup.
+    # Admin is not in auth_users so the UUID migration JOIN skips admin rows.
+    # This step fixes any ownership column still holding the admin username string.
+    # Safe no-op once all rows are already UUIDs.
+    if sc_tables:
+        _auid_row = conn.execute(
+            "SELECT value FROM server_config WHERE key='admin_user_id'"
+        ).fetchone()
+        _aname_row = conn.execute(
+            "SELECT value FROM server_config WHERE key='admin_username'"
+        ).fetchone()
+        if _auid_row and _aname_row:
+            _auid = _auid_row["value"]
+            _aname = _aname_row["value"]
+            # Fast-path: once the admin username string is absent from `devices`
+            # (cheapest proxy), all other tables are already converted too.
+            # Avoids 14 PRAGMA + 14 full-table scans on every restart post-migration.
+            _needs_backfill = "devices" not in existing or bool(
+                conn.execute(
+                    "SELECT 1 FROM devices WHERE owner_user_id=? LIMIT 1", (_aname,)
+                ).fetchone()
+            )
+            if _needs_backfill:
+                for _tbl, _col in [
+                    ("devices", "owner_user_id"),
+                    ("sync_transactions", "owner_user_id"),
+                    ("events", "owner_user_id"),
+                    ("device_auth", "user_id"),
+                    ("device_access", "user_id"),
+                    ("device_share_codes", "granted_by"),
+                    ("device_access", "granted_by"),
+                    ("device_play_events", "owner_user_id"),
+                    ("device_profile_map", "user_id"),
+                    ("user_config", "user_id"),
+                    ("romm_title_map", "user_id"),
+                    ("romm_game_cache", "user_id"),
+                    ("romm_save_sync", "user_id"),
+                    ("auth_sessions", "user_id"),
+                ]:
+                    if _tbl in existing:
+                        _tcols = {
+                            r[1]
+                            for r in conn.execute(
+                                f"PRAGMA table_info({_tbl})"  # noqa: S608
+                            ).fetchall()
+                        }
+                        if _col in _tcols:
+                            conn.execute(
+                                f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
+                                (_auid, _aname),
+                            )
+
+    # Idempotent: backfill granted_by username→UUID for instances that already ran the migration.
+    # The migration SAVEPOINT runs once (guarded by "id" not in au_cols); this catches rows
+    # written pre-upgrade or on instances that upgraded before this fix shipped.
+    for _tbl in ("device_share_codes", "device_access"):
+        if _tbl in existing:
+            _gb_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({_tbl})").fetchall()}  # noqa: S608
+            if "granted_by" in _gb_cols:
+                conn.execute(
+                    f"UPDATE {_tbl} SET granted_by = ("  # noqa: S608
+                    f"  SELECT id FROM auth_users WHERE username = {_tbl}.granted_by"
+                    f") WHERE EXISTS ("
+                    f"  SELECT 1 FROM auth_users WHERE username = {_tbl}.granted_by"
+                    f")"
+                )
+
+    # Idempotent — must exist for both fresh installs and post-migration upgrades.
+    # Not in SCHEMA because it would fail on legacy DBs before the migration adds auth_users.id.
+    au_cols_now = {r[1] for r in conn.execute("PRAGMA table_info(auth_users)").fetchall()}
+    if "id" in au_cols_now:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_id ON auth_users(id)")
+
+    # Idempotent: pin romm_source_id and canonicalise stale romm:username device IDs.
+    # RomM shipped in v1.3.0 using romm:{username} as the virtual device ID.
+    # UUID migration changed the fallback to romm:{uuid}. On upgrade, old
+    # romm:username entries in sync_transactions / device_title_head have no
+    # display_name and show as truncated device_id strings in the UI.
+    # For each user with a registered canonical romm device: pin romm_source_id
+    # (prevents future drift), then merge stale romm:* references to canonical.
+    if "devices" in existing and "sync_transactions" in existing:
+        _txn_cols = {r[1] for r in conn.execute("PRAGMA table_info(sync_transactions)").fetchall()}
+        _dth_cols = {r[1] for r in conn.execute("PRAGMA table_info(device_title_head)").fetchall()}
+        _uc_cols = {r[1] for r in conn.execute("PRAGMA table_info(user_config)").fetchall()}
+        _canonical_romm = conn.execute(
+            "SELECT device_id, owner_user_id FROM devices"
+            " WHERE device_id LIKE 'romm:%' AND client_type='romm'"
+            "   AND owner_user_id IS NOT NULL AND deleted_at IS NULL"
+            " ORDER BY created_at ASC"
+        ).fetchall()
+        for _crow in _canonical_romm:
+            _cid = _crow["device_id"]
+            _ouid = _crow["owner_user_id"]
+            if "user_config" in existing and "user_id" in _uc_cols:
+                conn.execute(
+                    "INSERT OR IGNORE INTO user_config (user_id, key, value) VALUES (?,?,?)",
+                    (_ouid, "romm_source_id", _cid),
+                )
+            if "source_device_id" in _txn_cols:
+                conn.execute(
+                    "UPDATE sync_transactions SET source_device_id=?"
+                    " WHERE source_device_id LIKE 'romm:%' AND source_device_id!=?"
+                    "   AND owner_user_id=?",
+                    (_cid, _cid, _ouid),
+                )
+            if "target_device_id" in _txn_cols:
+                conn.execute(
+                    "UPDATE sync_transactions SET target_device_id=?"
+                    " WHERE target_device_id LIKE 'romm:%' AND target_device_id!=?"
+                    "   AND owner_user_id=?",
+                    (_cid, _cid, _ouid),
+                )
+            if "device_title_head" in existing and "device_id" in _dth_cols:
+                conn.execute(
+                    "INSERT INTO device_title_head (title_id, device_id, last_seq, updated_at)"
+                    " SELECT title_id, ?, last_seq, updated_at"
+                    " FROM device_title_head"
+                    " WHERE device_id LIKE 'romm:%' AND device_id!=?"
+                    "   AND title_id IN ("
+                    "     SELECT title_id FROM sync_transactions WHERE owner_user_id=?"
+                    "   )"
+                    " ON CONFLICT (title_id, device_id) DO UPDATE"
+                    "   SET last_seq = MAX(last_seq, excluded.last_seq),"
+                    "       updated_at = MAX(updated_at, excluded.updated_at)",
+                    (_cid, _cid, _ouid),
+                )
+                conn.execute(
+                    "DELETE FROM device_title_head"
+                    " WHERE device_id LIKE 'romm:%' AND device_id!=?"
+                    "   AND device_id NOT IN ("
+                    "     SELECT device_id FROM devices WHERE client_type='romm' AND deleted_at IS NULL"
+                    "   )"
+                    "   AND title_id IN ("
+                    "     SELECT title_id FROM sync_transactions WHERE owner_user_id=?"
+                    "   )",
+                    (_cid, _ouid),
+                )
 
 
 class LockedConnection:
@@ -1577,27 +1926,30 @@ def set_config(conn, key: str, value: str) -> None:
     )
 
 
-def get_user_config(conn, username: str, key: str) -> str | None:
+def get_user_config(conn, user_id: str, key: str) -> str | None:
     row = conn.execute(
-        "SELECT value FROM user_config WHERE username=? AND key=?", (username, key)
+        "SELECT value FROM user_config WHERE user_id=? AND key=?", (user_id, key)
     ).fetchone()
     return row["value"] if row else None
 
 
-def set_user_config(conn, username: str, key: str, value: str) -> None:
+def set_user_config(conn, user_id: str, key: str, value: str) -> None:
     conn.execute(
-        "INSERT INTO user_config (username,key,value) VALUES (?,?,?)"
-        " ON CONFLICT(username,key) DO UPDATE SET value=excluded.value",
-        (username, key, value),
+        "INSERT INTO user_config (user_id,key,value) VALUES (?,?,?)"
+        " ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value",
+        (user_id, key, value),
     )
 
 
-def get_romm_users(conn) -> list[str]:
-    """Usernames that have RomM explicitly enabled (romm_enabled = '1' in user_config)."""
+def get_romm_users(conn) -> list[dict]:
+    """Users with RomM enabled. Returns [{user_id, username}]; username may be None for admin."""
     rows = conn.execute(
-        "SELECT username FROM user_config WHERE key='romm_enabled' AND value='1'"
+        "SELECT uc.user_id, a.username"
+        " FROM user_config uc"
+        " LEFT JOIN auth_users a ON a.id = uc.user_id"
+        " WHERE uc.key='romm_enabled' AND uc.value='1'"
     ).fetchall()
-    return [r[0] for r in rows]
+    return [{"user_id": r["user_id"], "username": r["username"] or r["user_id"]} for r in rows]
 
 
 # ── Events ────────────────────────────────────────────────────────────────────
@@ -1626,88 +1978,88 @@ def log_event(
 # ── RomM title mapping ─────────────────────────────────────────────────────────
 
 
-def get_romm_rom_id(conn, username: str, title_id: str) -> int | None:
+def get_romm_rom_id(conn, user_id: str, title_id: str) -> int | None:
     row = conn.execute(
-        "SELECT rom_id FROM romm_title_map WHERE username=? AND title_id=?",
-        (username, title_id.upper()),
+        "SELECT rom_id FROM romm_title_map WHERE user_id=? AND title_id=?",
+        (user_id, title_id.upper()),
     ).fetchone()
     return row["rom_id"] if row else None
 
 
-def upsert_romm_title_map(conn, username: str, title_id: str, rom_id: int) -> None:
+def upsert_romm_title_map(conn, user_id: str, title_id: str, rom_id: int) -> None:
     conn.execute(
-        "INSERT INTO romm_title_map(username,title_id,rom_id,mapped_at) VALUES (?,?,?,?) "
-        "ON CONFLICT(username,title_id) DO UPDATE SET rom_id=excluded.rom_id, mapped_at=excluded.mapped_at",
-        (username, title_id.upper(), rom_id, _now()),
+        "INSERT INTO romm_title_map(user_id,title_id,rom_id,mapped_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(user_id,title_id) DO UPDATE SET rom_id=excluded.rom_id, mapped_at=excluded.mapped_at",
+        (user_id, title_id.upper(), rom_id, _now()),
     )
 
 
-def delete_romm_title_map(conn, username: str, title_id: str) -> None:
+def delete_romm_title_map(conn, user_id: str, title_id: str) -> None:
     conn.execute(
-        "DELETE FROM romm_title_map WHERE username=? AND title_id=?",
-        (username, title_id.upper()),
+        "DELETE FROM romm_title_map WHERE user_id=? AND title_id=?",
+        (user_id, title_id.upper()),
     )
 
 
-def delete_romm_title_map_by_rom_id(conn, username: str, rom_id: int) -> None:
+def delete_romm_title_map_by_rom_id(conn, user_id: str, rom_id: int) -> None:
     conn.execute(
-        "DELETE FROM romm_title_map WHERE username=? AND rom_id=?",
-        (username, rom_id),
+        "DELETE FROM romm_title_map WHERE user_id=? AND rom_id=?",
+        (user_id, rom_id),
     )
 
 
-def get_romm_title_map(conn, username: str) -> list:
+def get_romm_title_map(conn, user_id: str) -> list:
     return [
         dict(r)
         for r in conn.execute(
             "SELECT title_id, rom_id, mapped_at, pull_initialized FROM romm_title_map"
-            " WHERE username=? ORDER BY mapped_at DESC",
-            (username,),
+            " WHERE user_id=? ORDER BY mapped_at DESC",
+            (user_id,),
         ).fetchall()
     ]
 
 
-def mark_romm_pull_initialized(conn, username: str, rom_id: int) -> None:
+def mark_romm_pull_initialized(conn, user_id: str, rom_id: int) -> None:
     conn.execute(
-        "UPDATE romm_title_map SET pull_initialized=1 WHERE username=? AND rom_id=?",
-        (username, rom_id),
+        "UPDATE romm_title_map SET pull_initialized=1 WHERE user_id=? AND rom_id=?",
+        (user_id, rom_id),
     )
 
 
 # ── RomM game cache ────────────────────────────────────────────────────────────
 
 
-def get_romm_game_cache(conn, username: str, rom_id: int) -> dict | None:
+def get_romm_game_cache(conn, user_id: str, rom_id: int) -> dict | None:
     row = conn.execute(
         "SELECT rom_id, name, icon_url, fetched_at FROM romm_game_cache"
-        " WHERE username=? AND rom_id=?",
-        (username, rom_id),
+        " WHERE user_id=? AND rom_id=?",
+        (user_id, rom_id),
     ).fetchone()
     return dict(row) if row else None
 
 
-def get_all_romm_game_cache(conn, username: str) -> dict:
+def get_all_romm_game_cache(conn, user_id: str) -> dict:
     return {
         r["rom_id"]: {"name": r["name"], "icon_url": r["icon_url"], "fetched_at": r["fetched_at"]}
         for r in conn.execute(
-            "SELECT rom_id, name, icon_url, fetched_at FROM romm_game_cache WHERE username=?",
-            (username,),
+            "SELECT rom_id, name, icon_url, fetched_at FROM romm_game_cache WHERE user_id=?",
+            (user_id,),
         ).fetchall()
     }
 
 
 def upsert_romm_game_cache(
-    conn, username: str, rom_id: int, name: str | None, icon_url: str | None
+    conn, user_id: str, rom_id: int, name: str | None, icon_url: str | None
 ) -> None:
     if name and len(name) > 512:
         name = name[:512]
     if icon_url and len(icon_url) > 2048:
         icon_url = None
     conn.execute(
-        "INSERT INTO romm_game_cache(username,rom_id,name,icon_url,fetched_at) VALUES (?,?,?,?,?) "
-        "ON CONFLICT(username,rom_id) DO UPDATE SET name=excluded.name, icon_url=excluded.icon_url, "
+        "INSERT INTO romm_game_cache(user_id,rom_id,name,icon_url,fetched_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(user_id,rom_id) DO UPDATE SET name=excluded.name, icon_url=excluded.icon_url, "
         "fetched_at=excluded.fetched_at",
-        (username, rom_id, name, icon_url, _now()),
+        (user_id, rom_id, name, icon_url, _now()),
     )
 
 
@@ -1740,18 +2092,18 @@ def delete_label(conn, entity_type: str, entity_id: str) -> None:
 # ── RomM save sync tracking ────────────────────────────────────────────────────
 
 
-def has_romm_sync(conn, username: str, rom_id: int, romm_save_id: int, direction: str) -> bool:
+def has_romm_sync(conn, user_id: str, rom_id: int, romm_save_id: int, direction: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM romm_save_sync"
-        " WHERE username=? AND rom_id=? AND romm_save_id=? AND direction=?",
-        (username, rom_id, romm_save_id, direction),
+        " WHERE user_id=? AND rom_id=? AND romm_save_id=? AND direction=?",
+        (user_id, rom_id, romm_save_id, direction),
     ).fetchone()
     return row is not None
 
 
 def record_romm_sync(
     conn,
-    username: str,
+    user_id: str,
     rom_id: int,
     romm_save_id: int,
     direction: str,
@@ -1759,13 +2111,13 @@ def record_romm_sync(
 ) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO romm_save_sync"
-        "(username,rom_id,romm_save_id,direction,transaction_id,synced_at) "
+        "(user_id,rom_id,romm_save_id,direction,transaction_id,synced_at) "
         "VALUES(?,?,?,?,?,?)",
-        (username, rom_id, romm_save_id, direction, transaction_id, _now()),
+        (user_id, rom_id, romm_save_id, direction, transaction_id, _now()),
     )
 
 
-def get_romm_undelivered_head_txns(conn, username: str, romm_device_id: str) -> list:
+def get_romm_undelivered_head_txns(conn, user_id: str, romm_device_id: str) -> list:
     """Return inbound HEAD transactions where all delivery attempts to romm_device_id failed.
 
     Retry-only: only fires when at least one FAILED outbound exists for this title+device.
@@ -1773,7 +2125,7 @@ def get_romm_undelivered_head_txns(conn, username: str, romm_device_id: str) -> 
     return conn.execute(
         "SELECT st.transaction_id, st.title_id, st.snapshot_sequence"
         " FROM sync_transactions st"
-        " JOIN romm_title_map rtm ON rtm.title_id = st.title_id AND rtm.username = ?"
+        " JOIN romm_title_map rtm ON rtm.title_id = st.title_id AND rtm.user_id = ?"
         " WHERE st.direction='inbound' AND st.state='READY_FOR_RESTORE' AND st.sha256 IS NOT NULL"
         "   AND COALESCE(st.owner_user_id,'') = ?"
         "   AND st.snapshot_sequence = ("
@@ -1797,7 +2149,7 @@ def get_romm_undelivered_head_txns(conn, username: str, romm_device_id: str) -> 
         "       AND failed.direction = 'outbound'"
         "       AND failed.state = 'FAILED'"
         "   )",
-        (username, username, romm_device_id, romm_device_id),
+        (user_id, user_id, romm_device_id, romm_device_id),
     ).fetchall()
 
 
@@ -1916,31 +2268,36 @@ def create_processing_transaction(
 
 def create_auth_user(conn, username: str, password_hash: str) -> None:
     conn.execute(
-        "INSERT INTO auth_users (username, password_hash, created_at) VALUES (?, ?, ?)",
-        (username, password_hash, _now()),
+        "INSERT INTO auth_users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+        (str(uuid.uuid4()), username, password_hash, _now()),
     )
 
 
 def get_auth_user(conn, username: str) -> dict | None:
     row = conn.execute(
-        "SELECT username, password_hash, session_token, created_at FROM auth_users WHERE username=?",
+        "SELECT id, username, password_hash, session_token, created_at"
+        " FROM auth_users WHERE username=?",
         (username,),
     ).fetchone()
     return dict(row) if row else None
 
 
 def get_auth_user_by_token(conn, token: str) -> dict | None:
+    """Return {id, username} for the session token. username is None for admin sessions."""
     row = conn.execute(
-        "SELECT username FROM auth_sessions WHERE token=?",
+        "SELECT s.user_id AS id, a.username"
+        " FROM auth_sessions s"
+        " LEFT JOIN auth_users a ON a.id = s.user_id"
+        " WHERE s.token=?",
         (token,),
     ).fetchone()
     return dict(row) if row else None
 
 
-def insert_auth_session(conn, username: str, token: str) -> None:
+def insert_auth_session(conn, user_id: str, token: str) -> None:
     conn.execute(
-        "INSERT INTO auth_sessions (session_id, username, token, created_at) VALUES (?, ?, ?, ?)",
-        (str(uuid.uuid4()), username, token, _now()),
+        "INSERT INTO auth_sessions (session_id, user_id, token, created_at) VALUES (?, ?, ?, ?)",
+        (str(uuid.uuid4()), user_id, token, _now()),
     )
 
 
@@ -1948,35 +2305,24 @@ def delete_auth_session_by_token(conn, token: str) -> None:
     conn.execute("DELETE FROM auth_sessions WHERE token=?", (token,))
 
 
-def delete_auth_sessions_for_user(conn, username: str) -> None:
-    conn.execute("DELETE FROM auth_sessions WHERE username=?", (username,))
-
-
-def rename_auth_sessions_user(conn, old_username: str, new_username: str) -> None:
-    conn.execute(
-        "UPDATE auth_sessions SET username=? WHERE username=?",
-        (new_username, old_username),
-    )
+def delete_auth_sessions_for_user(conn, user_id: str) -> None:
+    conn.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))
 
 
 def list_auth_users(conn) -> list[dict]:
     return [
         dict(r)
         for r in conn.execute(
-            "SELECT username, created_at FROM auth_users ORDER BY created_at ASC"
+            "SELECT id, username, created_at FROM auth_users ORDER BY created_at ASC"
         ).fetchall()
     ]
 
 
-def set_auth_user_session(conn, username: str, token: str | None) -> None:
-    conn.execute(
-        "UPDATE auth_users SET session_token=? WHERE username=?",
-        (token, username),
-    )
-
-
 def delete_auth_user(conn, username: str) -> bool:
-    conn.execute("DELETE FROM auth_sessions WHERE username=?", (username,))
+    row = conn.execute("SELECT id FROM auth_users WHERE username=?", (username,)).fetchone()
+    if not row:
+        return False
+    conn.execute("DELETE FROM auth_sessions WHERE user_id=?", (row["id"],))
     n = conn.execute("DELETE FROM auth_users WHERE username=?", (username,)).rowcount
     return n > 0
 
@@ -1988,49 +2334,10 @@ def set_auth_user_password(conn, username: str, password_hash: str) -> None:
     )
 
 
-def rename_auth_user(conn, old_username: str, new_username: str) -> None:
-    """Rename a user across all ownership tables. Raises sqlite3.IntegrityError if
-    new_username already exists. Atomic: all tables update or none do."""
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        conn.execute(
-            "UPDATE auth_users SET username=? WHERE username=?", (new_username, old_username)
-        )
-        conn.execute(
-            "UPDATE auth_sessions SET username=? WHERE username=?", (new_username, old_username)
-        )
-        conn.execute(
-            "UPDATE user_config SET username=? WHERE username=?", (new_username, old_username)
-        )
-        conn.execute(
-            "UPDATE devices SET owner_user_id=? WHERE owner_user_id=?", (new_username, old_username)
-        )
-        conn.execute(
-            "UPDATE sync_transactions SET owner_user_id=? WHERE owner_user_id=?",
-            (new_username, old_username),
-        )
-        conn.execute(
-            "UPDATE events SET owner_user_id=? WHERE owner_user_id=?", (new_username, old_username)
-        )
-        conn.execute(
-            "UPDATE device_auth SET user_id=? WHERE user_id=?", (new_username, old_username)
-        )
-        conn.execute(
-            "UPDATE device_profile_map SET user_id=? WHERE user_id=?", (new_username, old_username)
-        )
-        conn.execute(
-            "UPDATE romm_title_map SET username=? WHERE username=?", (new_username, old_username)
-        )
-        conn.execute(
-            "UPDATE romm_game_cache SET username=? WHERE username=?", (new_username, old_username)
-        )
-        conn.execute(
-            "UPDATE romm_save_sync SET username=? WHERE username=?", (new_username, old_username)
-        )
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
+def rename_auth_user(conn, user_id: str, new_username: str) -> None:
+    """Rename display name only. UUID identity is stable — no cascade needed.
+    Raises sqlite3.IntegrityError if new_username already exists."""
+    conn.execute("UPDATE auth_users SET username=? WHERE id=?", (new_username, user_id))
 
 
 # ── Device auth ───────────────────────────────────────────────────────────────
@@ -2523,7 +2830,7 @@ def upsert_virtual_device(
     )
 
 
-def sync_romm_catalog_to_device(conn, username: str, romm_device_id: str) -> None:
+def sync_romm_catalog_to_device(conn, user_id: str, romm_device_id: str) -> None:
     """Rebuild device_installed_games for the RomM virtual device from romm_title_map.
 
     CATALOG SCOPE RULE: RomM's catalog = romm_title_map only. We never enumerate
@@ -2532,7 +2839,7 @@ def sync_romm_catalog_to_device(conn, username: str, romm_device_id: str) -> Non
     Caller must NOT hold an open write transaction; this function opens its own
     BEGIN IMMEDIATE to satisfy replace_device_catalog's atomicity requirement.
     """
-    rows = get_romm_title_map(conn, username)
+    rows = get_romm_title_map(conn, user_id)
     title_ids = [r["title_id"] for r in rows]
     conn.execute("BEGIN IMMEDIATE")
     try:

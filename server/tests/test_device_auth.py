@@ -3,7 +3,7 @@ Device pairing and token management tests.
 POST/GET/DELETE /api/v1/ui/devices/{device_id}/token
 """
 
-from helpers import DEVICE_A, DEVICE_B, do_upload, login_admin, auth_header, TITLE_1
+from helpers import DEVICE_A, DEVICE_B, do_upload, get_uid, login_admin, auth_header, TITLE_1
 
 SAVE = b"save-data" * 100
 DEVICE_C = "CCDDEE112233"
@@ -65,14 +65,14 @@ def test_device_token_status_unpaired(client):
     assert r.json()["has_token"] is False
 
 
-def test_device_token_status_paired(client):
+def test_device_token_status_paired(client, conn):
     _seed_device(client)
     token = _login(client)
     client.post(f"/api/v1/ui/devices/{DEVICE_A}/token", headers=_hdr(token))
     r = client.get(f"/api/v1/ui/devices/{DEVICE_A}/token", headers=_hdr(token))
     data = r.json()
     assert data["has_token"] is True
-    assert data["user_id"] == "admin"
+    assert data["user_id"] == get_uid(conn, "admin")
 
 
 def test_device_token_status_requires_auth(client):
@@ -109,20 +109,21 @@ def test_revoke_requires_auth(client):
 # ── Admin pairing to another user ─────────────────────────────────────────────
 
 
-def test_admin_can_pair_device_to_other_user(client):
+def test_admin_can_pair_device_to_other_user(client, conn):
     _seed_device(client)
     token = _login(client)
     # Create a secondary user
     client.post("/api/v1/ui/users", json={"username": "wife", "password": "pw"}, headers=_hdr(token))
+    wife_uid = get_uid(conn, "wife")
     # Admin pairs device to wife
     r = client.post(
         f"/api/v1/ui/devices/{DEVICE_A}/token",
-        json={"user_id": "wife"},
+        json={"user_id": wife_uid},
         headers=_hdr(token),
     )
     assert r.status_code == 200
     s = client.get(f"/api/v1/ui/devices/{DEVICE_A}/token", headers=_hdr(token)).json()
-    assert s["user_id"] == "wife"
+    assert s["user_id"] == wife_uid
 
 
 def test_admin_pair_to_unknown_user_400(client):
@@ -139,7 +140,7 @@ def test_admin_pair_to_unknown_user_400(client):
 # ── Non-admin pairing ─────────────────────────────────────────────────────────
 
 
-def test_non_admin_pairs_to_self(client):
+def test_non_admin_pairs_to_self(client, conn):
     _seed_device(client)
     admin_token = _login(client)
     client.post("/api/v1/ui/users", json={"username": "player", "password": "pw"}, headers=_hdr(admin_token))
@@ -149,7 +150,7 @@ def test_non_admin_pairs_to_self(client):
     assert r.status_code == 200
     # Status shows player's user_id (admin can see it)
     s = client.get(f"/api/v1/ui/devices/{DEVICE_A}/token", headers=_hdr(admin_token)).json()
-    assert s["user_id"] == "player"
+    assert s["user_id"] == get_uid(conn, "player")
 
 
 def test_non_admin_cannot_revoke_other_users_device(client):
@@ -279,7 +280,7 @@ def test_sync_with_valid_device_token_stamps_owner(client, conn):
     row = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()
-    assert row["owner_user_id"] == "admin"
+    assert row["owner_user_id"] == get_uid(conn, "admin")
 
 
 def test_sync_without_token_rejected(client):

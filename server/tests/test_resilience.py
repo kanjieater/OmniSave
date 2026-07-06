@@ -786,7 +786,7 @@ def _seed_romm_save_sync(conn, username, title_id, seq):
     db.upsert_romm_title_map(conn, username, title_id, rom_id)
     conn.execute(
         "INSERT OR IGNORE INTO romm_save_sync"
-        " (username,rom_id,romm_save_id,direction,transaction_id,synced_at)"
+        " (user_id,rom_id,romm_save_id,direction,transaction_id,synced_at)"
         " VALUES (?,?,?,'outbound',?,datetime('now'))",
         (username, rom_id, _romm_save_id_counter, txn_id),
     )

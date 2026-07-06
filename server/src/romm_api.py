@@ -41,21 +41,21 @@ def init(conn, staging_dir=None, archive_dir=None) -> None:
     _archive_dir = archive_dir
 
 
-def _load_user_romm_creds(username: str) -> JSONResponse | None:
+def _load_user_romm_creds(user_id: str) -> JSONResponse | None:
     """Set thread-local RomM creds from user_config. Returns 503 if not configured."""
-    host = db.get_user_config(_conn, username, "romm_host") or romm_meta.ROMM_HOST
-    key = db.get_user_config(_conn, username, "romm_api_key") or romm_meta.ROMM_API_KEY
+    host = db.get_user_config(_conn, user_id, "romm_host") or romm_meta.ROMM_HOST
+    key = db.get_user_config(_conn, user_id, "romm_api_key") or romm_meta.ROMM_API_KEY
     if not host or not key:
         return JSONResponse({"error": "RomM not configured for this user"}, status_code=503)
     romm_meta.set_request_creds(host, key)
     return None
 
 
-def _sync_romm_catalog(username: str) -> None:
+def _sync_romm_catalog(user_id: str) -> None:
     """Rebuild device_installed_games for the user's RomM virtual device."""
-    romm_device_id = romm_vsc.get_user_romm_device_id(_conn, username)
+    romm_device_id = romm_vsc.get_user_romm_device_id(_conn, user_id)
     try:
-        db.sync_romm_catalog_to_device(_conn, username, romm_device_id)
+        db.sync_romm_catalog_to_device(_conn, user_id, romm_device_id)
     except Exception as exc:
         log.warning("romm_api: catalog sync failed: %s", exc)
 
@@ -69,16 +69,16 @@ def _err(msg: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": msg}, status_code=status)
 
 
-def _resolve(title_id: str, username: str) -> dict:
+def _resolve(title_id: str, user_id: str) -> dict:
     title_id = title_id.upper()
-    rom_id = db.get_romm_rom_id(_conn, username, title_id)
-    cached = db.get_romm_game_cache(_conn, username, rom_id) if rom_id else None
+    rom_id = db.get_romm_rom_id(_conn, user_id, title_id)
+    cached = db.get_romm_game_cache(_conn, user_id, rom_id) if rom_id else None
 
     romm_name = cached["name"] if cached else None
     romm_icon = cached["icon_url"] if cached else None
 
-    display = game_meta.game_display_name(_conn, title_id, username)
-    icon = game_meta.game_icon_url(_conn, title_id, username)
+    display = game_meta.game_display_name(_conn, title_id, user_id)
+    icon = game_meta.game_icon_url(_conn, title_id, user_id)
 
     custom = db.get_label(_conn, "game", title_id)
     if custom:
@@ -112,8 +112,8 @@ def search_roms(request: Request, q: str = "", limit: int = 10):
         return err
     if not q:
         return _err("q is required")
-    username = ui_api._current_username(request)
-    cred_err = _load_user_romm_creds(username)
+    user_id = ui_api._current_user_id(request)
+    cred_err = _load_user_romm_creds(user_id)
     if cred_err:
         return cred_err
     results = romm_meta.search_roms(q, limit=min(limit, 50))
@@ -128,9 +128,9 @@ def list_mappings(request: Request):
     err = ui_api._auth_err(request)
     if err:
         return err
-    username = ui_api._current_username(request)
-    mappings = db.get_romm_title_map(_conn, username)
-    cache = db.get_all_romm_game_cache(_conn, username)
+    user_id = ui_api._current_user_id(request)
+    mappings = db.get_romm_title_map(_conn, user_id)
+    cache = db.get_all_romm_game_cache(_conn, user_id)
     result = []
     for m in mappings:
         cached = cache.get(m["rom_id"], {})
@@ -157,8 +157,8 @@ def get_title(title_id: str, request: Request):
     tid = _valid_title(title_id)
     if not tid:
         return _err("title_id must be 16 hex characters")
-    username = ui_api._current_username(request)
-    return _resolve(tid, username)
+    user_id = ui_api._current_user_id(request)
+    return _resolve(tid, user_id)
 
 
 # ── Mapping management ────────────────────────────────────────────────────────
@@ -179,18 +179,18 @@ def put_mapping(title_id: str, body: MappingBody, request: Request):
     if body.rom_id <= 0:
         return _err("rom_id must be a positive integer")
 
-    username = ui_api._current_username(request)
+    user_id = ui_api._current_user_id(request)
     # Atomically remove any existing mapping for this rom_id before upserting.
-    # romm_title_map has UNIQUE(username,rom_id), so without this delete,
+    # romm_title_map has UNIQUE(user_id,rom_id), so without this delete,
     # re-mapping rom_id=X to a different title_id raises IntegrityError and silently drops.
-    db.delete_romm_title_map_by_rom_id(_conn, username, body.rom_id)
-    db.upsert_romm_title_map(_conn, username, tid, body.rom_id)
-    _sync_romm_catalog(username)
-    romm_meta.fetch_and_cache(body.rom_id, _conn, username)
+    db.delete_romm_title_map_by_rom_id(_conn, user_id, body.rom_id)
+    db.upsert_romm_title_map(_conn, user_id, tid, body.rom_id)
+    _sync_romm_catalog(user_id)
+    romm_meta.fetch_and_cache(body.rom_id, _conn, user_id)
 
-    cached = db.get_romm_game_cache(_conn, username, body.rom_id)
+    cached = db.get_romm_game_cache(_conn, user_id, body.rom_id)
     name = cached["name"] if cached else None
-    log.info("romm map title=%s → rom_id=%d name=%r user=%s", tid, body.rom_id, name, username)
+    log.info("romm map title=%s → rom_id=%d name=%r user=%s", tid, body.rom_id, name, user_id)
     romm_vsc.push_head_async(tid)
     return {"ok": True, "name": name, "cache_pending": cached is None}
 
@@ -203,9 +203,9 @@ def delete_mapping(title_id: str, request: Request):
     tid = _valid_title(title_id)
     if not tid:
         return _err("title_id must be 16 hex characters")
-    username = ui_api._current_username(request)
-    db.delete_romm_title_map(_conn, username, tid)
-    _sync_romm_catalog(username)
+    user_id = ui_api._current_user_id(request)
+    db.delete_romm_title_map(_conn, user_id, tid)
+    _sync_romm_catalog(user_id)
     return {"ok": True}
 
 
@@ -217,12 +217,12 @@ def cache_warm(request: Request):
     err = ui_api._auth_err(request)
     if err:
         return err
-    username = ui_api._current_username(request)
-    host = db.get_user_config(_conn, username, "romm_host") or romm_meta.ROMM_HOST
-    key = db.get_user_config(_conn, username, "romm_api_key") or romm_meta.ROMM_API_KEY
+    user_id = ui_api._current_user_id(request)
+    host = db.get_user_config(_conn, user_id, "romm_host") or romm_meta.ROMM_HOST
+    key = db.get_user_config(_conn, user_id, "romm_api_key") or romm_meta.ROMM_API_KEY
     if host and key:
         romm_meta.set_request_creds(host, key)
-    romm_meta.warm_cache(_conn, username)
+    romm_meta.warm_cache(_conn, user_id)
     return JSONResponse({"ok": True}, status_code=202)
 
 
@@ -270,5 +270,5 @@ def trigger_scan(request: Request):
 
     romm_index.request_index_refresh()
     romm_index.maybe_run_index()
-    log.info("romm_api: manual scan requested by %s", ui_api._current_username(request))
+    log.info("romm_api: manual scan requested by %s", ui_api._current_user_id(request))
     return JSONResponse({"ok": True}, status_code=202)

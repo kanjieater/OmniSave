@@ -5,7 +5,7 @@ unauthenticated access, and batch-size cap.
 """
 
 import database as db
-from helpers import DEVICE_A, DEVICE_B, pair_device, post_activity_events
+from helpers import DEVICE_A, DEVICE_B, get_uid, pair_device, post_activity_events
 
 APP = "0100F2C0115B6000"
 _EVT = {
@@ -42,7 +42,7 @@ def test_owner_user_id_stamped(client, conn):
     row = conn.execute(
         "SELECT owner_user_id FROM device_play_events WHERE device_id=?", (DEVICE_A,)
     ).fetchone()
-    assert row["owner_user_id"] == "admin"
+    assert row["owner_user_id"] == get_uid(conn, "admin")
 
 
 def test_multiple_events_in_batch(client, conn):
@@ -289,7 +289,7 @@ def test_get_play_events_by_application_id(client, conn):
 def test_get_play_events_by_owner_user_id(client, conn):
     import database as db
     post_activity_events(client, DEVICE_A, [_EVT])
-    rows = db.get_play_events(conn, owner_user_id="admin")
+    rows = db.get_play_events(conn, owner_user_id=get_uid(conn, "admin"))
     assert len(rows) == 1
     rows_none = db.get_play_events(conn, owner_user_id="nobody")
     assert rows_none == []

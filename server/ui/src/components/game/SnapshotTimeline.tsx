@@ -310,14 +310,14 @@ function SnapshotArchiveTable({
       <table className="w-full text-base">
         <thead>
           <tr className="border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)]">
-            {['#', 'Device', 'Profile', 'Size', 'When'].map((h, i) => (
+            {['#', 'Device', 'Size', 'When'].map((h, i) => (
               <th
                 key={h}
                 scope="col"
                 className={cn(
                   'px-[var(--spacing-4)] py-[var(--spacing-2)] text-sm font-[var(--font-weight-medium)] text-[var(--color-text-muted)]',
                   i === 0 ? 'text-right w-14' : 'text-left',
-                  i === 3 ? 'text-right' : '',
+                  i === 2 ? 'text-right' : '',
                 )}
               >
                 {h}
@@ -353,9 +353,6 @@ function SnapshotArchiveTable({
                     <HardwareIcon clientType={deviceMap.get(snap.device_id)?.client_type ?? null} hardwareType={deviceMap.get(snap.device_id)?.hardware_type ?? null} size={11} />
                     {device}
                   </span>
-                </td>
-                <td className="px-[var(--spacing-4)] py-[var(--spacing-3)] text-[var(--color-text-muted)] whitespace-nowrap">
-                  {snap.owner_user_id ?? <span className="opacity-40">—</span>}
                 </td>
                 <td className="px-[var(--spacing-4)] py-[var(--spacing-3)] text-[var(--color-text-muted)] text-right whitespace-nowrap">
                   <div className="flex flex-col items-end gap-[0.1rem]">

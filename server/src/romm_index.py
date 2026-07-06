@@ -99,7 +99,7 @@ def _fetch_rom_detail(rom_id: int) -> dict | None:
         return None
 
 
-def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
+def _build_for_user(conn, user_id: str, host: str, api_key: str) -> None:
     """Index build for one user. Credentials are set explicitly — no shared state."""
     global _last_scan_error, _last_scan_ts
 
@@ -112,14 +112,14 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
             "  UNION"
             "  SELECT title_id FROM device_installed_games"
             ") WHERE title_id NOT IN"
-            " (SELECT title_id FROM romm_title_map WHERE username=?)",
-            (username,),
+            " (SELECT title_id FROM romm_title_map WHERE user_id=?)",
+            (user_id,),
         ).fetchone()[0]
-        log.info("romm_index: scanning RomM (unmapped=%d) user=%s", unmapped_count, username)
+        log.info("romm_index: scanning RomM (unmapped=%d) user=%s", unmapped_count, user_id)
         already_mapped_rom_ids: set[int] = {
             r["rom_id"]
             for r in conn.execute(
-                "SELECT rom_id FROM romm_title_map WHERE username=?", (username,)
+                "SELECT rom_id FROM romm_title_map WHERE user_id=?", (user_id,)
             ).fetchall()
         }
 
@@ -131,25 +131,25 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
             "romm_index: list fetch done roms=%d list_ms=%d user=%s",
             len(roms),
             list_ms,
-            username,
+            user_id,
         )
         rom_ids_set = {r["id"] for r in roms}
         stale_rom_ids = already_mapped_rom_ids - rom_ids_set
         if stale_rom_ids:
             for stale_id in stale_rom_ids:
                 title_row = conn.execute(
-                    "SELECT title_id FROM romm_title_map WHERE username=? AND rom_id=?",
-                    (username, stale_id),
+                    "SELECT title_id FROM romm_title_map WHERE user_id=? AND rom_id=?",
+                    (user_id, stale_id),
                 ).fetchone()
                 conn.execute(
-                    "DELETE FROM romm_title_map WHERE username=? AND rom_id=?",
-                    (username, stale_id),
+                    "DELETE FROM romm_title_map WHERE user_id=? AND rom_id=?",
+                    (user_id, stale_id),
                 )
                 log.info(
                     "romm_index: removed stale mapping rom_id=%d title_id=%s user=%s",
                     stale_id,
                     title_row["title_id"] if title_row else "?",
-                    username,
+                    user_id,
                 )
             conn.commit()
             already_mapped_rom_ids -= stale_rom_ids
@@ -176,14 +176,14 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                     or rom.get("path_cover_small")
                 )
                 icon_url = romm_meta._abs_url(raw_icon)
-                db.upsert_romm_title_map(conn, username, title_id, rom_id)
-                db.upsert_romm_game_cache(conn, username, rom_id, name, icon_url)
+                db.upsert_romm_title_map(conn, user_id, title_id, rom_id)
+                db.upsert_romm_game_cache(conn, user_id, rom_id, name, icon_url)
                 log.info(
                     "romm_index: file-matched title=%s → rom_id=%d name=%r user=%s",
                     title_id,
                     rom_id,
                     name,
-                    username,
+                    user_id,
                 )
                 already_mapped_rom_ids.add(rom_id)
                 mapped_count += 1
@@ -225,14 +225,14 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
                         or detail.get("path_cover_small")
                     )
                     icon_url = romm_meta._abs_url(raw_icon)
-                    db.upsert_romm_title_map(conn, username, title_id, rom_id)
-                    db.upsert_romm_game_cache(conn, username, rom_id, name, icon_url)
+                    db.upsert_romm_title_map(conn, user_id, title_id, rom_id)
+                    db.upsert_romm_game_cache(conn, user_id, rom_id, name, icon_url)
                     log.info(
                         "romm_index: file-matched title=%s → rom_id=%d name=%r user=%s",
                         title_id,
                         rom_id,
                         name,
-                        username,
+                        user_id,
                     )
                     already_mapped_rom_ids.add(rom_id)
                     mapped_count += 1
@@ -241,7 +241,7 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
         log.info(
             "romm_index: scan done user=%s roms=%d detail_calls=%d detail_ms=%d "
             "matched_file=%d mapped=%d elapsed_ms=%d",
-            username,
+            user_id,
             len(roms),
             detail_calls,
             detail_ms_total,
@@ -254,15 +254,15 @@ def _build_for_user(conn, username: str, host: str, api_key: str) -> None:
     except Exception as exc:
         _last_scan_error = str(exc)
         _last_scan_ts = time.time()
-        log.warning("romm_index: error user=%s: %s", username, exc)
+        log.warning("romm_index: error user=%s: %s", user_id, exc)
         if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403):
             log.warning(
-                "romm_index: auth error (HTTP %d) — not retrying user=%s", exc.code, username
+                "romm_index: auth error (HTTP %d) — not retrying user=%s", exc.code, user_id
             )
             try:
-                db.set_user_config(conn, username, "romm_connect_status", "auth_failed")
+                db.set_user_config(conn, user_id, "romm_connect_status", "auth_failed")
                 db.set_user_config(
-                    conn, username, "romm_connect_detail", f"HTTP {exc.code} — check RomM API key"
+                    conn, user_id, "romm_connect_detail", f"HTTP {exc.code} — check RomM API key"
                 )
                 conn.commit()
             except Exception:
@@ -284,17 +284,16 @@ def build_title_id_index() -> None:
         users = db.get_romm_users(conn)
     finally:
         conn.close()
-    for username in users:
+    for user in users:
+        uid = user["user_id"]
         conn = db.open_db(romm_meta._db_path)
         try:
-            host = db.get_user_config(conn, username, "romm_host") or ""
-            key = db.get_user_config(conn, username, "romm_api_key") or ""
-            romm_device_id = (
-                db.get_user_config(conn, username, "romm_source_id") or f"romm:{username}"
-            )
+            host = db.get_user_config(conn, uid, "romm_host") or ""
+            key = db.get_user_config(conn, uid, "romm_api_key") or ""
+            romm_device_id = db.get_user_config(conn, uid, "romm_source_id") or f"romm:{uid}"
             if host and key:
-                _build_for_user(conn, username, host, key)
-                db.sync_romm_catalog_to_device(conn, username, romm_device_id)
+                _build_for_user(conn, uid, host, key)
+                db.sync_romm_catalog_to_device(conn, uid, romm_device_id)
         finally:
             conn.close()
 

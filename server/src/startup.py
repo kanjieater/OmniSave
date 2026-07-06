@@ -351,16 +351,20 @@ def _repair_romm_push_head_device_title_head(conn) -> int:
     so multiple sync records produce a single authoritative entry. INSERT OR IGNORE skips
     titles already tracked by device_title_head.
 
-    Assumption: one RomM virtual device per user (romm_source_id or romm:{username}).
+    Assumption: one RomM virtual device per user (romm_source_id or romm:{user_id}).
     """
+    rss_cols = {r[1] for r in conn.execute("PRAGMA table_info(romm_save_sync)").fetchall()}
+    uc_cols = {r[1] for r in conn.execute("PRAGMA table_info(user_config)").fetchall()}
+    if "user_id" not in rss_cols or "user_id" not in uc_cols:
+        return 0
     cur = conn.execute("""
         INSERT INTO device_title_head (title_id, device_id, last_seq, updated_at)
         SELECT
             t.title_id,
             COALESCE(
                 (SELECT value FROM user_config
-                 WHERE username=rss.username AND key='romm_source_id'),
-                'romm:' || rss.username
+                 WHERE user_id=rss.user_id AND key='romm_source_id'),
+                'romm:' || rss.user_id
             ),
             MAX(t.snapshot_sequence),
             MAX(rss.synced_at)
@@ -368,7 +372,7 @@ def _repair_romm_push_head_device_title_head(conn) -> int:
         JOIN sync_transactions t ON t.transaction_id=rss.transaction_id
         WHERE rss.direction='outbound'
           AND t.snapshot_sequence IS NOT NULL
-        GROUP BY t.title_id, rss.username
+        GROUP BY t.title_id, rss.user_id
         ON CONFLICT (title_id, device_id) DO UPDATE
             SET last_seq = MAX(last_seq, excluded.last_seq),
                 updated_at = MAX(updated_at, excluded.updated_at)

@@ -10,7 +10,7 @@ import sqlite3
 import pytest
 
 import database as db
-from helpers import DEVICE_A, TITLE_1, auth_header, do_upload, login_admin, sync_hdrs
+from helpers import DEVICE_A, TITLE_1, auth_header, do_upload, get_uid, login_admin, sync_hdrs
 
 SAVE = b"save-data" * 100
 PROFILE_A = "AAAA000011112222"
@@ -116,11 +116,12 @@ def test_db_delete_profile_leaves_known_profile(conn):
 
 def test_ownership_claimed_profile_stamps_owner(client, conn, device_token):
     _create_user(client, "alice")
+    alice_uid = get_uid(conn, "alice")
     _seed(client, user_key=PROFILE_A)
     admin = login_admin(client)
     client.put(
         f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}",
-        json={"user_id": "alice"},
+        json={"user_id": alice_uid},
         headers=_hdr(admin),
     )
     r = client.post(
@@ -133,7 +134,7 @@ def test_ownership_claimed_profile_stamps_owner(client, conn, device_token):
     owner = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()["owner_user_id"]
-    assert owner == "alice"
+    assert owner == alice_uid
 
 
 def test_ownership_unclaimed_profile_auto_claimed_for_device_owner(client, conn, device_token):
@@ -149,7 +150,7 @@ def test_ownership_unclaimed_profile_auto_claimed_for_device_owner(client, conn,
     owner = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()["owner_user_id"]
-    assert owner == "admin"  # auto-claimed for device owner on first upload
+    assert owner == get_uid(conn, "admin")  # auto-claimed for device owner on first upload
 
 
 def test_ownership_first_seen_profile_auto_claimed_for_device_owner(client, conn, device_token):
@@ -165,7 +166,7 @@ def test_ownership_first_seen_profile_auto_claimed_for_device_owner(client, conn
     owner = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()["owner_user_id"]
-    assert owner == "admin"  # auto-claimed for device owner (no multi-user claims on device)
+    assert owner == get_uid(conn, "admin")  # auto-claimed for device owner (no multi-user claims on device)
 
 
 def test_ownership_no_user_key_stamps_device_owner(client, conn, device_token):
@@ -180,7 +181,7 @@ def test_ownership_no_user_key_stamps_device_owner(client, conn, device_token):
     owner = conn.execute(
         "SELECT owner_user_id FROM sync_transactions WHERE transaction_id=?", (txn_id,)
     ).fetchone()["owner_user_id"]
-    assert owner == "admin"
+    assert owner == get_uid(conn, "admin")
 
 
 def test_ownership_unpaired_device_rejected(client):
@@ -204,42 +205,46 @@ def test_http_list_profiles_empty(client):
     assert r.json()["profiles"] == []
 
 
-def test_http_list_profiles_admin_sees_real_user_id(client):
+def test_http_list_profiles_admin_sees_real_user_id(client, conn):
     _create_user(client, "alice")
+    alice_uid = get_uid(conn, "alice")
     _seed(client, user_key=PROFILE_A)
     admin = login_admin(client)
-    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": "alice"}, headers=_hdr(admin))
+    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": alice_uid}, headers=_hdr(admin))
     r = client.get(f"/api/v1/ui/devices/{DEVICE_A}/profiles", headers=_hdr(admin))
     profiles = r.json()["profiles"]
     assert len(profiles) == 1
-    assert profiles[0]["user_id"] == "alice"
+    assert profiles[0]["user_id"] == alice_uid
 
 
-def test_http_list_profiles_non_admin_masks_other_users(client):
+def test_http_list_profiles_non_admin_masks_other_users(client, conn):
     _create_user(client, "alice")
     _create_user(client, "bob")
+    alice_uid = get_uid(conn, "alice")
+    bob_uid = get_uid(conn, "bob")
     _seed(client, user_key=PROFILE_A)
     do_upload(client, DEVICE_A, TITLE_1, SAVE, user_key=PROFILE_B)
     admin = login_admin(client)
-    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": "alice"}, headers=_hdr(admin))
-    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_B}", json={"user_id": "bob"}, headers=_hdr(admin))
+    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": alice_uid}, headers=_hdr(admin))
+    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_B}", json={"user_id": bob_uid}, headers=_hdr(admin))
 
     alice_token = _login(client, "alice")
     r = client.get(f"/api/v1/ui/devices/{DEVICE_A}/profiles", headers=_hdr(alice_token))
     by_id = {p["profile_id"]: p["user_id"] for p in r.json()["profiles"]}
-    assert by_id[PROFILE_A] == "alice"
+    assert by_id[PROFILE_A] == alice_uid
     assert by_id[PROFILE_B] == "__claimed__"
 
 
-def test_http_list_profiles_non_admin_sees_own_profile(client):
+def test_http_list_profiles_non_admin_sees_own_profile(client, conn):
     _create_user(client, "alice")
+    alice_uid = get_uid(conn, "alice")
     _seed(client, user_key=PROFILE_A)
     admin = login_admin(client)
-    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": "alice"}, headers=_hdr(admin))
+    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": alice_uid}, headers=_hdr(admin))
 
     alice_token = _login(client, "alice")
     r = client.get(f"/api/v1/ui/devices/{DEVICE_A}/profiles", headers=_hdr(alice_token))
-    assert r.json()["profiles"][0]["user_id"] == "alice"
+    assert r.json()["profiles"][0]["user_id"] == alice_uid
 
 
 # ── HTTP: PUT /profiles/{id} ──────────────────────────────────────────────────
@@ -312,11 +317,13 @@ def test_golden_path_ownership_model(client, conn, device_token):
     """Full ownership: two claimed profiles stamp correct users; unknown key falls back to device owner."""
     _create_user(client, "alice")
     _create_user(client, "bob")
+    alice_uid = get_uid(conn, "alice")
+    bob_uid = get_uid(conn, "bob")
     do_upload(client, DEVICE_A, TITLE_1, SAVE, user_key=PROFILE_A)
     do_upload(client, DEVICE_A, TITLE_1, SAVE, user_key=PROFILE_B)
     admin = login_admin(client)
-    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": "alice"}, headers=_hdr(admin))
-    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_B}", json={"user_id": "bob"}, headers=_hdr(admin))
+    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": alice_uid}, headers=_hdr(admin))
+    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_B}", json={"user_id": bob_uid}, headers=_hdr(admin))
 
     def _owner(user_key):
         r = client.post(
@@ -330,8 +337,8 @@ def test_golden_path_ownership_model(client, conn, device_token):
             (r.json()["transaction_id"],),
         ).fetchone()["owner_user_id"]
 
-    assert _owner(PROFILE_A) == "alice"
-    assert _owner(PROFILE_B) == "bob"
+    assert _owner(PROFILE_A) == alice_uid
+    assert _owner(PROFILE_B) == bob_uid
     assert _owner(PROFILE_C) is None  # unknown key → NULL (T6), not device owner
 
 
@@ -341,15 +348,17 @@ def test_golden_path_ownership_model(client, conn, device_token):
 def test_admin_unclaim_target_user_id_removes_specific_claimant(client, conn):
     """Admin DELETE with ?target_user_id= removes only that user's claim."""
     _create_user(client, "alice")
+    admin_uid = get_uid(conn, "admin")
+    alice_uid = get_uid(conn, "alice")
     _seed(client, user_key=PROFILE_A)
     admin = login_admin(client)
     # Insert two claims directly — the claim_profile API auto-evicts the assigner's own claim
     # when assigning to another user, so we bypass it to create a genuine multi-claim state.
     db.upsert_known_profile(conn, DEVICE_A, PROFILE_A, "Profile A")
-    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "admin", "Profile A")
-    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "alice", "Profile A")
+    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, admin_uid, "Profile A")
+    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, alice_uid, "Profile A")
     r = client.delete(
-        f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}?target_user_id=alice",
+        f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}?target_user_id={alice_uid}",
         headers=_hdr(admin),
     )
     assert r.status_code == 204
@@ -359,23 +368,25 @@ def test_admin_unclaim_target_user_id_removes_specific_claimant(client, conn):
         (DEVICE_A, PROFILE_A),
     ).fetchall()
     claimants = {r["user_id"] for r in rows}
-    assert "alice" not in claimants
-    assert "admin" in claimants
+    assert alice_uid not in claimants
+    assert admin_uid in claimants
 
 
 def test_admin_unclaim_multiple_claimants_no_target_returns_409(client, conn):
     """Admin DELETE without ?target_user_id= returns 409 when multiple users share a profile."""
     _create_user(client, "alice")
     _create_user(client, "bob")
+    alice_uid = get_uid(conn, "alice")
+    bob_uid = get_uid(conn, "bob")
     _seed(client, user_key=PROFILE_A)
     admin = login_admin(client)
     # Insert alice and bob claims directly so admin has no own claim on PROFILE_A —
     # only then does the 409 multi-claimant path trigger (admin's own claim bypasses it).
     db.upsert_known_profile(conn, DEVICE_A, PROFILE_A, "Profile A")
-    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "alice", "Profile A")
-    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, "bob", "Profile A")
+    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, alice_uid, "Profile A")
+    db.upsert_device_profile(conn, DEVICE_A, PROFILE_A, bob_uid, "Profile A")
     r = client.delete(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", headers=_hdr(admin))
     assert r.status_code == 409
     body = r.json()
     assert "claimants" in body
-    assert set(body["claimants"]) == {"alice", "bob"}
+    assert set(body["claimants"]) == {alice_uid, bob_uid}

@@ -7,7 +7,7 @@ HTTP: POST /api/v1/sync/device-config.
 from datetime import UTC, datetime, timedelta
 
 import database as db
-from helpers import DEVICE_A, TITLE_1, auth_header, do_upload, login_admin
+from helpers import DEVICE_A, TITLE_1, auth_header, do_upload, get_uid, login_admin
 
 SAVE = b"bootstrap-test" * 100
 PROFILE_A = "AAAA111122223333"
@@ -284,8 +284,10 @@ def test_golden_path_bootstrap_and_ownership(client, conn):
     admin = login_admin(client)
     client.post("/api/v1/ui/users", json={"username": "alice", "password": "pw"}, headers=_hdr(admin))
     client.post("/api/v1/ui/users", json={"username": "bob", "password": "pw"}, headers=_hdr(admin))
-    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": "alice"}, headers=_hdr(admin))
-    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_B}", json={"user_id": "bob"}, headers=_hdr(admin))
+    alice_uid = get_uid(conn, "alice")
+    bob_uid = get_uid(conn, "bob")
+    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}", json={"user_id": alice_uid}, headers=_hdr(admin))
+    client.put(f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_B}", json={"user_id": bob_uid}, headers=_hdr(admin))
 
     # 5. Inbound syncs stamp correct owners
     def _owner(user_key):
@@ -300,6 +302,6 @@ def test_golden_path_bootstrap_and_ownership(client, conn):
             (r.json()["transaction_id"],),
         ).fetchone()["owner_user_id"]
 
-    assert _owner(PROFILE_A) == "alice"
-    assert _owner(PROFILE_B) == "bob"
+    assert _owner(PROFILE_A) == alice_uid
+    assert _owner(PROFILE_B) == bob_uid
     assert _owner("UNKNOWN000000000") is None  # unknown key → NULL (T6), not device owner

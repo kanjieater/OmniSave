@@ -16,6 +16,7 @@ async function retryNetwork<T>(fn: () => Promise<T>): Promise<T> {
 interface AuthCtx {
   authenticated: boolean;
   username: string;
+  userId: string;
   isAdmin: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -30,6 +31,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // The background check corrects this if the token turns out to be invalid.
   const [authenticated, setAuthenticated] = useState(() => !!localStorage.getItem('os_token'));
   const [username, setUsername] = useState('');
+  const [userId, setUserId] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [netError, setNetError] = useState(false);
   const [checkTrigger, setCheckTrigger] = useState(0);
@@ -59,6 +61,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         setAuthenticated(s.authenticated);
         setUsername(s.username ?? '');
+        setUserId(s.user_id ?? '');
         setIsAdmin(s.is_admin ?? false);
         setNetError(false);
       } catch {
@@ -86,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const status = await retryNetwork(() => api.authStatus());
     setAuthenticated(true);
     setUsername(status.username || u);
+    setUserId(status.user_id ?? '');
     setIsAdmin(status.is_admin ?? false);
   }, []);
 
@@ -101,12 +105,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryClient.clear();
     setAuthenticated(false);
     setUsername('');
+    setUserId('');
     setIsAdmin(false);
     setNetError(false);
   }, []);
 
   return (
-    <Ctx.Provider value={{ authenticated, username, isAdmin, login, logout, netError, retryAuth }}>
+    <Ctx.Provider value={{ authenticated, username, userId, isAdmin, login, logout, netError, retryAuth }}>
       {children}
     </Ctx.Provider>
   );

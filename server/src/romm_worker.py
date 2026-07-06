@@ -21,12 +21,12 @@ import romm_vsc
 
 log = logging.getLogger(__name__)
 
-_catalog_last_seen: dict[str, frozenset] = {}  # username → last known Switch ROM ID set
-_catalog_check_ts: dict[str, float] = {}  # username → last reconcile timestamp
+_catalog_last_seen: dict[str, frozenset] = {}  # user_id → last known Switch ROM ID set
+_catalog_check_ts: dict[str, float] = {}  # user_id → last reconcile timestamp
 _CATALOG_RECONCILE_INTERVAL = 300  # safety backstop default: 5 min
 
 
-def _reconcile_romm_catalog_backstop(conn, username: str) -> None:
+def _reconcile_romm_catalog_backstop(conn, user_id: str) -> None:
     """Safety backstop: detect RomM catalog drift and trigger re-indexing.
 
     NOT the primary ingestion path — that is romm_index. Only fires
@@ -34,58 +34,58 @@ def _reconcile_romm_catalog_backstop(conn, username: str) -> None:
     Throttled to _CATALOG_RECONCILE_INTERVAL seconds per user.
     Snapshot diff detects both additions and deletions."""
     now = time.time()
-    if now - _catalog_check_ts.get(username, 0) < _CATALOG_RECONCILE_INTERVAL:
+    if now - _catalog_check_ts.get(user_id, 0) < _CATALOG_RECONCILE_INTERVAL:
         return
-    _catalog_check_ts[username] = now
+    _catalog_check_ts[user_id] = now
     try:
         current_ids = frozenset(r["id"] for r in romm_index._fetch_switch_roms())
-        last_seen = _catalog_last_seen.get(username)
+        last_seen = _catalog_last_seen.get(user_id)
         if last_seen is None:
-            _catalog_last_seen[username] = current_ids  # seed snapshot, no refresh
+            _catalog_last_seen[user_id] = current_ids  # seed snapshot, no refresh
             return
         if current_ids != last_seen:
             added = len(current_ids - last_seen)
             removed = len(last_seen - current_ids)
             log.info(
                 "romm catalog drift detected user=%s (+%d/-%d ROMs) — queuing index refresh",
-                username,
+                user_id,
                 added,
                 removed,
             )
-            _catalog_last_seen[username] = current_ids
+            _catalog_last_seen[user_id] = current_ids
             romm_index.request_index_refresh()
         else:
-            _catalog_last_seen[username] = current_ids
+            _catalog_last_seen[user_id] = current_ids
     except Exception as exc:
-        log.debug("romm catalog backstop failed user=%s: %s", username, exc)
+        log.debug("romm catalog backstop failed user=%s: %s", user_id, exc)
 
 
 def run_once(conn) -> None:
     """Process pending RomM outbound transactions for all enabled users. Best-effort; never raises."""
-    for username in db.get_romm_users(conn):
-        _run_once_for_user(conn, username)
+    for user in db.get_romm_users(conn):
+        _run_once_for_user(conn, user["user_id"])
 
 
-def _run_once_for_user(conn, username: str) -> None:
-    if not romm_vsc._load_user_creds(conn, username):
+def _run_once_for_user(conn, user_id: str) -> None:
+    if not romm_vsc._load_user_creds(conn, user_id):
         return
-    device_id = romm_vsc.get_user_romm_device_id(conn, username)
-    _reconcile_romm_catalog_backstop(conn, username)
+    device_id = romm_vsc.get_user_romm_device_id(conn, user_id)
+    _reconcile_romm_catalog_backstop(conn, user_id)
 
     # Keep device_installed_games in sync with romm_title_map each cycle.
     # No open transaction here — sync_romm_catalog_to_device uses BEGIN IMMEDIATE safely.
     before = conn.execute(
         "SELECT COUNT(*) FROM device_installed_games WHERE device_id=?", (device_id,)
     ).fetchone()[0]
-    db.sync_romm_catalog_to_device(conn, username, device_id)
+    db.sync_romm_catalog_to_device(conn, user_id, device_id)
     after = conn.execute(
         "SELECT COUNT(*) FROM device_installed_games WHERE device_id=?", (device_id,)
     ).fetchone()[0]
     if before != after:
-        log.info("romm catalog sync user=%s rows=%d→%d", username, before, after)
+        log.info("romm catalog sync user=%s rows=%d→%d", user_id, before, after)
 
-    romm_uuid = db.get_user_config(conn, username, "romm_device_id") or ""
-    host = db.get_user_config(conn, username, "romm_host") or romm_meta.ROMM_HOST
+    romm_uuid = db.get_user_config(conn, user_id, "romm_device_id") or ""
+    host = db.get_user_config(conn, user_id, "romm_host") or romm_meta.ROMM_HOST
     romm_contacted = False
     pending = db.get_pending_outbound(conn, device_id)
     for row in pending:
@@ -97,12 +97,12 @@ def _run_once_for_user(conn, username: str) -> None:
             log.warning("romm_worker: no archive for txn=%s — skipping", txn_id[:8])
             continue
         txn_owner = txn.get("owner_user_id")
-        if txn_owner and txn_owner != username:
+        if txn_owner and txn_owner != user_id:
             log.error(
                 "romm_worker: SECURITY owner mismatch txn=%s owner=%s expected=%s — failing outbound",
                 txn_id[:8],
                 txn_owner,
-                username,
+                user_id,
             )
             db.fail_outbound(conn, device_id, txn_id)
             conn.commit()
@@ -112,9 +112,9 @@ def _run_once_for_user(conn, username: str) -> None:
             log.warning("romm_worker: archive missing on disk txn=%s — skipping", txn_id[:8])
             continue
 
-        rom_id = db.get_romm_rom_id(conn, username, title_id)
+        rom_id = db.get_romm_rom_id(conn, user_id, title_id)
         if rom_id is None:
-            if romm_meta.auto_match_in_flight(username, title_id):
+            if romm_meta.auto_match_in_flight(user_id, title_id):
                 log.debug(
                     "romm_worker: auto-match in flight title=%s — deferring outbound", title_id
                 )
@@ -128,20 +128,20 @@ def _run_once_for_user(conn, username: str) -> None:
 
         existing = conn.execute(
             "SELECT romm_save_id FROM romm_save_sync"
-            " WHERE username=? AND direction='outbound' AND transaction_id=?",
-            (username, txn_id),
+            " WHERE user_id=? AND direction='outbound' AND transaction_id=?",
+            (user_id, txn_id),
         ).fetchone()
         if existing:
             romm_save_id = existing["romm_save_id"]
             romm_vsc.stamp_device_head(
                 conn,
                 title_id=title_id,
-                username=username,
+                user_id=user_id,
                 snapshot_sequence=txn["snapshot_sequence"],
             )
             romm_vsc.record_romm_delivery(
                 conn,
-                username=username,
+                user_id=user_id,
                 rom_id=rom_id,
                 romm_save_id=romm_save_id,
                 transaction_id=txn_id,
@@ -159,7 +159,7 @@ def _run_once_for_user(conn, username: str) -> None:
             )
             continue
 
-        filename = romm_vsc._romm_filename(title_id, conn, username, rom_id)
+        filename = romm_vsc._romm_filename(title_id, conn, user_id, rom_id)
         result, err_str = romm_meta.upload_save(rom_id, snapshot_path, romm_uuid, filename=filename)
         if result is None:
             size_mb = snapshot_path.stat().st_size / 1024 / 1024
@@ -176,7 +176,7 @@ def _run_once_for_user(conn, username: str) -> None:
                 title_id=title_id,
                 transaction_id=txn_id,
                 device_id=device_id,
-                owner_user_id=username,
+                owner_user_id=user_id,
             )
             conn.commit()
             continue
@@ -184,10 +184,10 @@ def _run_once_for_user(conn, username: str) -> None:
         romm_contacted = True
         romm_save_id = result["id"]
         romm_vsc.stamp_device_head(
-            conn, title_id=title_id, username=username, snapshot_sequence=txn["snapshot_sequence"]
+            conn, title_id=title_id, user_id=user_id, snapshot_sequence=txn["snapshot_sequence"]
         )
         romm_vsc.record_romm_delivery(
-            conn, username=username, rom_id=rom_id, romm_save_id=romm_save_id, transaction_id=txn_id
+            conn, user_id=user_id, rom_id=rom_id, romm_save_id=romm_save_id, transaction_id=txn_id
         )
         db.complete_outbound(conn, device_id, txn_id)
         conn.execute(
@@ -204,14 +204,14 @@ def _run_once_for_user(conn, username: str) -> None:
             title_id=title_id,
             transaction_id=txn_id,
             device_id=device_id,
-            owner_user_id=username,
+            owner_user_id=user_id,
         )
         log.info(
             "romm_worker: pushed txn=%s title=%s → romm_save_id=%d user=%s",
             txn_id[:8],
             title_id,
             romm_save_id,
-            username,
+            user_id,
         )
 
     n = db.supersede_failed_outbounds_for_uninstalled(conn)
@@ -220,9 +220,9 @@ def _run_once_for_user(conn, username: str) -> None:
         log.info(
             "romm_worker: superseded %d FAILED outbound(s) for uninstalled titles user=%s",
             n,
-            username,
+            user_id,
         )
-    _reconcile_undelivered(conn, username, device_id)
+    _reconcile_undelivered(conn, user_id, device_id)
 
     # Fallback: if no real work this cycle, probe reachability.
     # Worker (60s) drives heartbeat; pull loop runs at 900s so can't rely on it.
@@ -230,12 +230,12 @@ def _run_once_for_user(conn, username: str) -> None:
         romm_contacted = romm_meta.ping(host)
 
     if romm_contacted:
-        db.touch_device(conn, device_id, username)
+        db.touch_device(conn, device_id, user_id)
 
 
-def _reconcile_undelivered(conn, username: str, device_id: str) -> None:
+def _reconcile_undelivered(conn, user_id: str, device_id: str) -> None:
     """Queue outbounds for titles where HEAD exists but all delivery attempts failed."""
-    rows = db.get_romm_undelivered_head_txns(conn, username, device_id)
+    rows = db.get_romm_undelivered_head_txns(conn, user_id, device_id)
     for row in rows:
         new_id = db.create_outbound_transaction(conn, row["transaction_id"], device_id)
         if new_id:
@@ -245,7 +245,7 @@ def _reconcile_undelivered(conn, username: str, device_id: str) -> None:
                 new_id[:8],
                 row["title_id"],
                 row["snapshot_sequence"],
-                username,
+                user_id,
             )
 
 

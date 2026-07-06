@@ -9,7 +9,7 @@ import uuid
 from datetime import UTC, datetime
 
 import database as db
-from helpers import auth_header, login_admin
+from helpers import auth_header, get_uid, login_admin
 
 TITLE_1 = "0100F2C0115B6000"
 TITLE_2 = "0100EC001DE7E000"
@@ -23,12 +23,20 @@ def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _resolve(conn, user_id: str) -> str:
+    """Resolve 'admin' username to its stored UUID; other values pass through."""
+    if user_id == ADMIN_USER:
+        return get_uid(conn, "admin") or user_id
+    return user_id
+
+
 def _seed_device(conn, device_id: str, user_id: str = ADMIN_USER) -> None:
+    uid = _resolve(conn, user_id)
     now = _now()
     conn.execute(
         "INSERT INTO devices (device_id, display_name, hardware_type, last_seen, created_at, owner_user_id)"
         " VALUES (?, '', '', ?, ?, ?)",
-        (device_id, now, now, user_id),
+        (device_id, now, now, uid),
     )
     # device_profile_map is NOT consulted by the pending UNION SQL (which uses device_access
     # UNION devices.owner_user_id). This insert only matters for total_devices and legacy queries.
@@ -36,7 +44,7 @@ def _seed_device(conn, device_id: str, user_id: str = ADMIN_USER) -> None:
         "INSERT OR IGNORE INTO device_profile_map"
         " (device_id, profile_id, user_id, profile_name, created_at)"
         " VALUES (?, ?, ?, '', ?)",
-        (device_id, f"seed-{device_id}", user_id, now),
+        (device_id, f"seed-{device_id}", uid, now),
     )
 
 
@@ -52,13 +60,14 @@ def _seed_outbound(
 ) -> str:
     txn_id = str(uuid.uuid4())
     now = _now()
+    uid = _resolve(conn, owner_user_id)
     conn.execute(
         "INSERT INTO sync_transactions"
         " (transaction_id, title_id, source_device_id, direction, state,"
         "  snapshot_sequence, target_device_id, owner_user_id, created_at, updated_at)"
         " VALUES (?,?,?,?,?,?,?,?,?,?)",
         (txn_id, title_id, DEVICE_A, "outbound", state,
-         snapshot_sequence, target_device_id, owner_user_id, now, now),
+         snapshot_sequence, target_device_id, uid, now, now),
     )
     return txn_id
 
@@ -74,13 +83,14 @@ def _seed_inbound(
 ) -> str:
     txn_id = str(uuid.uuid4())
     now = _now()
+    uid = _resolve(conn, owner_user_id)
     conn.execute(
         "INSERT INTO sync_transactions"
         " (transaction_id, title_id, source_device_id, direction, state,"
         "  snapshot_sequence, owner_user_id, created_at, updated_at)"
         " VALUES (?,?,?,?,?,?,?,?,?)",
         (txn_id, title_id, source_device_id, "inbound", state,
-         snapshot_sequence, owner_user_id, now, now),
+         snapshot_sequence, uid, now, now),
     )
     return txn_id
 
@@ -91,9 +101,10 @@ def _seed_inbound(
 def test_romm_no_outbound_gives_zero_pending_dashboard(client, conn):
     """RomM device with inbound HEAD but no outbound forked → pending_count=0 on dashboard."""
     token = login_admin(client)
+    admin_uid = _resolve(conn, ADMIN_USER)
     _seed_device(conn, DEVICE_A)
     db.upsert_virtual_device(conn, ROMM_ID, "RomM", "romm-vsc",
-                              client_type="romm", owner_user_id=ADMIN_USER)
+                              client_type="romm", owner_user_id=admin_uid)
     _seed_inbound(conn, title_id=TITLE_1, snapshot_sequence=1)
 
     r = client.get("/api/v1/ui/dashboard", headers=auth_header(token))
@@ -106,9 +117,10 @@ def test_romm_no_outbound_gives_zero_pending_dashboard(client, conn):
 def test_romm_no_outbound_gives_zero_pending_devices_list(client, conn):
     """RomM device with inbound HEAD but no outbound forked → pending_count=0 on devices list."""
     token = login_admin(client)
+    admin_uid = _resolve(conn, ADMIN_USER)
     _seed_device(conn, DEVICE_A)
     db.upsert_virtual_device(conn, ROMM_ID, "RomM", "romm-vsc",
-                              client_type="romm", owner_user_id=ADMIN_USER)
+                              client_type="romm", owner_user_id=admin_uid)
     _seed_inbound(conn, title_id=TITLE_1, snapshot_sequence=1)
 
     r = client.get("/api/v1/ui/devices", headers=auth_header(token))
@@ -121,9 +133,10 @@ def test_romm_no_outbound_gives_zero_pending_devices_list(client, conn):
 def test_romm_with_outbound_shows_pending(client, conn):
     """RomM device with a READY_FOR_RESTORE outbound forked → pending_count=1."""
     token = login_admin(client)
+    admin_uid = _resolve(conn, ADMIN_USER)
     _seed_device(conn, DEVICE_A)
     db.upsert_virtual_device(conn, ROMM_ID, "RomM", "romm-vsc",
-                              client_type="romm", owner_user_id=ADMIN_USER)
+                              client_type="romm", owner_user_id=admin_uid)
     _seed_inbound(conn, title_id=TITLE_1, snapshot_sequence=1)
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=ROMM_ID, snapshot_sequence=1)
 
@@ -199,10 +212,11 @@ def test_pending_titles_counts_owner_device_outbound(client, conn):
 def test_pending_titles_same_title_two_devices_deduplicates(client, conn):
     """One title pending on two devices → pending_titles deduplicates by title, not device (expected: 1)."""
     token = login_admin(client)
+    admin_uid = _resolve(conn, ADMIN_USER)
     _seed_device(conn, DEVICE_A)
     _seed_device(conn, DEVICE_B)
     db.upsert_virtual_device(conn, ROMM_ID, "RomM", "romm-vsc",
-                              client_type="romm", owner_user_id=ADMIN_USER)
+                              client_type="romm", owner_user_id=admin_uid)
     # Same title queued for both DEVICE_B and ROMM
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=DEVICE_B, snapshot_sequence=1)
     _seed_outbound(conn, title_id=TITLE_1, target_device_id=ROMM_ID, snapshot_sequence=1)

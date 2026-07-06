@@ -6,7 +6,7 @@ Ownership determines visibility — no admin bypass for content endpoints.
 import database as db
 from helpers import (
     DEVICE_A, DEVICE_B, TITLE_1, TITLE_2,
-    auth_header, do_upload, login_admin, pair_device,
+    auth_header, do_upload, get_uid, login_admin, pair_device,
 )
 
 SAVE_A = b"alice-save" * 100
@@ -32,8 +32,14 @@ def _login(client, username, password="pw") -> str:
     return r.json()["admin_token"]
 
 
-def _pair_to_user(client, device_id: str, user_id: str) -> str:
-    """Register device, pair it, and assign ownership to user_id. Returns device token."""
+def _pair_to_user(client, device_id: str, username: str) -> str:
+    """Register device, pair it, and assign ownership to username. Returns device token."""
+    import ui_api as _ui
+    if username == "admin":
+        user_id = db.get_config(_ui._conn, "admin_user_id") or username
+    else:
+        row = _ui._conn.execute("SELECT id FROM auth_users WHERE username=?", (username,)).fetchone()
+        user_id = row["id"] if row else username
     # Register the device via the sync config endpoint
     client.post("/api/v1/sync/device-config", json={}, headers={"X-Device-ID": device_id})
     admin = login_admin(client)
@@ -77,7 +83,7 @@ def test_admin_games_also_filtered_by_owner(client):
     assert TITLE_1 not in titles  # admin's own games only; alice owns this
 
 
-def test_non_admin_game_detail_snapshots_filtered(client):
+def test_non_admin_game_detail_snapshots_filtered(client, conn):
     """User B cannot see User A's snapshots for the same title."""
     _create_user(client, "alice")
     _create_user(client, "bob")
@@ -86,10 +92,11 @@ def test_non_admin_game_detail_snapshots_filtered(client):
     do_upload(client, DEVICE_A, TITLE_1, SAVE_A, device_token=tok_a)
     do_upload(client, DEVICE_B, TITLE_1, SAVE_B, device_token=tok_b)
 
+    bob_uid = get_uid(conn, "bob")
     bob_tok = _login(client, "bob")
     r = client.get(f"/api/v1/ui/games/{TITLE_1}", headers=auth_header(bob_tok))
     owners = [s["owner_user_id"] for s in r.json()["snapshots"]]
-    assert all(o == "bob" for o in owners), f"bob sees non-owned snapshots: {owners}"
+    assert all(o == bob_uid for o in owners), f"bob sees non-owned snapshots: {owners}"
 
 
 # ── Visibility — events ────────────────────────────────────────────────────────
@@ -143,7 +150,8 @@ def test_backfill_on_claim_makes_history_visible(client, conn):
 
     # Simulate pre-claim NULL state (saves existed before profile system)
     conn.execute("UPDATE sync_transactions SET owner_user_id=NULL WHERE user_key=?", (PROFILE_A,))
-    conn.execute("UPDATE events SET owner_user_id=NULL WHERE owner_user_id='admin'")
+    admin_uid = get_uid(conn, "admin")
+    conn.execute("UPDATE events SET owner_user_id=NULL WHERE owner_user_id=?", (admin_uid,))
 
     alice_tok = _login(client, "alice")
     r = client.get("/api/v1/ui/games", headers=auth_header(alice_tok))
@@ -233,18 +241,19 @@ def test_admin_can_pair_device(client):
 def test_admin_can_reassign_profile(client, conn):
     """Admin can assign a profile to a specific user."""
     _create_user(client, "alice")
+    alice_uid = get_uid(conn, "alice")
     pair_device(client, DEVICE_A)
     db.upsert_known_profile(conn, DEVICE_A, PROFILE_A, "Alice")
 
     admin_tok = login_admin(client)
     r = client.put(
         f"/api/v1/ui/devices/{DEVICE_A}/profiles/{PROFILE_A}",
-        json={"user_id": "alice"},
+        json={"user_id": alice_uid},
         headers=auth_header(admin_tok),
     )
     assert r.status_code == 200
     owner = db.get_profile_owner(conn, DEVICE_A, PROFILE_A)
-    assert owner == "alice"
+    assert owner == alice_uid
 
 
 # ── Game detail badge visibility without claimed profile ───────────────────────
@@ -269,12 +278,13 @@ def test_game_detail_shows_recipient_badge_without_profile_claim(client, conn):
     do_upload(client, DEVICE_A, TITLE_1, SAVE_A, device_token=tok_a)
 
     # Simulate a completed outbound delivery to DEVICE_B
+    admin_uid = get_uid(conn, "admin")
     conn.execute(
         "INSERT INTO sync_transactions"
         " (transaction_id, direction, state, source_device_id, target_device_id,"
         "  title_id, snapshot_sequence, owner_user_id, created_at, updated_at)"
-        " VALUES ('test-out-1','outbound','COMPLETED',?,?,?,1,'admin',datetime('now'),datetime('now'))",
-        (DEVICE_A, DEVICE_B, TITLE_1),
+        " VALUES ('test-out-1','outbound','COMPLETED',?,?,?,1,?,datetime('now'),datetime('now'))",
+        (DEVICE_A, DEVICE_B, TITLE_1, admin_uid),
     )
 
     admin_tok = login_admin(client)

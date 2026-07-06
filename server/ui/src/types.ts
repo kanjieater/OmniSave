@@ -2,6 +2,7 @@ export interface AuthStatus {
   bootstrapped: boolean;
   authenticated: boolean;
   username: string;
+  user_id: string;
   is_admin: boolean;
 }
 
@@ -155,6 +156,7 @@ export interface Device {
 
 export interface DeviceAccessEntry {
   user_id: string;
+  username: string;
   granted_by: string;
   created_at: string;
 }
@@ -185,6 +187,7 @@ export interface DeviceProfile {
   profile_name: string;
   display_hint: string;
   user_id: string | null;
+  username: string | null;
   is_mine: boolean;
 }
 

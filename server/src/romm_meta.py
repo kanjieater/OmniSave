@@ -165,18 +165,18 @@ def search_roms(query: str, limit: int = 10) -> list:
         return []
 
 
-def fetch_and_cache(rom_id: int, conn, username: str) -> dict | None:
+def fetch_and_cache(rom_id: int, conn, user_id: str) -> dict | None:
     """Fetch metadata for rom_id and store in per-user DB cache. Returns cached row or None."""
     meta = fetch_rom_metadata(rom_id)
     if meta:
-        database.upsert_romm_game_cache(conn, username, rom_id, meta["name"], meta["icon_url"])
+        database.upsert_romm_game_cache(conn, user_id, rom_id, meta["name"], meta["icon_url"])
     return meta
 
 
-def warm_cache(conn, username: str) -> None:
+def warm_cache(conn, user_id: str) -> None:
     """Background: fetch metadata for every title in this user's romm_title_map not yet cached.
 
-    Invariant: strictly per-username execution context. Must never access or mutate any
+    Invariant: strictly per-user_id execution context. Must never access or mutate any
     global RomM cache structure. Credentials are captured at call time so the background
     thread has explicit per-user creds — thread-locals are NOT inherited by spawned threads.
     """
@@ -187,20 +187,20 @@ def warm_cache(conn, username: str) -> None:
     def _run():
         # Establish per-user creds explicitly in this thread.
         set_request_creds(host, api_key)
-        title_map = database.get_romm_title_map(conn, username)
+        title_map = database.get_romm_title_map(conn, user_id)
         if not title_map:
             return
         for entry in title_map:
             title_id = entry["title_id"]
             rom_id = entry["rom_id"]
-            cached = database.get_romm_game_cache(conn, username, rom_id)
+            cached = database.get_romm_game_cache(conn, user_id, rom_id)
             if cached and cached.get("name"):
                 log.debug("romm_meta: cache hit for rom_id=%d (%s)", rom_id, title_id)
                 continue
             meta = fetch_rom_metadata(rom_id)
             if meta:
                 database.upsert_romm_game_cache(
-                    conn, username, rom_id, meta["name"], meta["icon_url"]
+                    conn, user_id, rom_id, meta["name"], meta["icon_url"]
                 )
                 log.info(
                     "romm_meta: cached rom_id=%d → %r for title %s", rom_id, meta["name"], title_id
@@ -212,35 +212,36 @@ def warm_cache(conn, username: str) -> None:
 
 def warm_cache_all(conn) -> None:
     """Startup warm: iterate all RomM-enabled users and warm each user's cache."""
-    for username in database.get_romm_users(conn):
-        host = database.get_user_config(conn, username, "romm_host") or ROMM_HOST
-        key = database.get_user_config(conn, username, "romm_api_key") or ROMM_API_KEY
+    for user in database.get_romm_users(conn):
+        uid = user["user_id"]
+        host = database.get_user_config(conn, uid, "romm_host") or ROMM_HOST
+        key = database.get_user_config(conn, uid, "romm_api_key") or ROMM_API_KEY
         if host and key:
             set_request_creds(host, key)
-            warm_cache(conn, username)
+            warm_cache(conn, uid)
 
 
-def resolve_name(title_id: str, conn, username: str) -> str | None:
+def resolve_name(title_id: str, conn, user_id: str) -> str | None:
     """Return RomM name for title_id if mapped and cached for this user, else None."""
-    rom_id = database.get_romm_rom_id(conn, username, title_id)
+    rom_id = database.get_romm_rom_id(conn, user_id, title_id)
     if rom_id is None:
         return None
-    cached = database.get_romm_game_cache(conn, username, rom_id)
+    cached = database.get_romm_game_cache(conn, user_id, rom_id)
     if cached:
         return cached.get("name")
-    meta = fetch_and_cache(rom_id, conn, username)
+    meta = fetch_and_cache(rom_id, conn, user_id)
     return meta["name"] if meta else None
 
 
-def resolve_icon(title_id: str, conn, username: str) -> str | None:
+def resolve_icon(title_id: str, conn, user_id: str) -> str | None:
     """Return RomM icon_url for title_id if mapped and cached for this user, else None."""
-    rom_id = database.get_romm_rom_id(conn, username, title_id)
+    rom_id = database.get_romm_rom_id(conn, user_id, title_id)
     if rom_id is None:
         return None
-    cached = database.get_romm_game_cache(conn, username, rom_id)
+    cached = database.get_romm_game_cache(conn, user_id, rom_id)
     if cached:
         return cached.get("icon_url")
-    meta = fetch_and_cache(rom_id, conn, username)
+    meta = fetch_and_cache(rom_id, conn, user_id)
     return meta["icon_url"] if meta else None
 
 
@@ -298,7 +299,7 @@ def fetch_current_user() -> tuple[dict | None, str, str]:
     return None, last_status, last_detail
 
 
-def refresh_username_cache(conn, username: str, host: str = "", key: str = "") -> None:
+def refresh_username_cache(conn, user_id: str, host: str = "", key: str = "") -> None:
     """Fetch the RomM username for the user's API key and store in user_config.
 
     host/key must be passed explicitly when called from a spawned thread because
@@ -307,14 +308,14 @@ def refresh_username_cache(conn, username: str, host: str = "", key: str = "") -
     if host and key:
         set_request_creds(host, key)
     user, status, detail = fetch_current_user()
-    database.set_user_config(conn, username, "romm_username", user["username"] if user else "")
-    database.set_user_config(conn, username, "romm_connect_status", status)
-    database.set_user_config(conn, username, "romm_connect_detail", detail)
+    database.set_user_config(conn, user_id, "romm_username", user["username"] if user else "")
+    database.set_user_config(conn, user_id, "romm_connect_status", status)
+    database.set_user_config(conn, user_id, "romm_connect_detail", detail)
     log.info(
         "romm_meta: cached romm_username=%r status=%s for user=%s",
         user["username"] if user else None,
         status,
-        username,
+        user_id,
     )
 
 
@@ -458,7 +459,7 @@ def ping(host: str = "") -> bool:
         return False
 
 
-def try_auto_match(title_id: str, username: str) -> None:
+def try_auto_match(title_id: str, user_id: str) -> None:
     """Auto-map title_id to a RomM ROM for one user. Never raises. Opens its own DB connection.
 
     Uses thread-local creds if already set (romm_worker context); otherwise looks up
@@ -476,10 +477,8 @@ def try_auto_match(title_id: str, username: str) -> None:
         if not host or not key:
             _creds_conn = database.open_db(_db_path)
             try:
-                host = database.get_user_config(_creds_conn, username, "romm_host") or ROMM_HOST
-                key = (
-                    database.get_user_config(_creds_conn, username, "romm_api_key") or ROMM_API_KEY
-                )
+                host = database.get_user_config(_creds_conn, user_id, "romm_host") or ROMM_HOST
+                key = database.get_user_config(_creds_conn, user_id, "romm_api_key") or ROMM_API_KEY
             finally:
                 _creds_conn.close()
         if not host or not key:
@@ -488,7 +487,7 @@ def try_auto_match(title_id: str, username: str) -> None:
 
         conn = database.open_db(_db_path)
         try:
-            if database.get_romm_rom_id(conn, username, title_id) is not None:
+            if database.get_romm_rom_id(conn, user_id, title_id) is not None:
                 return
             name = tdb.resolve_game_name(title_id)
             if not name:
@@ -510,14 +509,14 @@ def try_auto_match(title_id: str, username: str) -> None:
                 _ri.request_index_refresh()
                 return
             rom = results[0]
-            database.upsert_romm_title_map(conn, username, title_id, rom["id"])
-            database.upsert_romm_game_cache(conn, username, rom["id"], rom["name"], rom["icon_url"])
+            database.upsert_romm_title_map(conn, user_id, title_id, rom["id"])
+            database.upsert_romm_game_cache(conn, user_id, rom["id"], rom["name"], rom["icon_url"])
             log.info(
                 "romm_meta: auto-matched title=%s → rom_id=%d name=%r user=%s",
                 title_id,
                 rom["id"],
                 rom["name"],
-                username,
+                user_id,
             )
         finally:
             conn.close()
@@ -525,14 +524,14 @@ def try_auto_match(title_id: str, username: str) -> None:
 
         romm_vsc.push_head_async(title_id)
     except Exception as exc:
-        log.warning("romm_meta: auto-match error for title=%s user=%s: %s", title_id, username, exc)
+        log.warning("romm_meta: auto-match error for title=%s user=%s: %s", title_id, user_id, exc)
 
 
-def try_auto_match_async(title_id: str, username: str | None = None) -> None:
-    """Fire-and-forget daemon thread. If username is None, runs for all RomM-enabled users."""
+def try_auto_match_async(title_id: str, user_id: str | None = None) -> None:
+    """Fire-and-forget daemon thread. If user_id is None, runs for all RomM-enabled users."""
     if not _db_path:
         return
-    if username is None:
+    if user_id is None:
         # Called from processing pipeline without user context — match for all enabled users.
         conn = database.open_db(_db_path)
         try:
@@ -540,9 +539,9 @@ def try_auto_match_async(title_id: str, username: str | None = None) -> None:
         finally:
             conn.close()
         for u in users:
-            try_auto_match_async(title_id, u)
+            try_auto_match_async(title_id, u["user_id"])
         return
-    key = f"{username}:{title_id}"
+    key = f"{user_id}:{title_id}"
     with _in_flight_lock:
         if key in _in_flight:
             return
@@ -550,7 +549,7 @@ def try_auto_match_async(title_id: str, username: str | None = None) -> None:
 
     def _run():
         try:
-            try_auto_match(title_id, username)
+            try_auto_match(title_id, user_id)
         finally:
             with _in_flight_lock:
                 _in_flight.discard(key)
@@ -558,6 +557,6 @@ def try_auto_match_async(title_id: str, username: str | None = None) -> None:
     threading.Thread(target=_run, daemon=True, name=f"romm-automatch-{title_id[:8]}").start()
 
 
-def auto_match_in_flight(username: str, title_id: str) -> bool:
+def auto_match_in_flight(user_id: str, title_id: str) -> bool:
     with _in_flight_lock:
-        return f"{username}:{title_id}" in _in_flight
+        return f"{user_id}:{title_id}" in _in_flight

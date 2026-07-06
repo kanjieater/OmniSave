@@ -6,7 +6,7 @@ consecutive UNFOCUSED collapse, zero-duration exclusion, reboot/crash handling,
 and device isolation.
 """
 
-from helpers import DEVICE_A, DEVICE_B, auth_header, login_admin, pair_device, post_activity_events
+from helpers import DEVICE_A, DEVICE_B, auth_header, get_uid, login_admin, pair_device, post_activity_events
 
 APP = "0100F2C0115B6000"
 OTHER_APP = "0100EC001DE7E000"
@@ -376,11 +376,18 @@ def test_out_of_insertion_order_events(client):
 # ── Profile attribution ────────────────────────────────────────────────────────
 
 
-def _map_profile(client, device_id: str, profile_id: str, user_id: str) -> None:
+def _map_profile(client, device_id: str, profile_id: str, username: str) -> None:
     """Insert a device_profile_map entry directly — bypasses the claim API
-    (which requires the profile to be in device_known_profiles first)."""
+    (which requires the profile to be in device_known_profiles first).
+    username is resolved to UUID internally."""
     import ui_api as _ui
+    import database as db_mod
     from datetime import datetime, timezone
+    if username == "admin":
+        user_id = db_mod.get_config(_ui._conn, "admin_user_id") or username
+    else:
+        row = _ui._conn.execute("SELECT id FROM auth_users WHERE username=?", (username,)).fetchone()
+        user_id = row["id"] if row else username
     _ui._conn.execute(
         """
         INSERT OR REPLACE INTO device_profile_map
@@ -678,7 +685,7 @@ def test_homebrew_state_machine_filter(client, conn):
     import database as db
     pair_device(client, DEVICE_A)
     token = login_admin(client)
-    db.insert_play_events(conn, DEVICE_A, "admin", [
+    db.insert_play_events(conn, DEVICE_A, get_uid(conn, "admin"), [
         _started(_BASE_TS, 100, HOMEBREW_APP),
         _focused(_BASE_TS, 101, HOMEBREW_APP),
         _unfocused(_BASE_TS + 3600, 3701, HOMEBREW_APP),
