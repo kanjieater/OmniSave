@@ -825,7 +825,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             for uname, uid in user_uuids.items():
                 conn.execute("UPDATE auth_users SET id=? WHERE username=?", (uid, uname))
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_id ON auth_users(id)")
-            # Simple FK tables: only update values, column names stay the same
+            # Simple FK tables: only update values, column names stay the same.
+            # IMPORTANT: admin backfill runs FIRST so the JOIN loop below never
+            # matches admin rows even if a regular user shares the admin username.
             _SIMPLE_FK = [
                 ("devices", "owner_user_id"),
                 ("sync_transactions", "owner_user_id"),
@@ -835,6 +837,16 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 ("device_play_events", "owner_user_id"),
                 ("device_profile_map", "user_id"),
             ]
+            # Admin rows first: convert admin username string → admin UUID before
+            # the JOIN loop, so a same-named regular user cannot steal admin data.
+            for _tbl, _col in _SIMPLE_FK:
+                if _tbl in existing:
+                    conn.execute(
+                        f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
+                        (admin_user_id, old_admin_name),
+                    )
+            # Regular users: JOIN on auth_users to convert remaining username strings.
+            # Admin rows are already UUIDs at this point and won't be touched.
             for _tbl, _col in _SIMPLE_FK:
                 if _tbl in existing:
                     conn.execute(
@@ -843,13 +855,6 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                         f") WHERE {_col} IS NOT NULL AND EXISTS ("
                         f"  SELECT 1 FROM auth_users WHERE username = {_tbl}.{_col}"
                         f")"
-                    )
-            # Admin rows: admin is in server_config, not auth_users — backfill separately
-            for _tbl, _col in _SIMPLE_FK:
-                if _tbl in existing:
-                    conn.execute(
-                        f"UPDATE {_tbl} SET {_col}=? WHERE {_col}=?",  # noqa: S608
-                        (admin_user_id, old_admin_name),
                     )
             # auth_sessions: rename username → user_id column
             as_cols = {r[1] for r in conn.execute("PRAGMA table_info(auth_sessions)").fetchall()}
@@ -865,8 +870,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 conn.execute(
                     "INSERT INTO auth_sessions_new (session_id, user_id, token, created_at)"
                     " SELECT s.session_id,"
-                    "  CASE WHEN s.username=? THEN ?"
-                    "       ELSE (SELECT id FROM auth_users WHERE username=s.username) END,"
+                    "  CASE WHEN EXISTS(SELECT 1 FROM auth_users WHERE username=s.username)"
+                    "       THEN (SELECT id FROM auth_users WHERE username=s.username)"
+                    "       WHEN s.username=? THEN ? ELSE NULL END,"
                     "  s.token, s.created_at"
                     " FROM auth_sessions s"
                     " WHERE s.username=?"
@@ -888,8 +894,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 """)
                 conn.execute(
                     "INSERT INTO user_config_new (user_id, key, value)"
-                    " SELECT CASE WHEN uc.username=? THEN ?"
-                    "             ELSE (SELECT id FROM auth_users WHERE username=uc.username) END,"
+                    " SELECT CASE WHEN EXISTS(SELECT 1 FROM auth_users WHERE username=uc.username)"
+                    "             THEN (SELECT id FROM auth_users WHERE username=uc.username)"
+                    "             WHEN uc.username=? THEN ? ELSE NULL END,"
                     "  uc.key, uc.value"
                     " FROM user_config uc"
                     " WHERE uc.username=?"
@@ -915,8 +922,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 pi_col = "COALESCE(r.pull_initialized,0)" if has_pi else "0"
                 conn.execute(
                     "INSERT INTO romm_title_map_new (user_id,title_id,rom_id,mapped_at,pull_initialized)"
-                    f" SELECT CASE WHEN r.username=? THEN ?"
-                    f"             ELSE (SELECT id FROM auth_users WHERE username=r.username) END,"
+                    f" SELECT CASE WHEN EXISTS(SELECT 1 FROM auth_users WHERE username=r.username)"
+                    f"             THEN (SELECT id FROM auth_users WHERE username=r.username)"
+                    f"             WHEN r.username=? THEN ? ELSE NULL END,"
                     f"  r.title_id, r.rom_id, r.mapped_at, {pi_col}"
                     " FROM romm_title_map r"
                     " WHERE r.username=?"
@@ -944,8 +952,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 """)
                 conn.execute(
                     "INSERT INTO romm_game_cache_new (user_id,rom_id,name,icon_url,fetched_at)"
-                    " SELECT CASE WHEN r.username=? THEN ?"
-                    "             ELSE (SELECT id FROM auth_users WHERE username=r.username) END,"
+                    " SELECT CASE WHEN EXISTS(SELECT 1 FROM auth_users WHERE username=r.username)"
+                    "             THEN (SELECT id FROM auth_users WHERE username=r.username)"
+                    "             WHEN r.username=? THEN ? ELSE NULL END,"
                     "  r.rom_id, r.name, r.icon_url, r.fetched_at"
                     " FROM romm_game_cache r"
                     " WHERE r.username=?"
@@ -971,8 +980,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                 """)
                 conn.execute(
                     "INSERT INTO romm_save_sync_new (user_id,rom_id,romm_save_id,direction,transaction_id,synced_at)"
-                    " SELECT CASE WHEN r.username=? THEN ?"
-                    "             ELSE (SELECT id FROM auth_users WHERE username=r.username) END,"
+                    " SELECT CASE WHEN EXISTS(SELECT 1 FROM auth_users WHERE username=r.username)"
+                    "             THEN (SELECT id FROM auth_users WHERE username=r.username)"
+                    "             WHEN r.username=? THEN ? ELSE NULL END,"
                     "  r.rom_id, r.romm_save_id, r.direction, r.transaction_id, r.synced_at"
                     " FROM romm_save_sync r"
                     " WHERE r.username=?"
