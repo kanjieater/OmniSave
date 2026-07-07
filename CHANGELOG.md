@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.1](https://github.com/kanjieater/OmniSave/compare/v1.5.0...v1.5.1) (2026-07-07)
+
+
+### Bug Fixes
+
+* prefer auth_users UUID over admin literal in column-rename tables ([1ef9a18](https://github.com/kanjieater/OmniSave/commit/1ef9a18ff21c0668978d3a4000de10bd1367ba69))
+* run admin backfill before JOIN loop in UUID migration ([98b478c](https://github.com/kanjieater/OmniSave/commit/98b478c7615149c005ef2add8d8a7b8042b7eb4e))
+* run admin backfill before JOIN loop in UUID migration ([3a4c293](https://github.com/kanjieater/OmniSave/commit/3a4c293ef04bbc2cc4c732e5fe97fccbbd431fb9))
+
 ## [1.5.0](https://github.com/kanjieater/OmniSave/compare/v1.4.0...v1.5.0) (2026-07-06)
 
 
