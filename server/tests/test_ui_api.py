@@ -3381,6 +3381,86 @@ def test_uuid_migration_from_legacy_schema(tmp_path):
     conn.close()
 
 
+def test_uuid_migration_admin_username_collision(tmp_path):
+    """Admin and a regular user share the same username.
+
+    _SIMPLE_FK rows (sync_transactions, devices) must go to admin UUID.
+    Column-rename rows (user_config, auth_sessions) go to the regular user's UUID
+    because the regular user is in auth_users and takes priority via EXISTS check.
+    """
+    import sqlite3
+    import database as db
+
+    db_path = tmp_path / "collision.db"
+    raw = sqlite3.connect(str(db_path))
+    raw.executescript("""
+        CREATE TABLE auth_users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        -- Regular user shares the admin username
+        INSERT INTO auth_users(username) VALUES ('kanjieater');
+
+        CREATE TABLE server_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO server_config(key, value) VALUES ('admin_username', 'kanjieater');
+        INSERT INTO server_config(key, value) VALUES ('admin_password_hash', 'x');
+
+        CREATE TABLE devices (
+            device_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL DEFAULT '',
+            hardware_type TEXT NOT NULL DEFAULT '',
+            client_type TEXT NOT NULL DEFAULT '',
+            last_seen TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            owner_user_id TEXT,
+            deleted_at TEXT
+        );
+        INSERT INTO devices(device_id, owner_user_id) VALUES ('SWITCH01', 'kanjieater');
+
+        CREATE TABLE user_config (
+            username TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (username, key)
+        );
+        INSERT INTO user_config(username, key, value)
+            VALUES ('kanjieater', 'romm_url', 'http://romm.local');
+
+        CREATE TABLE auth_sessions (
+            session_id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            token TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        INSERT INTO auth_sessions(session_id, username, token)
+            VALUES ('s1', 'kanjieater', 'tok-admin');
+    """)
+    raw.close()
+
+    conn = db.open_db(db_path)
+
+    admin_uuid = db.get_config(conn, "admin_user_id")
+    assert admin_uuid, "admin_user_id must be set"
+    regular_uuid = conn.execute(
+        "SELECT id FROM auth_users WHERE username='kanjieater'"
+    ).fetchone()["id"]
+    assert regular_uuid != admin_uuid, "regular user and admin must have distinct UUIDs"
+
+    # _SIMPLE_FK tables: admin backfill runs first → admin owns their devices
+    dev = conn.execute("SELECT owner_user_id FROM devices WHERE device_id='SWITCH01'").fetchone()
+    assert dev["owner_user_id"] == admin_uuid, "device must belong to admin UUID, not regular user"
+
+    # Column-rename tables: EXISTS check prefers auth_users → regular user keeps their data
+    uc = conn.execute("SELECT user_id FROM user_config WHERE key='romm_url'").fetchone()
+    assert uc["user_id"] == regular_uuid, "user_config row must belong to regular user UUID"
+
+    sess = conn.execute("SELECT user_id FROM auth_sessions WHERE token='tok-admin'").fetchone()
+    assert sess["user_id"] == regular_uuid, "session must belong to regular user UUID (admin re-logs in)"
+
+    conn.close()
+
+
 def test_uuid_migration_rollback_on_error(tmp_path):
     """UUID migration rolls back on error — auth_users.id column absent after failed open_db."""
     import sqlite3
